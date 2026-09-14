@@ -1,0 +1,102 @@
+# TV-relevant hunks only, extracted from a working tree by
+# tools/extract-tv-patches.py. Apply by hand: this is not a patch
+# series, and the surrounding file has other unreleased work in it.
+diff --git a/resources/gamemodes/freeroam/web/index.html b/resources/gamemodes/freeroam/web/index.html
+index d521dd33..4a20e20e 100644
+--- a/resources/gamemodes/freeroam/web/index.html
++++ b/resources/gamemodes/freeroam/web/index.html
+@@ -28,12 +28,14 @@
+       <button class="close" id="close" aria-label="Close freeroam menu">✕</button>
+     </header>
+ 
+     <nav class="tabs" id="tabs" aria-label="Menu sections">
+       <button class="tab active" data-tab="vehicles">VEHICLES</button>
+       <button class="tab" data-tab="weapons">WEAPONS</button>
++      <button class="tab" data-tab="cyberware">CYBERWARE</button>
++      <button class="tab" data-tab="tv">TV</button>
+       <button class="tab" data-tab="travel">TRAVEL</button>
+       <button class="tab" data-tab="player">PLAYER</button>
+       <button class="tab" data-tab="animations">ANIMATIONS</button>
+       <button class="tab activity-tab" id="open-race" data-tab="race">RACE</button>
+       <button class="tab activity-tab" id="open-pvp" data-tab="pvp">PVP</button>
+     </nav>
+@@ -181,20 +183,79 @@
+         </div>
+         <div class="stat-strip" id="player-status">PLAYER STATE UNAVAILABLE</div>
+         <div class="stack">
+           <button class="btn" id="player-wardrobe">WARDROBE<small>Clothing, outfits and appearance.</small></button>
+           <button class="btn" id="player-spawn">RETURN TO SPAWN</button>
+           <button class="btn" id="player-restore">RESTORE HEALTH + ARMOR</button>
++          <button class="btn" id="player-max-levels">MAX LEVELS<small>All attributes, levels, perks and traits to their caps.</small></button>
+           <button class="btn" id="player-revive">REVIVE<small>Only available while dead.</small></button>
+           <div class="row" id="godmode-controls">
+             <button class="btn" id="player-god-on">GOD MODE ON</button>
+             <button class="btn" id="player-god-off">GOD MODE OFF</button>
+           </div>
+           <button class="btn danger" id="player-suicide">SUICIDE<small>Automatic respawn takes over.</small></button>
+         </div>
+       </section>
++      <section class="page" id="page-cyberware">
++        <div class="section-head">
++          <h2>CYBERWARE</h2>
++          <p class="hint">Sandbox implant grant. Installing equips the item through the real loadout, so it is on your character immediately.</p>
++        </div>
++        <div class="stat-strip" id="cyberware-status">READING IMPLANTS…</div>
++        <label class="field-label" for="cyberware-search">SANDBOX GRANT GRADES</label>
++        <input type="text" class="search" id="cyberware-search" spellcheck="false"
++               placeholder="Search grantable grade">
++        <div class="catalog-grid weapons" id="cyberware-grid"></div>
++        <div class="action-grid">
++          <button class="btn" id="cyberware-refresh">REFRESH</button>
++          <button class="btn danger" id="cyberware-remove">REMOVE IMPLANT</button>
++        </div>
++        <p class="hint" id="cyberware-note"></p>
++
++        <div class="section-head compact">
++          <h2>FULL IMPLANT CATALOGUE</h2>
++          <p class="hint">Every implant record the installed game data ships, read from the game's own TweakDB and served a page at a time. Read-only: this is the list the sandbox grants above are drawn from.</p>
++        </div>
++        <div class="stat-strip" id="cyberware-catalogue-count">LOADING CATALOGUE…</div>
++        <div class="filters" id="cyberware-catalogue-areas"></div>
++        <input type="text" class="search" id="cyberware-catalogue-search" spellcheck="false"
++               placeholder="Filter by record name">
++        <div class="catalogue-grid" id="cyberware-catalogue-rows"></div>
++        <div class="action-grid">
++          <button class="btn" id="cyberware-catalogue-prev">PREV</button>
++          <button class="btn" id="cyberware-catalogue-next">NEXT</button>
++        </div>
++        <p class="hint" id="cyberware-catalogue-note"></p>
++      </section>
++      <section class="page" id="page-tv">
++        <div class="section-head">
++          <h2>TELEVISIONS</h2>
++          <p class="hint">A screen in the world with a web page on it. Spawning places a television where you stand, facing you; the screen itself is a browser surface, so it is visible to everyone nearby and shows the same thing to all of them.</p>
++        </div>
++        <div class="stat-strip" id="tv-status">READING TELEVISIONS…</div>
++
++        <label class="field-label" for="tv-url">URL FOR THE NEXT SPAWNED SET</label>
++        <input type="text" class="search" id="tv-url" spellcheck="false"
++               placeholder="https://... (leave empty for the idle test pattern)" />
++        <label class="field-label" for="tv-search">TELEVISION RECORDS</label>
++        <input type="text" class="search" id="tv-search" spellcheck="false"
++               placeholder="Filter records" />
++        <div class="catalog-grid weapons" id="tv-grid"></div>
++        <p class="hint" id="tv-note"></p>
++
++        <div class="section-head compact">
++          <h2>YOUR NEARBY SETS</h2>
++          <p class="hint">The televisions this client is currently rendering. A client only renders the nearest few &mdash; each screen is a browser surface and there is a hard limit &mdash; so a set further away appears here as you walk towards it. Settings you change here apply to every player watching that set.</p>
++        </div>
++        <div class="stat-strip" id="tv-local-count">NO SETS IN RANGE</div>
++        <div class="catalogue-grid" id="tv-screens"></div>
++        <div class="action-grid">
++          <button class="btn" id="tv-refresh">REFRESH</button>
++        </div>
++        <p class="hint" id="tv-screens-note"></p>
++      </section>
+     </div>
+ 
+     <footer class="foot">
+       <span class="keycap">ESC</span><span>CLOSE</span>
+       <i></i>
+       <span class="ds-data">/freeroam</span><span>REOPEN</span>

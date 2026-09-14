@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Open77 television</title>
+  <link rel="stylesheet" href="tv.css" />
+</head>
+<body>
+  <!--
+    One television. This document is created once per screen by
+    client/main.lua and destroyed with it, and it is mapped 1:1 onto the
+    screen's quad, so everything here is sized against the whole surface.
+
+    There is no window chrome and no cursor by default: the player is on foot
+    with a controller, not sitting at a desktop. The control strip exists but
+    stays hidden unless the surface actually has keyboard focus, which happens
+    when someone opens the television from the menu.
+  -->
+  <div id="stage" class="stage">
+    <!-- Idle: what a television shows when it has no URL. Deliberately a test
+         pattern rather than a blank rectangle, because "the screen is black"
+         is the same picture as "the composite is broken" and this project has
+         already spent a day on that difference once. If you can see bars, the
+         whole chain -- page, surface, projection, quad -- is working. -->
+    <div id="idle" class="idle">
+      <div class="bars">
+        <div class="bar b1"></div>
+        <div class="bar b2"></div>
+        <div class="bar b3"></div>
+        <div class="bar b4"></div>
+        <div class="bar b5"></div>
+        <div class="bar b6"></div>
+        <div class="bar b7"></div>
+      </div>
+      <div class="idle-text">
+        <div id="idle-label" class="idle-label">Open77 television</div>
+        <div id="idle-detail" class="idle-detail">no signal &mdash; set a URL from the menu</div>
+      </div>
+    </div>
+
+    <!-- A direct media file: the page owns the element and therefore owns the
+         whole transport, which is why this is the only case with a working seek
+         bar. -->
+    <video id="media" class="media" playsinline preload="metadata"></video>
+
+    <!-- Anything else: an embedded player. A YouTube embed is driven through
+         postMessage (see tv.js), which needs no external script. Anything that
+         refuses to be framed cannot be framed, and says so. -->
+    <iframe id="embed" class="media embed"
+            allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
+            referrerpolicy="no-referrer"></iframe>
+
+    <div id="notice" class="notice" hidden></div>
+
+    <div id="controls" class="controls" hidden>
+      <div id="transport" class="transport">
+        <button id="play" class="button" type="button" title="Play or pause (space)">&#10074;&#10074;</button>
+        <div class="seek-wrap">
+          <input id="seek" class="seek" type="range" min="0" max="1000" value="0" step="1" />
+          <div id="seek-fill" class="seek-fill"></div>
+        </div>
+        <div id="time" class="time">--:-- / --:--</div>
+      </div>
+      <div class="audio">
+        <button id="mute" class="button" type="button" title="Mute (m)">&#128266;</button>
+        <input id="volume" class="volume" type="range" min="0" max="100" value="100" step="1"
+               title="Volume" />
+        <span id="volume-text" class="volume-text">100</span>
+      </div>
+      <div class="source">
+        <input id="url" class="url" type="text" spellcheck="false"
+               placeholder="https://..." />
+        <button id="go" class="button go" type="button">Load</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="tv.js"></script>
+</body>
+</html>

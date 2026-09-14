@@ -1,0 +1,117 @@
+# TV-relevant hunks only, extracted from a working tree by
+# tools/extract-tv-patches.py. Apply by hand: this is not a patch
+# series, and the surrounding file has other unreleased work in it.
+diff --git a/resources/gamemodes/freeroam/client/main.lua b/resources/gamemodes/freeroam/client/main.lua
+index aed95abc..5c594235 100644
+--- a/resources/gamemodes/freeroam/client/main.lua
++++ b/resources/gamemodes/freeroam/client/main.lua
+@@ -496,12 +552,36 @@ CreateThread(function()
+     while true do
+         if scoreboardOpen then pushScoreboard() end
+         Wait(300)
+     end
+ end)
+ 
++-- The last television list this client was told about, and the position a
++-- spawn was requested from. Both are declared before the menu exists because the
++-- handlers below can fire before `onClientResourceStart` has built it -- a
++-- snapshot that arrived during the resource's own start, for instance.
++local lastMediaScreens = {}
++
++RegisterNetEvent("open77:media:catalogue", function(records)
++    if menu ~= nil then menu:send("freeroam:tv", { catalogue = records }) end
++end)
++
++RegisterNetEvent("open77:media:result", function(ok, detail)
++    if menu ~= nil then
++        menu:send("freeroam:tv", { ok = ok == true, text = tostring(detail or "") })
++    end
++end)
++
++AddEventHandler("open77:media:local", function(screens)
++    lastMediaScreens = type(screens) == "table" and screens or {}
++    -- `screens`, not `local`: `local` is a reserved word in Lua and cannot be a
++    -- bare table key. It cost one parse error to remember, and the page reads
++    -- the same key.
++    if menu ~= nil then menu:send("freeroam:tv", { screens = lastMediaScreens }) end
++end)
++
+ AddEventHandler("onClientResourceStart", function(name)
+     if name ~= GetCurrentResourceName() then return end
+ 
+     local errorMessage
+     menu, errorMessage = WebUI.create({
+         entry = "web/index.html",
+@@ -544,12 +624,72 @@ AddEventHandler("onClientResourceStart", function(name)
+             -- open so several models can be tried in a row.
+             if payload.type == "goto" or payload.type == "tpc" or payload.type == "spawn"
+                 or payload.type == "suicide" then
+                 setMenuOpen(false)
+             end
+         end)
++
++        -- TELEVISIONS ---------------------------------------------------------
++        --
++        -- The catalogue, the spawn path and every setting live in the
++        -- `open77_media` resource. This is a client of that resource, not a
++        -- second implementation of it: the page asks, these handlers forward,
++        -- and the answers are relayed back. Changing a URL from here therefore
++        -- changes it for everyone watching the same set, because the change goes
++        -- through the server like any other.
++        --
++        -- The catalogue and the action results arrive as net events addressed to
++        -- this player and are handled straight from the server, which is why
++        -- there is no re-emission anywhere: a resource that re-emitted them
++        -- locally would deliver each one twice.
++        --
++        -- The nearby-set list is different -- it is this CLIENT's rendering
++        -- state, which the server cannot know -- so the media resource pushes it
++        -- locally as `open77:media:local` when it changes, and the last one is
++        -- cached here so REFRESH can redraw without waiting for a change that is
++        -- not coming.
++        menu:on("freeroam:tv", function(payload)
++            if type(payload) ~= "table" or type(payload.action) ~= "string" then return end
++            local action = payload.action
++            if action == "catalogue" then
++                TriggerServerEvent("open77:media:catalogue")
++            elseif action == "local" then
++                menu:send("freeroam:tv", { screens = lastMediaScreens })
++            elseif action == "spawn" then
++                -- The facing is offered, not asserted: the server has no way to
++                -- read a player's heading (`Open77.players.position` publishes
++                -- x, y, z and bucket only) and clamps whatever arrives. The
++                -- position is never sent -- the server reads that itself.
++                --
++                -- `character.state()` is where a heading lives on this side, and
++                -- it can be absent while the body is still streaming in, so the
++                -- field is optional and the server treats its absence as zero
++                -- rather than as an error.
++                local character = Open77.character.state()
++                TriggerServerEvent("open77:media:spawn", {
++                    record = tostring(payload.record or ""),
++                    url = payload.url,
++                    yaw = type(character) == "table" and character.yaw or nil,
++                })
++            elseif action == "url" then
++                TriggerServerEvent("open77:media:control", "url",
++                    { id = tonumber(payload.id), url = payload.url })
++            elseif action == "volume" then
++                TriggerServerEvent("open77:media:control", "volume",
++                    { id = tonumber(payload.id), volume = tonumber(payload.volume) })
++            elseif action == "muted" then
++                TriggerServerEvent("open77:media:control", "muted",
++                    { id = tonumber(payload.id), value = payload.value == true })
++            elseif action == "paused" then
++                TriggerServerEvent("open77:media:control", "paused",
++                    { id = tonumber(payload.id), value = payload.value == true })
++            elseif action == "remove" then
++                TriggerServerEvent("open77:media:control", "remove",
++                    { id = tonumber(payload.id) })
++            end
++        end)
+     end
+ 
+     local hudError
+     hud, hudError = WebUI.create({
+         entry = "web/hud.html",
+         layer = "hud",

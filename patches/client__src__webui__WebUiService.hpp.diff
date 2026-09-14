@@ -1,0 +1,75 @@
+# TV-relevant hunks only, extracted from a working tree by
+# tools/extract-tv-patches.py. Apply by hand: this is not a patch
+# series, and the surrounding file has other unreleased work in it.
+diff --git a/client/src/webui/WebUiService.hpp b/client/src/webui/WebUiService.hpp
+index 8c3cdb03..fbd121ea 100644
+--- a/client/src/webui/WebUiService.hpp
++++ b/client/src/webui/WebUiService.hpp
+@@ -34,12 +34,17 @@ struct CreateOptions
+     bool visible{true};
+     // Independent from the visibility requested by the page owner. A caller
+     // can prepare a visible surface while a world is loading, then allow its
+     // presentation without losing that requested state or requiring the Lua
+     // resource to call show() a second time.
+     bool presentationAllowed{true};
++    // The page is composited into the world by `DrawSurfaceQuad` and must not
++    // also be blitted across the viewport by `Draw` -- a television page would
++    // otherwise be drawn fullscreen over the player. See the flag's own note in
++    // WebUiService.cpp for why it is neither `visible` nor `presentationAllowed`.
++    bool hudSuppressed{false};
+     std::optional<std::array<float, 4>> drawBounds;
+ };
+ 
+ struct Event
+ {
+     WebUI::SurfaceId surface{};
+@@ -80,12 +85,15 @@ struct SurfaceStatus
+     std::string resource;
+     uint64_t generation{};
+     uint8_t layer{};
+     int32_t zIndex{};
+     bool visible{};
+     bool presentationAllowed{};
++    /// Composited into a world quad instead of the viewport, so `drawn` is
++    /// false for a surface that is otherwise perfectly healthy.
++    bool hudSuppressed{};
+     bool ready{};
+     bool created{};
+     bool failed{};
+     bool closing{};
+     bool texture{};
+     bool drawn{};
+@@ -206,12 +214,33 @@ void OnGraphicsShutdown();
+ // is the newest one the host produced.
+ void AcquireFrames(uint64_t aCompletedFence);
+ [[nodiscard]] bool PrepareFrame(ID3D12GraphicsCommandList* aCommands, uint32_t aFrameIndex,
+                                 uint64_t aCompletedFence);
+ void FrameSubmitted(uint64_t aFenceValue);
+ void Draw(float aViewportWidth, float aViewportHeight);
++
++// Composites one surface's newest frame into an arbitrary screen-space quad,
++// which is how a CEF page ends up on a television in the world.
++//
++// This lives here, next to `Draw`, and not in `WorldOverlay` on purpose. It is
++// the same operation as `Draw` performs -- pick the GPU ring slot or the CPU
++// upload, queue an `AddImageQuad` into the current frame's background draw list,
++// wrap the whole thing in the premultiplied-alpha pipeline state -- and the two
++// must not drift apart. `Draw` decides the texture; nothing outside this file
++// should be handling a descriptor handle.
++//
++// `aCorners` is eight floats: top-left, top-right, bottom-right, bottom-left, in
++// the caller's pixel space, already projected by a game-thread producer. `aAlpha`
++// is 0..255, applied as a tint so a producer's own distance fade reaches the
++// pixels rather than being simulated by a smaller quad.
++//
++// Returns false, drawing nothing, when the surface is missing, hidden, not yet
++// ready, or has never been painted. That is deliberately the same predicate
++// `Draw` uses, so "the TV is blank" and "the page is blank" stay distinguishable
++// through `webui.status`.
++[[nodiscard]] bool DrawSurfaceQuad(WebUI::SurfaceId aSurface, const float (&aCorners)[8], uint8_t aAlpha);
+ // Once per swapchain Present, whether or not the overlay drew: paces the host's
+ // Chromium compositor (BeginFrame) to the game's own frames.
+ void OnPresent();
+ [[nodiscard]] bool NeedsRender();
+ [[nodiscard]] bool HandleWindowMessage(HWND aWindow, UINT aMessage, WPARAM aWParam, LPARAM aLParam);
+ [[nodiscard]] bool WantsCursorInput();

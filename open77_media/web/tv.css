@@ -1,0 +1,193 @@
+/* One television, sized to the whole surface. No scrollbars, no margins: the
+   page is mapped 1:1 onto a screen quad in the world, so a scrollbar would be
+   a visible artifact hanging off the edge of somebody's wall panel. */
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #05070a;
+  color: #d8e2ea;
+  font-family: "Segoe UI", "Noto Sans", system-ui, sans-serif;
+}
+
+.stage {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+/* Everything that occupies the picture area shares one rule, so a media element
+   and an embed cannot disagree about where the picture is. */
+.media,
+.idle {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.media { display: none; background: #000; border: 0; }
+.media.on { display: block; }
+
+video.media { object-fit: contain; }
+
+/* ---------------------------------------------------------------------------
+   Idle: a test pattern, not a blank rectangle.
+   --------------------------------------------------------------------------- */
+
+.idle {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: #05070a;
+}
+.idle.on { display: flex; }
+
+.bars {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  filter: saturate(0.85);
+}
+.bar { flex: 1 1 0; opacity: 0.9; }
+.b1 { background: #c0c0c0; }  /* white        */
+.b2 { background: #c0c000; }  /* yellow       */
+.b3 { background: #00c0c0; }  /* cyan         */
+.b4 { background: #00c000; }  /* green        */
+.b5 { background: #c000c0; }  /* magenta      */
+.b6 { background: #c00000; }  /* red          */
+.b7 { background: #0000c0; }  /* blue         */
+
+/* A dark band across the middle, so the label is legible over any bar. */
+.idle-text {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  padding: 3.5% 4%;
+  text-align: center;
+  background: rgba(5, 7, 10, 0.82);
+  border-top: 1px solid rgba(216, 226, 234, 0.18);
+  border-bottom: 1px solid rgba(216, 226, 234, 0.18);
+}
+.idle-label {
+  font-size: 4.2vmin;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.idle-detail {
+  margin-top: 0.9vmin;
+  font-size: 2.4vmin;
+  color: #8fa3b4;
+}
+
+/* ---------------------------------------------------------------------------
+   Notice: what went wrong with a URL, said on the screen being looked at.
+   --------------------------------------------------------------------------- */
+
+.notice {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 3;
+  padding: 1.6vmin 2.4vmin;
+  background: rgba(120, 24, 24, 0.86);
+  color: #ffe6e6;
+  font-size: 2.1vmin;
+}
+.notice[hidden] { display: none; }
+
+/* ---------------------------------------------------------------------------
+   Controls.
+   Hidden unless the surface has focus: the television is watched from the
+   street, and a control strip permanently across the bottom of the picture is
+   not what a television looks like.
+   --------------------------------------------------------------------------- */
+
+.controls {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  gap: 1.1vmin;
+  padding: 1.8vmin 2.4vmin;
+  background: linear-gradient(to top, rgba(5, 7, 10, 0.94), rgba(5, 7, 10, 0.72));
+  border-top: 1px solid rgba(216, 226, 234, 0.16);
+}
+.controls[hidden] { display: none; }
+
+.transport,
+.audio,
+.source {
+  display: flex;
+  align-items: center;
+  gap: 1.4vmin;
+}
+
+.button {
+  flex: 0 0 auto;
+  min-width: 6vmin;
+  padding: 1vmin 1.6vmin;
+  font-size: 2.1vmin;
+  color: #d8e2ea;
+  background: rgba(216, 226, 234, 0.10);
+  border: 1px solid rgba(216, 226, 234, 0.22);
+  border-radius: 0.5vmin;
+  cursor: pointer;
+}
+.button:hover { background: rgba(216, 226, 234, 0.18); }
+.button:active { background: rgba(216, 226, 234, 0.26); }
+
+.seek-wrap { flex: 1 1 auto; position: relative; height: 1.6vmin; }
+.seek {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  margin: 0;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+.seek-fill {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  height: 0.5vmin;
+  transform: translateY(-50%);
+  background: #f0b429;
+  pointer-events: none;
+}
+.seek { border-bottom: 0.5vmin solid rgba(216, 226, 234, 0.22); }
+
+.time,
+.volume-text {
+  flex: 0 0 auto;
+  min-width: 14vmin;
+  font-size: 1.9vmin;
+  color: #8fa3b4;
+  font-variant-numeric: tabular-nums;
+}
+
+.volume { flex: 1 1 auto; cursor: pointer; }
+
+.url {
+  flex: 1 1 auto;
+  padding: 1vmin 1.4vmin;
+  font-size: 2vmin;
+  color: #d8e2ea;
+  background: rgba(5, 7, 10, 0.7);
+  border: 1px solid rgba(216, 226, 234, 0.22);
+  border-radius: 0.5vmin;
+}
+.url:focus { outline: none; border-color: #f0b429; }
+.go { background: rgba(240, 180, 41, 0.22); border-color: rgba(240, 180, 41, 0.5); }

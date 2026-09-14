@@ -1,0 +1,9 @@
+# Verbatim mirror: no line-ending conversion, in either direction.
+#
+# The resource files in here were hashed against the files the game and the
+# server actually load, and several are claimed byte-identical to them. Any
+# eol normalisation would silently invalidate those hashes, and a checkout
+# would no longer reproduce the artifact that was tested.
+#
+# Consequence worth knowing: these files are CRLF, and that is deliberate.
+* -text

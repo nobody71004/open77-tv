@@ -1,0 +1,22 @@
+# TV-relevant hunks only, extracted from a working tree by
+# tools/extract-tv-patches.py. Apply by hand: this is not a patch
+# series, and the surrounding file has other unreleased work in it.
+diff --git a/client/CMakeLists.txt b/client/CMakeLists.txt
+index 9fae800f..fe301a38 100644
+--- a/client/CMakeLists.txt
++++ b/client/CMakeLists.txt
+@@ -51,12 +53,14 @@ target_sources(
+         src/api/Loot.cpp
+         src/api/Loot.hpp
+         src/api/Markers.cpp
+         src/api/Markers.hpp
+         src/api/Movement.cpp
+         src/api/Movement.hpp
++        src/api/MediaScreens.cpp
++        src/api/MediaScreens.hpp
+         src/api/Nameplates.cpp
+         src/api/Nameplates.hpp
+         src/api/NativeMap.cpp
+         src/api/NativeMap.hpp
+         src/api/Screen.cpp
+         src/api/Screen.hpp

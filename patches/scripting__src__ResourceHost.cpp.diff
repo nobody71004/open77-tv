@@ -1,0 +1,336 @@
+# TV-relevant hunks only, extracted from a working tree by
+# tools/extract-tv-patches.py. Apply by hand: this is not a patch
+# series, and the surrounding file has other unreleased work in it.
+diff --git a/scripting/src/ResourceHost.cpp b/scripting/src/ResourceHost.cpp
+index 7707d62f..0c0b58a2 100644
+--- a/scripting/src/ResourceHost.cpp
++++ b/scripting/src/ResourceHost.cpp
+@@ -7847,12 +7847,273 @@ public:
+         if (context->host->config.game.unprojectAllProps)
+             context->host->config.game.unprojectAllProps();
+         lua_pushboolean(aState, 1);
+         return 1;
+     }
+ 
++    // ---- Open77.media ---------------------------------------------------
++    //
++    // A WebUI page on a screen that lives in the world. The page is a page this
++    // resource already owns -- `ReadOwnedWebPage` is the same check
++    // `Open77.anchors` uses, and it is what stops one resource painting onto
++    // another's page -- and the screen is a rectangle authored in the props's
++    // own local frame.
++    //
++    // What is deliberately *not* here is any notion of the television as an
++    // object. There is no `media.spawn`: the prop is spawned by the props
++    // channel like any other prop, and this only says which surface belongs on
++    // which prop's screen. Keeping the two apart is what lets a screen be bound
++    // before its prop has streamed in, and lets the prop move without the screen
++    // caring.
++
++    /// Reads the quad fields present in the table, leaving anything absent at
++    /// whatever the caller already had. `disabled` out-parameters were avoided
++    /// here: a quad has eight numbers and a bool per axis is eight more things to
++    /// keep in step, so merging happens by not touching what is not named.
++    static bool ReadMediaQuad(
++        lua_State* const aState, const int aIndex, GameBackend::MediaScreenQuad& aOut,
++        std::string& aError)
++    {
++        const auto readVector = [&](const char* const aName, float (&aTarget)[3]) {
++            lua_getfield(aState, aIndex, aName);
++            if (lua_isnil(aState, -1))
++            {
++                lua_pop(aState, 1);
++                return true;
++            }
++            const bool ok = ReadVector3(aState, -1, aTarget);
++            lua_pop(aState, 1);
++            return ok;
++        };
++        if (!readVector("offset", aOut.offset)) { aError = "invalid_offset"; return false; }
++        if (!readVector("right", aOut.right)) { aError = "invalid_right"; return false; }
++        if (!readVector("up", aOut.up)) { aError = "invalid_up"; return false; }
++
++        const auto readNumber = [&](const char* const aName, float& aTarget) {
++            lua_getfield(aState, aIndex, aName);
++            const bool absent = lua_isnil(aState, -1);
++            const bool number = !absent && lua_isnumber(aState, -1);
++            if (number) aTarget = static_cast<float>(lua_tonumber(aState, -1));
++            lua_pop(aState, 1);
++            return absent || number;
++        };
++        if (!readNumber("width", aOut.width)) { aError = "invalid_width"; return false; }
++        if (!readNumber("height", aOut.height)) { aError = "invalid_height"; return false; }
++        return true;
++    }
++
++    /// Reads a full definition, merging over `aOut` so an omitted field keeps
++    /// its previous value. `bind` starts from the struct defaults; `update`
++    /// starts from what the screen already has, which is what makes
++    /// `media.update(id, { label = "…" })` mean what it looks like it means.
++    static bool ReadMediaDefinition(
++        lua_State* const aState, const int aIndex, GameBackend::MediaScreenDefinition& aOut,
++        std::string& aError)
++    {
++        if (!lua_istable(aState, aIndex))
++        {
++            aError = "options_must_be_a_table";
++            return false;
++        }
++
++        lua_getfield(aState, aIndex, "prop");
++        if (!lua_isnil(aState, -1))
++        {
++            uint64_t prop = 0;
++            if (!ReadEntityId(aState, -1, prop) || prop == 0)
++            {
++                lua_pop(aState, 1);
++                aError = "invalid_prop_id";
++                return false;
++            }
++            aOut.prop = prop;
++        }
++        lua_pop(aState, 1);
++
++        // A named page must be one this resource owns; an omitted page leaves
++        // the screen's current content alone, and an explicit nil is how a
++        // caller switches a television off without removing it.
++        lua_getfield(aState, aIndex, "page");
++        if (lua_isnil(aState, -1))
++        {
++            lua_getfield(aState, aIndex, "surface");
++            if (!lua_isnil(aState, -1))
++            {
++                uint64_t surface = 0;
++                if (!ReadEntityId(aState, -1, surface))
++                {
++                    lua_pop(aState, 2);
++                    aError = "invalid_surface";
++                    return false;
++                }
++                aOut.surface = surface;
++            }
++            lua_pop(aState, 1);
++        }
++        else if (!ReadOwnedWebPage(aState, -1, aOut.surface, aError))
++        {
++            lua_pop(aState, 1);
++            return false;
++        }
++        lua_pop(aState, 1);
++
++        lua_getfield(aState, aIndex, "label");
++        if (lua_isstring(aState, -1))
++        {
++            size_t length = 0;
++            const char* const text = lua_tolstring(aState, -1, &length);
++            if (length > 128)
++            {
++                lua_pop(aState, 1);
++                aError = "label_too_long";
++                return false;
++            }
++            aOut.label.assign(text, length);
++        }
++        lua_pop(aState, 1);
++
++        lua_getfield(aState, aIndex, "quad");
++        if (!lua_isnil(aState, -1))
++        {
++            const bool ok = ReadMediaQuad(aState, -1, aOut.quad, aError);
++            lua_pop(aState, 1);
++            if (!ok) return false;
++        }
++        else
++        {
++            lua_pop(aState, 1);
++            // Flat spelling, so a record can write the quad inline next to the
++            // rest of its fields instead of nesting one level for four keys.
++            if (!ReadMediaQuad(aState, aIndex, aOut.quad, aError)) return false;
++        }
++        return true;
++    }
++
++    static void PushMediaSnapshot(
++        lua_State* const aState, const GameBackend::MediaScreenSnapshot& aScreen)
++    {
++        lua_createtable(aState, 0, 8);
++        const auto id = std::to_string(aScreen.id);
++        lua_pushlstring(aState, id.data(), id.size()); lua_setfield(aState, -2, "id");
++        const auto prop = std::to_string(aScreen.definition.prop);
++        lua_pushlstring(aState, prop.data(), prop.size()); lua_setfield(aState, -2, "prop");
++        const auto surface = std::to_string(aScreen.definition.surface);
++        lua_pushlstring(aState, surface.data(), surface.size());
++        lua_setfield(aState, -2, "surface");
++        lua_pushlstring(aState, aScreen.definition.label.data(), aScreen.definition.label.size());
++        lua_setfield(aState, -2, "label");
++        lua_pushboolean(aState, aScreen.drawn ? 1 : 0); lua_setfield(aState, -2, "drawn");
++        lua_pushlstring(aState, aScreen.reason.data(), aScreen.reason.size());
++        lua_setfield(aState, -2, "reason");
++        lua_pushnumber(aState, aScreen.distance); lua_setfield(aState, -2, "distance");
++        lua_createtable(aState, 0, 3);
++        lua_pushnumber(aState, aScreen.definition.quad.width); lua_setfield(aState, -2, "width");
++        lua_pushnumber(aState, aScreen.definition.quad.height); lua_setfield(aState, -2, "height");
++        lua_setfield(aState, -2, "quad");
++    }
++
++    static int LuaMediaBind(lua_State* const aState)
++    {
++        auto* const context = GetContext(aState);
++        if (!CanUseProps(aState)) return PropFailure(aState, "permission_denied:world.props");
++        if (!context->host->config.game.bindMediaScreen)
++            return PropFailure(aState, "media_backend_unavailable");
++        GameBackend::MediaScreenDefinition definition;
++        std::string error;
++        if (!ReadMediaDefinition(aState, 1, definition, error)) return PropFailure(aState, error);
++        if (definition.prop == 0 && definition.surface == 0)
++            return PropFailure(aState, "missing_prop_or_page");
++        uint64_t id = 0;
++        if (!context->host->config.game.bindMediaScreen(
++                context->instance->definition.name, std::move(definition), id, error))
++            return PropFailure(aState, error);
++        const auto text = std::to_string(id);
++        lua_pushlstring(aState, text.data(), text.size());
++        return 1;
++    }
++
++    static int LuaMediaUpdate(lua_State* const aState)
++    {
++        auto* const context = GetContext(aState);
++        if (!CanUseProps(aState))
++            return PushCameraResult(aState, false, "permission_denied:world.props");
++        if (!context->host->config.game.updateMediaScreen)
++            return PushCameraResult(aState, false, "media_backend_unavailable");
++        uint64_t id = 0;
++        if (!ReadEntityId(aState, 1, id) || id == 0)
++            return PushCameraResult(aState, false, "invalid_screen_id");
++
++        GameBackend::MediaScreenDefinition definition;
++        bool found = false;
++        if (context->host->config.game.mediaScreenSnapshot)
++        {
++            for (const auto& screen : context->host->config.game.mediaScreenSnapshot(
++                     context->instance->definition.name))
++            {
++                if (screen.id != id) continue;
++                definition = screen.definition;
++                found = true;
++                break;
++            }
++        }
++        if (!found) return PushCameraResult(aState, false, "not_found");
++
++        std::string error;
++        if (!ReadMediaDefinition(aState, 2, definition, error))
++            return PushCameraResult(aState, false, error);
++        const bool ok = context->host->config.game.updateMediaScreen(
++            context->instance->definition.name, id, std::move(definition), error);
++        return PushCameraResult(aState, ok, error);
++    }
++
++    static int LuaMediaUnbind(lua_State* const aState)
++    {
++        auto* const context = GetContext(aState);
++        if (!CanUseProps(aState))
++            return PushCameraResult(aState, false, "permission_denied:world.props");
++        if (!context->host->config.game.unbindMediaScreen)
++            return PushCameraResult(aState, false, "media_backend_unavailable");
++        uint64_t id = 0;
++        if (!ReadEntityId(aState, 1, id) || id == 0)
++            return PushCameraResult(aState, false, "invalid_screen_id");
++        std::string error;
++        const bool ok = context->host->config.game.unbindMediaScreen(
++            context->instance->definition.name, id, error);
++        return PushCameraResult(aState, ok, error);
++    }
++
++    static int LuaMediaClear(lua_State* const aState)
++    {
++        auto* const context = GetContext(aState);
++        if (!CanUseProps(aState))
++            return PushCameraResult(aState, false, "permission_denied:world.props");
++        if (context->host->config.game.releaseMediaScreens)
++            context->host->config.game.releaseMediaScreens(context->instance->definition.name);
++        lua_pushboolean(aState, 1);
++        return 1;
++    }
++
++    static int LuaMediaList(lua_State* const aState)
++    {
++        auto* const context = GetContext(aState);
++        if (!CanUseProps(aState))
++            return PushCameraResult(aState, false, "permission_denied:world.props");
++        if (!context->host->config.game.mediaScreenSnapshot)
++            return PushCameraResult(aState, false, "media_backend_unavailable");
++        const auto screens = context->host->config.game.mediaScreenSnapshot(
++            context->instance->definition.name);
++        lua_createtable(aState, static_cast<int>(screens.size()), 0);
++        int index = 0;
++        for (const auto& screen : screens)
++        {
++            PushMediaSnapshot(aState, screen);
++            lua_rawseti(aState, -2, ++index);
++        }
++        return 1;
++    }
++
+     // ---- Open77.anchors -------------------------------------------------
+     //
+     // No permission of its own, and that is deliberate. The capability an
+     // anchor grants is exactly the capability `Open77.camera.project` already
+     // grants ungated -- turning a world point into a screen point -- with the
+     // sampling moved off the Lua tick. What an anchor *can* touch is bounded by
+@@ -10884,12 +11182,13 @@ public:
+             }
+             request.framesPerSecond = static_cast<uint16_t>(std::min<lua_Integer>(fps, 60));
+             lua_getfield(aState, 1, "zIndex"); request.zIndex = static_cast<int32_t>(luaL_optinteger(aState, -1, 0)); lua_pop(aState, 1);
+             lua_getfield(aState, 1, "transparent"); request.transparent = lua_isnil(aState, -1) || lua_toboolean(aState, -1) != 0; lua_pop(aState, 1);
+             lua_getfield(aState, 1, "visible"); request.visible = lua_isnil(aState, -1) || lua_toboolean(aState, -1) != 0; lua_pop(aState, 1);
+             lua_getfield(aState, 1, "loadScreen"); request.loadScreen = lua_toboolean(aState, -1) != 0; lua_pop(aState, 1);
++            lua_getfield(aState, 1, "hudSuppressed"); request.hudSuppressed = lua_toboolean(aState, -1) != 0; lua_pop(aState, 1);
+             lua_getfield(aState, 1, "drawBounds");
+             if (!lua_isnil(aState, -1))
+             {
+                 bool validBounds = lua_istable(aState, -1);
+                 std::array<float, 4> bounds{};
+                 constexpr std::array<const char*, 4> names{"x", "y", "width", "height"};
+@@ -12607,12 +12911,20 @@ public:
+         SetFunction(state, "nearest", &LuaPropNearest);
+         SetFunction(state, "project", &LuaPropProject);
+         SetFunction(state, "unproject", &LuaPropUnproject);
+         SetFunction(state, "unprojectAll", &LuaPropUnprojectAll);
+         lua_setfield(state, -2, "props");
+ 
++        lua_newtable(state); // Open77.media (gated by WebUI page ownership)
++        SetFunction(state, "bind", &LuaMediaBind);
++        SetFunction(state, "update", &LuaMediaUpdate);
++        SetFunction(state, "unbind", &LuaMediaUnbind);
++        SetFunction(state, "clear", &LuaMediaClear);
++        SetFunction(state, "list", &LuaMediaList);
++        lua_setfield(state, -2, "media");
++
+         lua_newtable(state); // Open77.anchors (gated by WebUI page ownership)
+         SetFunction(state, "create", &LuaAnchorCreate);
+         SetFunction(state, "update", &LuaAnchorUpdate);
+         SetFunction(state, "remove", &LuaAnchorRemove);
+         SetFunction(state, "clear", &LuaAnchorClear);
+         SetFunction(state, "list", &LuaAnchorList);
+@@ -12993,12 +13305,19 @@ public:
+         // generation, and the only thing that ever collected the strays was
+         // `Api::Props::ReleaseAll` at DLL unload. Stopping a resource must undo
+         // everything that resource made; the six neighbours here are what that
+         // rule looks like, and props were the one omission.
+         if (config.game.releaseProps)
+             config.game.releaseProps(aResource.definition.name);
++        // Same rule as `releaseProps` above, and the same omission would apply:
++        // a stopped resource that had put a page on a television in the world
++        // would leave the picture hanging there, because a screen is a
++        // projection over an entity this module does not own and nothing else
++        // would ever collect it.
++        if (config.game.releaseMediaScreens)
++            config.game.releaseMediaScreens(aResource.definition.name);
+         if (config.game.releaseWorldAnchors)
+             config.game.releaseWorldAnchors(aResource.definition.name);
+         if (config.game.releaseEffects)
+             config.game.releaseEffects(aResource.definition.name, {});
+         if (config.game.releaseCyberwareArms)
+             config.game.releaseCyberwareArms(aResource.definition.name);

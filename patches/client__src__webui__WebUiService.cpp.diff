@@ -1,0 +1,89 @@
+# TV-relevant hunks only, extracted from a working tree by
+# tools/extract-tv-patches.py. Apply by hand: this is not a patch
+# series, and the surrounding file has other unreleased work in it.
+diff --git a/client/src/webui/WebUiService.cpp b/client/src/webui/WebUiService.cpp
+index db02375c..af68dcf4 100644
+--- a/client/src/webui/WebUiService.cpp
++++ b/client/src/webui/WebUiService.cpp
+@@ -136,12 +136,27 @@ struct Surface
+     std::atomic_bool closing{};
+     std::atomic_bool visible{true};
+     // A native lifecycle gate, deliberately separate from `visible`: Lua owns
+     // whether its page wants to be shown; the client owns whether the world is
+     // far enough through its handoff to present server UI at all.
+     std::atomic_bool presentationAllowed{true};
++    // This surface is composited somewhere else -- into a world quad by
++    // `DrawSurfaceQuad` -- and must NOT also be blitted across the viewport by
++    // `Draw`.
++    //
++    // A separate flag rather than a reuse of `visible` or `presentationAllowed`,
++    // because both of those are already load-bearing: `visible` is the page
++    // owner's own answer to "should this be shown", and `presentationAllowed` is
++    // the native world-handoff gate. A world screen wants to be visible and
++    // wants to respect the handoff -- it just does not want the HUD copy. Fold
++    // either into this and the property that is genuinely wanted is lost.
++    //
++    // Never sent to the host, and that is not an omission: where a frame is
++    // composited is entirely the game's business. The host rasterises and
++    // announces; this decides where the pixels go.
++    std::atomic_bool hudSuppressed{};
+     // Draw() and PrepareFrame() can race a Lua resource stop. Mark any GPU
+     // references recorded for the current command list before touching the
+     // resource, then bind them to the fence once that list is submitted.
+     std::atomic_bool gpuUsePending{};
+     std::atomic_uint64_t lastUseFence{};
+ 
+@@ -1823,12 +1838,13 @@ SurfaceId Create(const CreateOptions& aOptions, std::string& aError)
+         .zIndex = aOptions.zIndex,
+         .transparent = aOptions.transparent,
+         .visible = aOptions.visible,
+     };
+     surface->visible.store(aOptions.visible, std::memory_order_release);
+     surface->presentationAllowed.store(aOptions.presentationAllowed, std::memory_order_release);
++    surface->hudSuppressed.store(aOptions.hudSuppressed, std::memory_order_release);
+     {
+         const std::scoped_lock lock(s_surfaceMutex);
+         s_surfaces.emplace(id, surface);
+     }
+     if (s_connected.load(std::memory_order_acquire)) SendCreate(surface);
+     return id;
+@@ -2046,13 +2062,21 @@ std::vector<SurfaceStatus> DescribeSurfaces()
+             status.cpuGraphicsBytes = surface->cpuGraphicsBytes.load(std::memory_order_acquire);
+             status.drawPixels = surface->drawPixels.load(std::memory_order_acquire);
+             // Exactly the predicate Draw() applies, so `drawn=no` next to the
+             // flags above names its own cause with no further reading.
+             const bool ringVisible = surface->ringConsumer.Active() &&
+                 surface->ringConsumer.VisibleSlot() != GpuRingConsumer::kNoSlot;
++            status.hudSuppressed = surface->hudSuppressed.load(std::memory_order_acquire);
++            // `hudSuppressed` is part of the predicate because `Draw` refuses
++            // such a surface: a world screen that reported `drawn=yes` here
++            // while nothing appeared in the viewport would send the next reader
++            // looking in exactly the wrong place. The flag names the reason in
++            // the same row, and `drawn=no hudSuppressed=yes` reads correctly as
++            // "composited into the world instead".
+             status.drawn = status.visible && status.presentationAllowed && status.ready &&
++                !status.hudSuppressed &&
+                 (ringVisible || (status.texture && status.uploadedSequence != 0));
+             result.push_back(std::move(status));
+         }
+     }
+     std::ranges::sort(result, [](const SurfaceStatus& aLeft, const SurfaceStatus& aRight) {
+         return aLeft.surface < aRight.surface;
+@@ -2470,12 +2494,17 @@ void Draw(const float aViewportWidth, const float aViewportHeight)
+     std::vector<std::shared_ptr<Surface>> surfaces;
+     for (const auto& surface : allSurfaces)
+     {
+         if (!surface->visible.load(std::memory_order_acquire) ||
+             !surface->presentationAllowed.load(std::memory_order_acquire) ||
+             !surface->ready.load(std::memory_order_acquire)) continue;
++        // A world screen is deliberately not drawn here. It is composited into
++        // its own quad by `DrawSurfaceQuad`, and letting it through this filter
++        // would also stretch it across the whole viewport -- a television page
++        // playing fullscreen over the player's face.
++        if (surface->hudSuppressed.load(std::memory_order_acquire)) continue;
+         const bool ringVisible = surface->ringConsumer.Active() &&
+             surface->ringConsumer.VisibleSlot() != GpuRingConsumer::kNoSlot;
+         if (ringVisible || (surface->texture && surface->uploadedSequence != 0)) surfaces.push_back(surface);
+     }
+     std::ranges::sort(surfaces, [](const auto& left, const auto& right) {
+         if (left->definition.layer != right->definition.layer)

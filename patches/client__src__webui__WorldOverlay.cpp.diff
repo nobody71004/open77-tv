@@ -1,0 +1,106 @@
+# TV-relevant hunks only, extracted from a working tree by
+# tools/extract-tv-patches.py. Apply by hand: this is not a patch
+# series, and the surrounding file has other unreleased work in it.
+diff --git a/client/src/webui/WorldOverlay.cpp b/client/src/webui/WorldOverlay.cpp
+index 7cf8a76e..f6bcda43 100644
+--- a/client/src/webui/WorldOverlay.cpp
++++ b/client/src/webui/WorldOverlay.cpp
+@@ -331,12 +336,45 @@ void DrawCard(ImDrawList* const aDraw, const Item& aItem, const ImVec2 aAnchor,
+             aDraw->AddRectFilled(trackMinimum, {trackMinimum.x + filled, trackMaximum.y},
+                                  Fade(aItem.accent, aAlpha), track * 0.5F);
+         }
+     }
+ }
+ 
++/// A WebUI surface on a world quad.
++///
++/// Nothing is drawn here except the surface: no backdrop, no padding, no border.
++/// A television shows its picture to its edges, and every pixel the overlay
++/// added would be a pixel the page cannot use. The corners arrive already
++/// projected, so this is a pure coordinate change -- normalised to pixels -- and
++/// a hand-off of the surface id to the one module that owns descriptors.
++///
++/// Deliberately silent when the hand-off fails. `DrawSurfaceQuad` returns false
++/// for a surface that is hidden, not ready, or never painted, and that is a
++/// normal transient while a page loads; the screen is simply not drawn this
++/// frame and appears when the page has something to show. A page that never
++/// paints is diagnosed through `webui.status`, which reports exactly which of
++/// those predicates failed -- not by inventing an error here.
++void DrawScreen(ImDrawList* const aDraw, const Item& aItem, const float aWidth, const float aHeight,
++                const float aAlpha)
++{
++    static_cast<void>(aDraw);
++    if (aItem.surface == 0 || aItem.corners.size() != 8)
++    {
++        return;
++    }
++    float corners[8]{};
++    for (size_t index = 0; index < 8; index += 2)
++    {
++        corners[index] = aItem.corners[index] * aWidth;
++        corners[index + 1] = aItem.corners[index + 1] * aHeight;
++    }
++    const auto alpha = static_cast<uint8_t>(
++        std::clamp(aAlpha * 255.0F, 0.0F, 255.0F));
++    static_cast<void>(WebUiService::DrawSurfaceQuad(aItem.surface, corners, alpha));
++}
++
+ void DrawRing(ImDrawList* const aDraw, const Item& aItem, const float aWidth, const float aHeight,
+               const float aUnit, const float aAlpha)
+ {
+     // Attenuated with distance so the stroke reads as paint on the ground
+     // rather than a HUD line laid over it -- see `kRingReferenceMetres`. The
+     // old behaviour was a flat pixel width, defended on the grounds that a
+@@ -440,12 +478,13 @@ const char* Describe(const Style aStyle)
+     switch (aStyle)
+     {
+     case Style::Plate: return "plate";
+     case Style::Card: return "card";
+     case Style::Ring: return "ring";
+     case Style::Dot: return "dot";
++    case Style::Screen: return "screen";
+     }
+     return "unknown";
+ }
+ 
+ uint32_t PackColor(const uint8_t aRed, const uint8_t aGreen, const uint8_t aBlue,
+                    const uint8_t aAlpha)
+@@ -713,12 +752,23 @@ void Draw(const float aViewportWidth, const float aViewportHeight)
+             continue;
+         }
+         if (item.depth <= kMinimumDepth)
+         {
+             continue;
+         }
++        if (item.style == Style::Screen)
++        {
++            // After the depth gate, before the cull. A screen is a quad, not a
++            // point: the centre-derived `x`/`y` anchor below would blank a large
++            // screen whose middle is just off the edge of the view, which is
++            // precisely when a player is looking around one. `depth` still
++            // applies, because a quad whose centre is behind the camera has no
++            // drawable winding.
++            DrawScreen(draw, item, aViewportWidth, aViewportHeight, alpha);
++            continue;
++        }
+         const float scale = std::clamp(item.scale, 0.25F, 4.0F) * unit;
+         const ImVec2 anchor{item.x * aViewportWidth, item.y * aViewportHeight};
+         // A generous margin rather than a strict 0..1 test: a card centred just
+         // past the edge still has half its body on screen.
+         if (item.x < -0.25F || item.x > 1.25F || item.y < -0.25F || item.y > 1.25F)
+         {
+@@ -727,10 +777,14 @@ void Draw(const float aViewportWidth, const float aViewportHeight)
+         switch (item.style)
+         {
+         case Style::Plate: DrawPlate(draw, item, anchor, scale, alpha); break;
+         case Style::Card: DrawCard(draw, item, anchor, scale, alpha); break;
+         case Style::Dot: DrawDot(draw, item, anchor, unit, alpha); break;
+         case Style::Ring: break;
++        // Handled above, before the anchor and cull; kept here so the switch
++        // stays exhaustive and a future style cannot be added without a
++        // deliberate decision about which gate it belongs behind.
++        case Style::Screen: break;
+         }
+     }
+ }
+ } // namespace op77::WorldOverlay

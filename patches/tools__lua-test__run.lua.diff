@@ -1,0 +1,37 @@
+# TV-relevant hunks only, extracted from a working tree by
+# tools/extract-tv-patches.py. Apply by hand: this is not a patch
+# series, and the surrounding file has other unreleased work in it.
+diff --git a/tools/lua-test/run.lua b/tools/lua-test/run.lua
+index 7d7123f0..e3dd1ac9 100644
+--- a/tools/lua-test/run.lua
++++ b/tools/lua-test/run.lua
+@@ -22,13 +22,29 @@ local resources = root .. "/resources"
+ 
+ -- `DIRECTOR_PATH` is the one global director_test.lua expects before it loads the
+ -- production director; the path is passed rather than hardcoded so the runner
+ -- works from any working directory.
+ DIRECTOR_PATH = resources .. "/open77_cynosure/server/director.lua"
+ 
++-- The freeroam cyberware catalogue reuses the ripperdoc example's numbers, so the
++-- suite needs that provider's config to prove the two have not drifted apart.
++FREEROAM_RIPPERDOC_CONFIG = resources .. "/gamemodes/open77_ripperdoc_example/server/config.lua"
++
+ local suites = {
++    {
++        name = "open77_media / records",
++        -- The catalogue, plus the props alias table it names models out of. The
++        -- cross-check is the point: a record whose model alias does not exist
++        -- builds a television with no prop, and nothing in the game reports it.
++        preload = {
++            resources .. "/system/open77_admin/shared/config.lua",
++            resources .. "/system/open77_media/shared/records.lua",
++        },
++        file = resources .. "/system/open77_media/tests/records_test.lua",
++        entry = nil,
++    },
+     {
+         name = "open77_cynosure / phases",
+         preload = { resources .. "/open77_cynosure/server/phases.lua" },
+         file = resources .. "/open77_cynosure/tests/phases_test.lua",
+         entry = "RunPhasesTests",
+     },

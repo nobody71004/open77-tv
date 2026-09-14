@@ -1,0 +1,5 @@
+# Vendored snapshot is generated; keep it, but ignore editor noise.
+*.swp
+*~
+.DS_Store
+__pycache__/

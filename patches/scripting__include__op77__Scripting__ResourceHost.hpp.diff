@@ -1,0 +1,86 @@
+# TV-relevant hunks only, extracted from a working tree by
+# tools/extract-tv-patches.py. Apply by hand: this is not a patch
+# series, and the surrounding file has other unreleased work in it.
+diff --git a/scripting/include/op77/Scripting/ResourceHost.hpp b/scripting/include/op77/Scripting/ResourceHost.hpp
+index 6707ef5c..c169654e 100644
+--- a/scripting/include/op77/Scripting/ResourceHost.hpp
++++ b/scripting/include/op77/Scripting/ResourceHost.hpp
+@@ -118,12 +118,17 @@ struct WebUiCreateRequest
+     // webui.system; the surface is still confined to the server pack by its own
+     // origin + allowed files (see WebUiLoadScreen).
+     bool loadScreen{};
+     // Optional compositor crop: logical x/y/width/height, negative x/y anchor
+     // from the right/bottom. Not sent to CEF; never changes page layout/input.
+     std::optional<std::array<float, 4>> drawBounds;
++    // The page is drawn into a world quad (`Open77.media`) rather than across the
++    // viewport. Not sent to CEF and not sent over the host pipe: where a frame is
++    // composited is the game's decision alone. Without it a television page
++    // would be blitted fullscreen as well as onto its screen.
++    bool hudSuppressed{};
+ };
+ 
+ // The connected server's declared loading screen, resolved by the client host
+ // after the resource set is installed and verified. The trusted shell renders it
+ // via WebUI.create({ loadScreen = true }); only the layer/z-order is the shell's,
+ // while the content stays sandboxed to the server pack dir like any downloaded
+@@ -791,12 +796,60 @@ struct GameBackend
+     /// Upsert a server-owned prop by its server id. Returns false with a reason
+     /// on rejection; an unchanged prop is a successful no-op.
+     std::function<bool(uint64_t, PropOptions, std::string&)> projectProp;
+     std::function<bool(uint64_t, std::string&)> unprojectProp;
+     std::function<void()> unprojectAllProps;
+ 
++    /// A WebUI surface composited onto a rectangle in the world -- a television.
++    ///
++    /// The rectangle is authored in the *prop's* local frame rather than read
++    /// from its geometry, and that is a constraint of this engine rather than a
++    /// preference: a prop's mesh cannot be redirected after its components are
++    /// attached, so the props this can be attached to are Open77-owned hosts
++    /// whose component graph is baked at asset-build time. Reading a screen
++    /// rectangle back out of one of those would mean resolving a submesh by name
++    /// per television, and a prop that renamed it would move the screen
++    /// silently. Authored data cannot silently disagree with itself.
++    ///
++    /// `prop` and `surface` are decimal strings in Lua, because a 64-bit handle
++    /// loses precision in a Lua number; the same convention markers, props and
++    /// blips already use.
++    struct MediaScreenQuad
++    {
++        float offset[3]{0.0F, 0.0F, 1.0F};
++        float right[3]{1.0F, 0.0F, 0.0F};
++        float up[3]{0.0F, 0.0F, 1.0F};
++        float width{1.2F};
++        float height{0.68F};
++    };
++    struct MediaScreenDefinition
++    {
++        uint64_t prop{};
++        uint64_t surface{};
++        MediaScreenQuad quad{};
++        std::string label;
++    };
++    struct MediaScreenSnapshot
++    {
++        uint64_t id{};
++        MediaScreenDefinition definition;
++        /// Whether the last game tick got as far as publishing the screen.
++        /// `reason` names which gate refused it when it did not, so "the TV is
++        /// blank" has an answer that does not require reading C++.
++        bool drawn{};
++        std::string reason;
++        float distance{};
++    };
++    std::function<bool(std::string_view, MediaScreenDefinition, uint64_t&, std::string&)>
++        bindMediaScreen;
++    std::function<bool(std::string_view, uint64_t, MediaScreenDefinition, std::string&)>
++        updateMediaScreen;
++    std::function<bool(std::string_view, uint64_t, std::string&)> unbindMediaScreen;
++    std::function<void(std::string_view)> releaseMediaScreens;
++    std::function<std::vector<MediaScreenSnapshot>(std::string_view)> mediaScreenSnapshot;
++
+     /// World-anchored screen positions, projected natively every frame and
+     /// delivered straight to the owning WebUI surface. This exists because the
+     /// Lua path cannot be smooth by construction: `Open77.camera.project` is
+     /// sampled on a Lua tick, so the coordinate a page receives was computed
+     /// against an older camera than the frame that draws it. Handles stay
+     /// decimal strings in Lua, as for markers and blips.

@@ -1,0 +1,122 @@
+# TV-relevant hunks only, extracted from a working tree by
+# tools/extract-tv-patches.py. Apply by hand: this is not a patch
+# series, and the surrounding file has other unreleased work in it.
+diff --git a/client/src/scripting/ClientResourceHost.cpp b/client/src/scripting/ClientResourceHost.cpp
+index 8d714639..d620ff85 100644
+--- a/client/src/scripting/ClientResourceHost.cpp
++++ b/client/src/scripting/ClientResourceHost.cpp
+@@ -18,12 +19,13 @@
+ #include "api/Environment.hpp"
+ #include "api/DilationAuthorisation.hpp"
+ #include "api/Session.hpp"
+ #include "api/Effects.hpp"
+ #include "api/Loot.hpp"
+ #include "api/Markers.hpp"
++#include "api/MediaScreens.hpp"
+ #include "api/Props.hpp"
+ #include "api/Nameplates.hpp"
+ #include "api/NativeMap.hpp"
+ #include "api/Screen.hpp"
+ #include "api/VehicleDriving.hpp"
+ #include "api/PlayerTravel.hpp"
+@@ -1550,12 +1552,13 @@ std::unique_ptr<Scripting::ResourceHost> CreateHost(
+                     .layer = static_cast<WebUI::SurfaceLayer>(request.layer),
+                     .zIndex = request.zIndex,
+                     .transparent = request.transparent,
+                     .visible = request.visible,
+                     .presentationAllowed =
+                         aLayer == HostLayer::System || ServerUiPresentationReady(),
++                    .hudSuppressed = request.hudSuppressed,
+                     .drawBounds = request.drawBounds,
+                 }, error);
+                 if (surface != 0)
+                 {
+                     s_webSurfaceOwners[surface] = aLayer;
+                     if (aLayer == HostLayer::System && request.resource == "open77_blips")
+@@ -2526,12 +2529,86 @@ std::unique_ptr<Scripting::ResourceHost> CreateHost(
+             .unprojectProp = [](const uint64_t serverId, std::string& error) {
+                 const auto status = Api::Props::Unproject(serverId);
+                 if (status == Api::Props::Status::Ok) return true;
+                 error = Api::Props::Describe(status); return false;
+             },
+             .unprojectAllProps = &Api::Props::UnprojectAll,
++            .bindMediaScreen = [](const std::string_view owner,
++                                  Scripting::GameBackend::MediaScreenDefinition definition,
++                                  uint64_t& id, std::string& error) {
++                Api::MediaScreens::Definition native;
++                native.prop = definition.prop;
++                native.surface = definition.surface;
++                native.label = std::move(definition.label);
++                std::copy(std::begin(definition.quad.offset), std::end(definition.quad.offset),
++                          native.quad.offset);
++                std::copy(std::begin(definition.quad.right), std::end(definition.quad.right),
++                          native.quad.right);
++                std::copy(std::begin(definition.quad.up), std::end(definition.quad.up),
++                          native.quad.up);
++                native.quad.width = definition.quad.width;
++                native.quad.height = definition.quad.height;
++                const auto status = Api::MediaScreens::Bind(owner, native, id);
++                if (status == Api::MediaScreens::Status::Ok) return true;
++                error = Api::MediaScreens::Describe(status); return false;
++            },
++            .updateMediaScreen = [](const std::string_view owner, const uint64_t id,
++                                    Scripting::GameBackend::MediaScreenDefinition definition,
++                                    std::string& error) {
++                Api::MediaScreens::Definition native;
++                native.prop = definition.prop;
++                native.surface = definition.surface;
++                native.label = std::move(definition.label);
++                std::copy(std::begin(definition.quad.offset), std::end(definition.quad.offset),
++                          native.quad.offset);
++                std::copy(std::begin(definition.quad.right), std::end(definition.quad.right),
++                          native.quad.right);
++                std::copy(std::begin(definition.quad.up), std::end(definition.quad.up),
++                          native.quad.up);
++                native.quad.width = definition.quad.width;
++                native.quad.height = definition.quad.height;
++                const auto status = Api::MediaScreens::Update(owner, id, native);
++                if (status == Api::MediaScreens::Status::Ok) return true;
++                error = Api::MediaScreens::Describe(status); return false;
++            },
++            .unbindMediaScreen = [](const std::string_view owner, const uint64_t id,
++                                    std::string& error) {
++                const auto status = Api::MediaScreens::Unbind(owner, id);
++                // A screen already gone is the outcome the caller asked for.
++                if (status == Api::MediaScreens::Status::Ok ||
++                    status == Api::MediaScreens::Status::NotFound) return true;
++                error = Api::MediaScreens::Describe(status); return false;
++            },
++            .releaseMediaScreens = &Api::MediaScreens::Release,
++            .mediaScreenSnapshot = [](const std::string_view owner) {
++                std::vector<Scripting::GameBackend::MediaScreenSnapshot> out;
++                for (const auto& screen : Api::MediaScreens::SnapshotAll(owner))
++                {
++                    Scripting::GameBackend::MediaScreenSnapshot copied;
++                    copied.id = screen.id;
++                    copied.definition.prop = screen.definition.prop;
++                    copied.definition.surface = screen.definition.surface;
++                    copied.definition.label = screen.definition.label;
++                    std::copy(std::begin(screen.definition.quad.offset),
++                              std::end(screen.definition.quad.offset),
++                              copied.definition.quad.offset);
++                    std::copy(std::begin(screen.definition.quad.right),
++                              std::end(screen.definition.quad.right),
++                              copied.definition.quad.right);
++                    std::copy(std::begin(screen.definition.quad.up),
++                              std::end(screen.definition.quad.up),
++                              copied.definition.quad.up);
++                    copied.definition.quad.width = screen.definition.quad.width;
++                    copied.definition.quad.height = screen.definition.quad.height;
++                    copied.drawn = screen.drawn;
++                    copied.reason = screen.reason;
++                    copied.distance = screen.distance;
++                    out.push_back(std::move(copied));
++                }
++                return out;
++            },
+             .createWorldAnchor = [](const std::string_view owner,
+                                     Scripting::GameBackend::WorldAnchorOptions options,
+                                     uint64_t& id, std::string& error) {
+                 Api::WorldAnchors::Options native;
+                 if (!ReadAnchorRender(options.render, native.render))
+                 {

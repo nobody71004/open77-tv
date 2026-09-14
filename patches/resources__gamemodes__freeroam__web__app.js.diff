@@ -1,0 +1,232 @@
+# TV-relevant hunks only, extracted from a working tree by
+# tools/extract-tv-patches.py. Apply by hand: this is not a patch
+# series, and the surrounding file has other unreleased work in it.
+diff --git a/resources/gamemodes/freeroam/web/app.js b/resources/gamemodes/freeroam/web/app.js
+index 3236e47f..6bec5da9 100644
+--- a/resources/gamemodes/freeroam/web/app.js
++++ b/resources/gamemodes/freeroam/web/app.js
+@@ -46,12 +59,14 @@
+       }
+       for (const other of body.querySelectorAll(".tab"))
+         other.classList.toggle("active", other === tab);
+       for (const page of body.querySelectorAll(".page"))
+         page.classList.toggle("active", page.id === "page-" + tab.dataset.tab);
+       if (tab.dataset.tab === "weapons") send("weaponSnapshot", {});
++      if (tab.dataset.tab === "cyberware") send("cyberwareSnapshot", {});
++      if (tab.dataset.tab === "tv") requestTv();
+       if (tab.dataset.tab === "pvp") Open77.emit("pvp:open", {});
+     });
+   }
+ 
+   // Catalog rendering ----------------------------------------------------
+ 
+@@ -294,27 +445,176 @@
+       return showToast(false, "invalid coordinates");
+     send("tpc", { x, y, z, heading });
+   });
+   document.getElementById("player-wardrobe").addEventListener("click", () => send("wardrobe", {}));
+   document.getElementById("player-spawn").addEventListener("click", () => send("spawn", {}));
+   document.getElementById("player-restore").addEventListener("click", () => send("restore", {}));
++  document.getElementById("player-max-levels").addEventListener("click", () => send("maxLevels", {}));
+   document.getElementById("player-revive").addEventListener("click", () => send("revive", {}));
+   document.getElementById("player-god-on").addEventListener("click", () => send("godMode", { enabled: true }));
+   document.getElementById("player-god-off").addEventListener("click", () => send("godMode", { enabled: false }));
+   document.getElementById("player-suicide").addEventListener("click", () => send("suicide", {}));
+ 
++  // Televisions ----------------------------------------------------------
++  //
++  // The catalogue and the spawn path live in the `open77_media` resource, not
++  // here, so this tab is a client of it rather than a second implementation: it
++  // asks, and it renders the answer. Everything a player can change goes through
++  // that resource's server events, which is why changing a URL from here changes
++  // it for everyone watching the same set.
++
++  let tvCatalogue = [];
++  let tvLocal = [];
++  let tvFilter = "";
++
++  const tvSend = (action, extra) =>
++    Open77.emit("freeroam:tv", Object.assign({ action }, extra || {}));
++  const requestTv = () => {
++    tvSend("catalogue");
++    tvSend("local");
++  };
++
++  function renderTvCatalogue() {
++    const grid = document.getElementById("tv-grid");
++    grid.innerHTML = "";
++    const url = document.getElementById("tv-url").value.trim();
++    const shown = tvCatalogue.filter(record =>
++      tvFilter === "" || text(record.label).includes(tvFilter) || text(record.id).includes(tvFilter));
++
++    for (const record of shown) {
++      const card = document.createElement("button");
++      card.className = "catalog-card";
++      card.type = "button";
++      const title = document.createElement("strong");
++      title.textContent = record.label || record.id;
++      const blurb = document.createElement("small");
++      blurb.textContent = record.blurb || record.model || "";
++      const size = document.createElement("span");
++      size.className = "tag";
++      size.textContent = `${Number(record.width).toFixed(2)}×${Number(record.height).toFixed(2)} m`;
++      card.append(title, blurb, size);
++      card.addEventListener("click", () => tvSend("spawn", { record: record.id, url }));
++      grid.appendChild(card);
++    }
++    if (shown.length === 0) {
++      const empty = document.createElement("p");
++      empty.className = "hint";
++      empty.textContent = tvCatalogue.length === 0
++        ? "No records received. The open77_media resource may not be running."
++        : "No records match that filter.";
++      grid.appendChild(empty);
++    }
++  }
++
++  // One row per set this client is rendering. The controls map onto the media
++  // resource's own actions, so nothing here is a separate implementation of any
++  // of them.
++  function renderTvLocal() {
++    const list = document.getElementById("tv-screens");
++    list.innerHTML = "";
++    document.getElementById("tv-local-count").textContent = tvLocal.length === 0
++      ? "NO SETS IN RANGE"
++      : `${tvLocal.length} SET${tvLocal.length === 1 ? "" : "S"} IN RANGE`;
++
++    for (const screen of tvLocal) {
++      const row = document.createElement("div");
++      row.className = "catalog-card";
++
++      const head = document.createElement("strong");
++      head.textContent = `#${screen.id}  ${screen.label || "television"}`;
++      const where = document.createElement("small");
++      where.textContent = screen.distance === null || screen.distance === undefined
++        ? "distance unknown"
++        : `${Number(screen.distance).toFixed(1)} m away`;
++
++      const urlRow = document.createElement("div");
++      urlRow.className = "row";
++      const url = document.createElement("input");
++      url.type = "text";
++      url.className = "search";
++      url.spellcheck = false;
++      url.value = screen.url || "";
++      url.placeholder = "https://... (empty = idle test pattern)";
++      const load = document.createElement("button");
++      load.className = "btn";
++      load.type = "button";
++      load.textContent = "SHOW";
++      const show = () => tvSend("url", { id: screen.id, url: url.value.trim() });
++      load.addEventListener("click", show);
++      url.addEventListener("keydown", event => { if (event.key === "Enter") show(); });
++      urlRow.append(url, load);
++
++      const controls = document.createElement("div");
++      controls.className = "row";
++      const volume = document.createElement("input");
++      volume.type = "range";
++      volume.min = "0";
++      volume.max = "100";
++      volume.value = String(screen.volume === undefined ? 100 : screen.volume);
++      volume.addEventListener("change", () =>
++        tvSend("volume", { id: screen.id, volume: Number(volume.value) }));
++      const sounds = document.createElement("button");
++      sounds.className = "btn";
++      sounds.type = "button";
++      sounds.textContent = screen.muted ? "UNMUTE" : "MUTE";
++      sounds.addEventListener("click", () => tvSend("muted", { id: screen.id, value: !screen.muted }));
++      const play = document.createElement("button");
++      play.className = "btn";
++      play.type = "button";
++      play.textContent = screen.paused ? "PLAY" : "PAUSE";
++      play.addEventListener("click", () => tvSend("paused", { id: screen.id, value: !screen.paused }));
++      const remove = document.createElement("button");
++      remove.className = "btn danger";
++      remove.type = "button";
++      remove.textContent = "REMOVE";
++      remove.addEventListener("click", () => tvSend("remove", { id: screen.id }));
++      controls.append(volume, sounds, play, remove);
++
++      row.append(head, where, urlRow, controls);
++      list.appendChild(row);
++    }
++  }
++
++  document.getElementById("tv-search").addEventListener("input", event => {
++    tvFilter = text(event.target.value);
++    renderTvCatalogue();
++  });
++  document.getElementById("tv-refresh").addEventListener("click", requestTv);
++
+   document.addEventListener("keydown", event => {
+     if (event.key === "Escape") { event.preventDefault(); close(); }
+   });
+ 
+   // Bridge ---------------------------------------------------------------
+ 
+   Open77.on("freeroam:state", payload => {
+     if (payload && typeof payload === "object") state = payload;
++    if (state.cyberware && typeof state.cyberware === "object")
++      cyberwareCatalog = state.cyberware;
+     render();
+   });
++  Open77.on("freeroam:cyberware", payload => {
++    cyberwareState = payload && typeof payload === "object" ? payload : {};
++    if (cyberwareState.catalog && typeof cyberwareState.catalog === "object")
++      cyberwareCatalog = cyberwareState.catalog;
++    if (cyberwareState.catalogue && typeof cyberwareState.catalogue === "object") {
++      cyberwareCatalogue = cyberwareState.catalogue;
++      // Opening the tab (and the REFRESH button) lands on page 1 with the
++      // filter cleared, so the reader always starts from a known place.
++      cyberwareCatalogueArea = "";
++      document.getElementById("cyberware-catalogue-search").value = "";
++      requestCatalogue(1);
++    }
++    renderCyberware();
++    renderCyberwareCatalogue();
++  });
++  Open77.on("freeroam:catalog", payload => {
++    if (!payload || typeof payload !== "object") return;
++    cyberwareCataloguePage = payload;
++    renderCyberwareCatalogue();
++  });
+   Open77.on("freeroam:weapons", payload => {
+     weaponSlots = asArray(payload && payload.slots);
+     renderWeapons();
+     renderLoadout();
+   });
+   Open77.on("freeroam:garage", payload => {
+@@ -327,10 +627,32 @@
+   });
+   Open77.on("freeroam:open", () => body.classList.add("open"));
+   Open77.on("freeroam:closed", () => body.classList.remove("open"));
+   Open77.on("freeroam:result", payload => {
+     if (payload && payload.text) showToast(payload.ok === true, payload.text);
+   });
++  // `freeroam:tv` carries three shapes, told apart by which key is present
++  // rather than by a discriminator: the catalogue, this client's nearby sets, and
++  // a one-line answer to an action. They arrive from different places (the media
++  // resource's server and its client), so a shared discriminator would have to
++  // be invented on both sides for no gain.
++  Open77.on("freeroam:tv", payload => {
++    if (!payload || typeof payload !== "object") return;
++    if (payload.catalogue) {
++      tvCatalogue = asArray(payload.catalogue);
++      renderTvCatalogue();
++      return;
++    }
++    if (payload.screens) {
++      tvLocal = asArray(payload.screens);
++      renderTvLocal();
++      return;
++    }
++    if (payload.text) {
++      showToast(payload.ok === true, payload.text);
++      requestTv();
++    }
++  });
+ 
+   Open77.ready();
+   Open77.emit("freeroam:ready", {});
+ })();

@@ -1,0 +1,36 @@
+# TV-relevant hunks only, extracted from a working tree by
+# tools/extract-tv-patches.py. Apply by hand: this is not a patch
+# series, and the surrounding file has other unreleased work in it.
+diff --git a/client/src/webui/WorldOverlay.hpp b/client/src/webui/WorldOverlay.hpp
+index d236bc3f..d24b4770 100644
+--- a/client/src/webui/WorldOverlay.hpp
++++ b/client/src/webui/WorldOverlay.hpp
+@@ -135,12 +135,28 @@ inline constexpr int kStaleCeilingMilliseconds = 2000;
+ enum class Style : uint8_t
+ {
+     Plate,  ///< a name above a body: label, optional distance, legibility backdrop
+     Card,   ///< an interaction prompt: keycap, label, sublabel, hold progress
+     Ring,   ///< a ground circle, as a per-point projected polyline
+     Dot,    ///< a filled marker with an outline
++    /// A WebUI surface composited onto a world quad -- a television screen.
++    ///
++    /// This is the one style that is not a shape drawn from the atlas, and the
++    /// paragraph above about "something genuinely new belongs in a web page" is
++    /// not violated by it: the *content* here is a page, already rasterised by
++    /// CEF into a texture we hold a descriptor for. What the overlay supplies is
++    /// the one thing a page cannot supply for itself -- where on the *world* the
++    /// rectangle goes.
++    ///
++    /// The honest limitation is occlusion. The overlay pass has no depth buffer
++    /// (see the `Draw` comment), so a screen the producer decides is visible is
++    /// painted over whatever geometry stands between the camera and it. The
++    /// producer is expected to make that decision itself -- `Api::MediaScreens`
++    /// line-of-sight tests the screen's centre -- and the whole quad is then
++    /// either drawn or not. A partially occluded screen is therefore drawn whole.
++    Screen,
+ };
+ 
+ [[nodiscard]] const char* Describe(Style aStyle);
+ 
+ /// Packs a colour the way `ImDrawList` wants it, so no producer has to include
+ /// ImGui to describe one. `ParseColor` accepts the same `#RRGGBB` / `#RRGGBBAA`
