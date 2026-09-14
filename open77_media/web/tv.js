@@ -14,14 +14,19 @@
 // -----------------------------------------------------------------------------
 //   VP9 + Opus (WebM)          works
 //   YouTube                    works, embedded and controllable
-//   H.264 / AAC                refused at the demuxer -- no proprietary codecs
-//   HLS (`.m3u8`)              not present in this build at all
+//   H.264 / AAC                no decoder in this build -- but the HOST can
+//                              re-encode such a link into WebM on the fly
+//                              (see /op77/media/probe and /op77/media/stream,
+//                              served by the web host itself)
 //   Widevine / PlayReady       no CDM in libcef, so DRM video cannot play
 //
-// The consequence a person will actually hit: plain `.mp4` does NOT play, and
-// the failure is silent from a distance -- a black rectangle. So an `.mp4` link
-// is refused here with a sentence on screen naming the codec, rather than
-// handed to a `<video>` element that will sit there black.
+// So a link is no longer judged by its file extension. The page ASKS the host:
+// /op77/media/probe runs ffprobe on the link and answers with the container,
+// the codecs and a verdict -- playable, transcoded, or nothing. `playable`
+// feeds the element directly; `transcoded` feeds it the host's own
+// /op77/media/stream route, whose answer is the same link decoded into VP9/
+// Opus WebM, seekable because the page owns the element; `nothing` is a 404 or
+// an HTML page, and says so out loud instead of showing a black rectangle.
 //
 // Netflix is not a limitation of this code: no CDM can ship in a game that runs
 // under EAC, and Netflix additionally gates desktop playback on a hardware
@@ -124,19 +129,16 @@
   // URL normalisation
   // ---------------------------------------------------------------------------
 
+  // Extension tables kept only for the classification fast path: a WebM is
+  // playable without a round-trip to ffprobe, and everything else is decided
+  // by the probe. An extension that USED to be refused here (mp4, m3u8, mp3...)
+  // now goes to the probe like any other link, because the host can re-encode
+  // what this build cannot decode -- refusing by name was correct when there
+  // was no decoder, and is wrong now.
   const MEDIA_EXTENSIONS = ["webm", "ogg", "ogv", "opus"];
-  const REFUSED_EXTENSIONS = {
-    mp4: "MP4 (H.264/AAC) is not playable in this build -- it has no proprietary codecs. Use a WebM link or a YouTube link.",
-    m4v: "MP4 (H.264/AAC) is not playable in this build. Use a WebM link or a YouTube link.",
-    mov: "QuickTime is not playable in this build. Use a WebM link or a YouTube link.",
-    mp3: "MP3 is not playable in this build -- no MP3 decoder. Use Opus or Vorbis in WebM/Ogg.",
-    m4a: "AAC audio is not playable in this build. Use Opus or Vorbis.",
-    aac: "AAC audio is not playable in this build. Use Opus or Vorbis.",
-    m3u8: "HLS is not implemented in this build at all. Use a WebM link.",
-    mpd: "MPEG-DASH is not implemented in this build. Use a WebM link.",
-    mp4v: "MP4 (H.264/AAC) is not playable in this build.",
-  };
-
+  const PROBE_EXTENSIONS = new Set(["mp4", "m4v", "mov", "mp3", "m4a", "aac", "m3u8", "mpd", "mp4v", "ts", "flv", "mkv"]);
+  // YouTube and Vimeo keep their embed paths: their players are controllable
+  // and report their own state, which a bare stream is not.
   function extensionOf(url) {
     const withoutQuery = url.split("#")[0].split("?")[0];
     const match = /\.([A-Za-z0-9]{1,5})$/.exec(withoutQuery);
@@ -209,19 +211,109 @@
       return { kind: "embed", src: "https://player.vimeo.com/video/" + vimeo + "?autoplay=1" };
     }
 
+    // The fast path: a WebM/Ogg link plays as it is, no probe round-trip. A
+    // recognised media extension goes to the probe like everything else (the
+    // host may re-encode it), and an unknown URL -- an HTML page, a shortener,
+    // a site that serves video from URLs with no extension -- goes to the probe
+    // too, because ffprobe is the only thing here that actually knows. An
+    // embed is the LAST resort now, not the default: a page this host can
+    // decode beats a page this page cannot see.
     const extension = extensionOf(url);
-    if (REFUSED_EXTENSIONS[extension]) {
-      return { kind: "refused", reason: REFUSED_EXTENSIONS[extension] };
-    }
     if (MEDIA_EXTENSIONS.indexOf(extension) !== -1) {
       return { kind: "media", src: url };
     }
+    return { kind: "probe", url: url };
+  }
 
-    // Anything else is attempted as an embed, and the page says so on screen.
-    // Whether a site permits framing cannot be known from here -- a refused
-    // frame reports the same `load` as an accepted one -- so this is stated as
-    // an attempt rather than dressed up as a guarantee.
-    return { kind: "embed", src: url, unchecked: true };
+  // ---------------------------------------------------------------------------
+  // The probe: the host's answer to "what is this link"
+  // ---------------------------------------------------------------------------
+  // One fetch to /op77/media/probe, answered by the host from inside this
+  // process. The verdict decides the path: playable -> the element gets the
+  // link itself; transcoded -> the element gets the host's own stream route,
+  // which is the same link decoded into WebM this build plays natively.
+  // Nothing here is guessed from an extension.
+  let probeToken = 0;
+
+  function startProbe(url) {
+    const token = ++probeToken;
+    report("probing", url);
+    fetch("/op77/media/probe?u=" + encodeURIComponent(url), { cache: "no-store" })
+      .then(function (response) { return response.json(); })
+      .then(function (answer) {
+        if (token !== probeToken || classify(state.url).url !== url) return; // stale
+        applyProbeVerdict(url, answer || {});
+      })
+      .catch(function (error) {
+        if (token !== probeToken) return;
+        notice("The decoder could not be asked about this link (" + error + ").");
+        report("probe_failed", String(error));
+      });
+  }
+
+  function applyProbeVerdict(url, answer) {
+    if (answer.verdict === "playable") {
+      // The extension was misleading; the decoder says the bytes play. Hand
+      // the element the link itself.
+      showing = { kind: "media", src: url };
+      elements.media.src = url;
+      elements.media.load();
+      showOnly("media");
+      report("loading", "direct media (probed: " + (answer.container || "?") + ")");
+      notice("");
+      applyVolume();
+      applyPaused();
+      return;
+    }
+    if (answer.verdict === "transcoded") {
+      // The host decodes the link into WebM. The element's src is the ROUTE,
+      // so the same element, transport and volume path serve it; the
+      // duration is unknown until the stream says otherwise, which the seek
+      // bar handles by disabling itself rather than lying.
+      const streamUrl = "/op77/media/stream?u=" + encodeURIComponent(url) +
+        "&ss=" + encodeURIComponent(String(answer.startSeconds || 0));
+      showing = { kind: "media", src: streamUrl, transcoded: true };
+      elements.media.src = streamUrl;
+      elements.media.load();
+      showOnly("media");
+      report("loading", "host-decoded (" + (answer.video || "audio") + "/" + (answer.audio || "none") +
+        " in " + (answer.container || "?") + ")");
+      notice("This link is being decoded by the game host -- first picture in a few seconds.");
+      applyVolume();
+      applyPaused();
+      return;
+    }
+    if (answer.verdict === "disabled") {
+      notice(answer.detail || "The host cannot decode links: no decoder tools were staged.");
+      report("transcode_disabled", answer.detail || "");
+      return;
+    }
+    // "nothing": a 404, an HTML page, or a file no demuxer claimed.
+    //
+    // Those are two different answers, and treating them as one is why a website
+    // link still showed nothing after the frame grant was in place. `classify`
+    // sends an unknown URL to the probe precisely because ffprobe is the only
+    // thing here that knows what a link is -- and for a page, "not media" is the
+    // correct answer, not a verdict. The television's own log from the first run
+    // with websites enabled says it exactly: `probing (https://.../hdtoday/)`
+    // followed by `not_media (the decoder refused the link)`, with the frame that
+    // was waiting on the other side never built.
+    //
+    // So the extension decides which of the two this is. A link that names a
+    // media container and that no demuxer claimed is dead, and the screen says
+    // so. A link that names no container is somebody's site, and it is shown the
+    // only way a site can be shown here: framed.
+    if (!PROBE_EXTENSIONS.has(extensionOf(url))) {
+      report("not_stream_site", answer.detail || "");
+      showSite(url, null);
+      return;
+    }
+    showOnly("idle");
+    elements.idleDetail.textContent = "this link is not a playable stream";
+    notice("The decoder found nothing playable here" +
+      (answer.detail ? " (" + answer.detail + ")" : "") +
+      ". YouTube links always work.");
+    report("not_media", answer.detail || "");
   }
 
   // ---------------------------------------------------------------------------
@@ -313,6 +405,23 @@
     elements.play.innerHTML = state.paused ? "&#9654;" : "&#10074;&#10074;";
   }
 
+  /// A seek on a host-decoded stream is a NEW stream request starting at the
+  /// requested position, because ffmpeg is decoding the source live. The
+  /// element keeps its element identity (no recreation, no volume re-apply
+  /// hiccup); the swap of src is what restarts the decoder at the offset.
+  function seekTranscoded(seconds) {
+    const url = showing && showing.transcoded && state.url;
+    if (!url) return;
+    const streamUrl = "/op77/media/stream?u=" + encodeURIComponent(url) +
+      "&ss=" + encodeURIComponent(String(Math.max(0, Math.floor(seconds))));
+    report("seek", "re-decoding from " + Math.floor(seconds) + "s");
+    elements.media.src = streamUrl;
+    elements.media.load();
+    showing.src = streamUrl;
+    const attempt = elements.media.play();
+    if (attempt && typeof attempt.catch === "function") attempt.catch(function () {});
+  }
+
   function render() {
     const decided = classify(state.url);
     elements.idleLabel.textContent = state.label || "Open77 television";
@@ -335,6 +444,18 @@
       return;
     }
 
+    if (decided.kind === "probe") {
+      // The answer arrives later and the state may have moved on by then --
+      // the television is not obliged to keep the link. The probe carries the
+      // url it was asked about and render() re-classifies before acting.
+      startProbe(decided.url);
+      showing = { kind: "probing", url: decided.url };
+      showOnly("idle");
+      elements.idleDetail.textContent = "asking the decoder about this link...";
+      notice("");
+      return;
+    }
+
     // A change of source means a recreation. Reusing the element across two
     // different sources leaks the previous one's socket and, for the embed,
     // its player.
@@ -346,33 +467,47 @@
         elements.media.load();
       }
       showOnly("media");
-      showing = { kind: "media", src: decided.src };
+      showing = { kind: "media", src: decided.src, transcoded: decided.transcoded === true };
       // An audio-only file in a video element draws a black rectangle. The
       // element stays visible anyway: a black screen for a podcast is honest,
       // and hiding it would show the test pattern instead, which is a lie.
       //
       // `loading` until the element says it is playing (the `playing` listener
       // below), so the log distinguishes "asked for a picture" from "has one".
-      report("loading", "direct media");
+      report("loading", decided.transcoded ? "host-decoded stream" : "direct media");
       notice("");
       applyVolume();
       applyPaused();
       return;
     }
 
-    showOnly("embed");
-    showing = { kind: "embed", src: decided.src, videoId: decided.videoId || null };
+    showSite(decided.src, decided.videoId);
+  }
 
-    if (decided.videoId) {
+  /// Shows somebody else's page in the frame, and reports what this side can
+  /// honestly observe about it.
+  ///
+  /// Split out of `render()` because there are now two ways a page arrives here:
+  /// classified as a site from the start (a YouTube or Vimeo link, or a URL the
+  /// page recognises as one), and the probe's `nothing` verdict on a link that
+  /// names no media container. Both end in the same frame, the same sandbox and
+  /// the same two log lines -- and the second path is the one that used to end in
+  /// "this link is not a playable stream" instead.
+  function showSite(src, videoId) {
+    const changed = showing.kind !== "embed" || showing.src !== src;
+    showOnly("embed");
+    showing = { kind: "embed", src: src, videoId: videoId || null };
+
+    if (videoId) {
       // A YouTube link. YouTube's own player is preferred because it can be ASKED
       // what it is doing; the plain iframe follows the same policy and applies
       // the same volume and pause state, and is used when the API cannot load.
       notice("");
       if (changed) {
         if (youTubeApiState === "ready") {
-          startApiPlayer(decided.videoId);
+          startApiPlayer(videoId);
         } else if (youTubeApiState === "failed") {
-          startRawEmbed(decided.src, decided.videoId);
+          startRawEmbed(src, videoId);
         } else {
           // Nothing is created yet: the player is built from the video id, not
           // from this URL, and `loadYouTubeApi` re-reads the current state when
@@ -391,7 +526,28 @@
       frame.setAttribute("allow",
         "autoplay; fullscreen; encrypted-media; picture-in-picture");
       frame.setAttribute("referrerpolicy", "no-referrer");
-      frame.src = decided.src;
+      // A framed third-party page is the one thing on this screen that is not
+      // ours, so it runs with the few capabilities a player needs and without
+      // the ones that are only useful to something hostile. `allow-scripts` and
+      // `allow-same-origin` are what let a site's own player run at all;
+      // `allow-top-navigation-by-user-activation` keeps a click able to take the
+      // screen to the site's own player URL (some sites play that way, and the
+      // surface's policy permits the navigation) while refusing the silent
+      // redirect that would otherwise hijack the screen and remove the player's
+      // own controls with no click and no way back.
+      frame.setAttribute("sandbox",
+        "allow-scripts allow-same-origin allow-forms allow-popups " +
+        "allow-popups-to-escape-sandbox allow-top-navigation-by-user-activation " +
+        "allow-presentation");
+      frame.src = src;
+      // The one thing this page CAN observe about somebody else's document, and
+      // worth a line because it is the difference between two failures that look
+      // identical on screen: a frame this page's policy refused never navigates
+      // and never fires this, while a site that refuses to be framed
+      // (`X-Frame-Options` / `frame-ancestors`) still arrives as an error page
+      // and does. So `embed_framed` means "a document was allowed to arrive" --
+      // never "there is a picture", which stays unobservable from here.
+      frame.addEventListener("load", () => report("embed_framed", src));
       elements.embed.appendChild(frame);
       youTubeFrame = frame;
     }
@@ -658,6 +814,13 @@
       const fraction = elements.media.currentTime / duration;
       elements.seek.value = String(Math.round(fraction * 1000));
       elements.seekFill.style.width = (fraction * 100) + "%";
+      elements.seek.disabled = false;
+    } else {
+      // A host-decoded stream states no duration up front, so the bar reads
+      // elapsed time and the slider disables itself. Disabled is honest; a
+      // slider that jumps the picture to nothing is not.
+      elements.seekFill.style.width = "0%";
+      elements.seek.disabled = true;
     }
     elements.time.textContent =
       currentTimeText(elements.media.currentTime) + " / " + currentTimeText(duration);
@@ -692,10 +855,24 @@
   elements.media.addEventListener("loadedmetadata", syncSeek);
   elements.media.addEventListener("timeupdate", syncSeek);
   elements.media.addEventListener("playing", function () {
-    report("playing", "direct media");
+    report("playing", showing.transcoded ? "host-decoded stream" : "direct media");
+  });
+  // A live, host-decoded stream carries no duration; once frames arrive the
+  // seek bar flips from disabled to elapsed-time. This is also the moment the
+  // "decoding" notice goes away.
+  elements.media.addEventListener("loadeddata", function () {
+    if (showing.transcoded) {
+      notice("");
+      report("stream_open", "the host is delivering decoded frames");
+    }
   });
   elements.media.addEventListener("error", function () {
-    notice("This file could not be played. The build has no H.264/AAC decoder -- a WebM link or a YouTube link will work.");
+    if (showing.transcoded) {
+      notice("The host stopped decoding this link. It may have ended, stalled, or the site refused the decoder.");
+      report("media_error", "host stream ended");
+      return;
+    }
+    notice("This file could not be played. A WebM link or a YouTube link will work.");
     report("media_error", elements.media.error ? String(elements.media.error.code) : "");
   });
   // The player's own words. Reported rather than acted on: whether a video can
@@ -748,7 +925,7 @@
   elements.seek.addEventListener("input", function () {
     if (showing.kind !== "media") return;
     const duration = elements.media.duration;
-    if (!isFinite(duration)) return;
+    if (!isFinite(duration) || duration <= 0) return;
     elements.media.currentTime = (Number(elements.seek.value) / 1000) * duration;
   });
   elements.go.addEventListener("click", function () {

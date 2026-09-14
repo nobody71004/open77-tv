@@ -2,10 +2,10 @@
 # tools/extract-tv-patches.py. Apply by hand: this is not a patch
 # series, and the surrounding file has other unreleased work in it.
 diff --git a/webui/CMakeLists.txt b/webui/CMakeLists.txt
-index 22861c34..ad60dd29 100644
+index 22861c34..d0c14639 100644
 --- a/webui/CMakeLists.txt
 +++ b/webui/CMakeLists.txt
-@@ -9,12 +9,13 @@ target_sources(
+@@ -9,12 +9,15 @@ target_sources(
          src/NamedPipe.cpp
      PUBLIC
          FILE_SET HEADERS
@@ -13,9 +13,48 @@ index 22861c34..ad60dd29 100644
          FILES
              include/op77/WebUI/Protocol.hpp
 +            include/op77/WebUI/PagePolicy.hpp
++            include/op77/WebUI/TranscodePlan.hpp
++            include/op77/WebUI/Decoder.hpp
              include/op77/WebUI/Messages.hpp
              include/op77/WebUI/GpuRing.hpp
              include/op77/WebUI/DrawBounds.hpp
              include/op77/WebUI/SurfaceSizing.hpp
              include/op77/WebUI/SharedFrameBuffer.hpp
              include/op77/WebUI/NamedPipe.hpp
+@@ -36,7 +39,36 @@ if(BUILD_TESTING)
+     target_compile_definitions(Open77.WebCore.Tests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+     if(MSVC)
+         target_compile_options(Open77.WebCore.Tests PRIVATE /W4 /permissive- /EHsc /utf-8)
+     endif()
+     set_target_properties(Open77.WebCore.Tests PROPERTIES FOLDER "Open77/Tests")
+     add_test(NAME Open77.WebCore COMMAND Open77.WebCore.Tests)
++
++    # The plan that decides whether a pasted link plays as it is or has to be
++    # re-encoded, and builds the argv for the decoder that does it. Pure enough
++    # to link no CEF and no socket -- which is the point, because the two things
++    # that fail silently here (argument quoting, and a verdict that puts a black
++    # rectangle on a screen every log line calls playing) are exactly what a
++    # game-free test can pin. Links Shell32 for CommandLineToArgvW, the authority
++    # the quoting has to satisfy.
++    add_executable(Open77.TranscodePlan.Tests tests/TranscodePlanTests.cpp)
++    target_link_libraries(Open77.TranscodePlan.Tests PRIVATE Open77.WebCore shell32)
++    target_compile_definitions(Open77.TranscodePlan.Tests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
++    if(MSVC)
++        target_compile_options(Open77.TranscodePlan.Tests PRIVATE /W4 /permissive- /EHsc /utf-8)
++    endif()
++    set_target_properties(Open77.TranscodePlan.Tests PROPERTIES FOLDER "Open77/Tests")
++    add_test(NAME Open77.TranscodePlan COMMAND Open77.TranscodePlan.Tests)
++
++    # The routes against a real decoder, over real loopback HTTP. Skipped
++    # unless OP77_DECODER_E2E=1 and OP77_DECODER_DIR name the staged tools --
++    # the feature being unconfigured is a state the host handles, and this
++    # executable exists to catch the argv breaking WHILE the tools are present.
++    add_executable(Open77.DecoderE2E.Tests tests/DecoderE2ETests.cpp)
++    target_link_libraries(Open77.DecoderE2E.Tests PRIVATE Open77.WebCore ws2_32)
++    target_compile_definitions(Open77.DecoderE2E.Tests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
++    if(MSVC)
++        target_compile_options(Open77.DecoderE2E.Tests PRIVATE /W4 /permissive- /EHsc /utf-8)
++    endif()
++    set_target_properties(Open77.DecoderE2E.Tests PROPERTIES FOLDER "Open77/Tests")
++    add_test(NAME Open77.DecoderE2E COMMAND Open77.DecoderE2E.Tests)
+ endif()

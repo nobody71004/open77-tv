@@ -2,7 +2,7 @@
 # tools/extract-tv-patches.py. Apply by hand: this is not a patch
 # series, and the surrounding file has other unreleased work in it.
 diff --git a/webhost/src/SurfaceClient.hpp b/webhost/src/SurfaceClient.hpp
-index e83feac1..0f4cce04 100644
+index e83feac1..1171e02a 100644
 --- a/webhost/src/SurfaceClient.hpp
 +++ b/webhost/src/SurfaceClient.hpp
 @@ -1,22 +1,25 @@
@@ -61,7 +61,25 @@ index e83feac1..0f4cce04 100644
                                    CefRefPtr<CefProcessMessage> aMessage) override;
      void GetViewRect(CefRefPtr<CefBrowser> aBrowser, CefRect& aRect) override;
      bool GetScreenInfo(CefRefPtr<CefBrowser> aBrowser, CefScreenInfo& aScreenInfo) override;
-@@ -228,12 +254,18 @@ private:
+@@ -155,12 +176,17 @@ private:
+         uint64_t cpuFrames{};
+         uint64_t popupFrames{};
+     };
+ 
+     [[nodiscard]] bool SameOrigin(const std::string& aUrl) const;
+     [[nodiscard]] bool ResolveFile(const std::string& aUrl, std::filesystem::path& aPath) const;
++    /// The two same-origin routes a media page names (`/op77/media/probe`,
++    /// `/op77/media/stream`), served from this process through the staged
++    /// decoder. nullptr when the URL is not one of them, in which case the
++    /// ordinary file resolution runs.
++    [[nodiscard]] CefRefPtr<CefResourceHandler> MaybeServeTranscodeRoute(CefRefPtr<CefRequest> aRequest);
+     [[nodiscard]] static std::string MimeType(const std::filesystem::path& aPath);
+     [[nodiscard]] static std::string JsonQuote(std::string_view aText);
+ 
+     [[nodiscard]] bool EnsureGpuDevice(HANDLE aSourceHandle,
+                                        Microsoft::WRL::ComPtr<ID3D11Texture2D>& aSource);
+     [[nodiscard]] bool CreateDeviceOnAdapter(IDXGIAdapter1* aAdapter, std::string& aAdapterName);
+@@ -228,12 +259,18 @@ private:
      bool m_sharedTextures{};
      bool m_gpuFallback{};
      bool m_ringFallbackAllowed{};

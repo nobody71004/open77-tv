@@ -95,10 +95,13 @@ play every page fast and sharp.
 
 ## Decisions taken with the user
 
-* **Ship the WebM/YouTube path.** YouTube, Vimeo and any VP9/WebM+Opus source work with
-  sound. H.264 MP4 links and DRM services are refused *with a reason shown in the TV UI*
-  instead of a silent black screen. No proprietary-codec build, no CDM, nothing to
-  license or redistribute.
+* **Ship the WebM/YouTube path, and decode the rest in the host.** YouTube, Vimeo and
+  any VP9/WebM+Opus source work with sound. An H.264/HLS link is not refused any more:
+  the host runs `ffprobe` to find out what it is and `ffmpeg` to hand the screen a
+  VP9/Opus WebM of it, so the element, the transport, the volume and the seek logic are
+  the ones a native WebM uses. DRM services stay refused, *with the reason shown in the
+  TV UI* instead of a silent black screen. No proprietary-codec build, no CDM, nothing
+  to license or redistribute.
 * **Audio is produced in the webhost process.** One `AudioSink` per surface, so each TV
   has its own gain and mute and the audio engine mixes them on one device. World
   positioning (falloff with distance from the TV) is a separate, later milestone: it
@@ -110,22 +113,48 @@ play every page fast and sharp.
 same shape: a JS shell that loads a player page which points at **HLS or MP4 with
 H.264 + AAC**. That is precisely the pair this build cannot decode, so the site is not
 the problem and no amount of page-side work fixes it. Measured against
-`freeonlinek.top/hdtoday/`: the shell loads and renders (it is just HTML), and any
-attempt to play from it lands on the same `DEMUXER_ERROR_NO_SUPPORTED_STREAMS` as a
-local `.mp4`. It is the general case, not one bad site.
+`freeonlinek.top/hdtoday/`: any attempt to play from the shell lands on the same
+`DEMUXER_ERROR_NO_SUPPORTED_STREAMS` as a local `.mp4`. It is the general case, not one
+bad site.
 
-Two ways to close it, both real and both already costed here:
+There are two separate questions in that sentence, and conflating them cost the feature
+two passes:
 
-1. **Transcode in front of the page.** Resolve the page to its stream and serve the
-   screen a VP9/Opus rendering of it (`ffmpeg` will take an HLS/MP4 source and emit
-   WebM, or an HLS playlist whose segments are VP9, which this build plays). No host
-   change at all — it is a process beside the game and a URL on the television. Costs
-   CPU and adds a step between "paste link" and "picture".
+* **Can the site's page be shown at all?** For a long time, no — and not because of the
+  codec. The media policy granted `frame-src` to YouTube and its no-cookie host and
+  nothing else, so a pasted site was refused by *our* header before the request left the
+  process, and the screen sat on the page's own idle pattern while the log said
+  `embed_unverified (arbitrary embed)`. The site was never consulted: it sends no
+  `X-Frame-Options` and no `frame-ancestors`, and it frames fine. The policy now carries
+  `frame-src https:` for the media surface only, the frame is sandboxed, and the page
+  reports `embed_framed` when a document arrived — measured in the real host against the
+  real site, `{"violation":"","load":true,"frames":1}` under the media policy against
+  `{"violation":"frame-src","load":false,"frames":0}` under the strict one.
+* **Can the video inside that page play?** Still no, for the reason above: the site's own
+  player asks this CEF build for H.264/HLS and gets a demuxer error. What the frame grant
+  changes is that the failure is now the site's, visible in the site's own UI, instead of
+  ours, invisible on a screen that never loaded anything. The host's transcode route
+  cannot help here either — it decodes a *stream URL* the player hands it, and a player
+  that never starts a request hands over nothing.
+
+So the honest summary of a pasted "free movies" site today: **the page shows, the video
+inside it does not** — unless the site's player does codec detection and falls back to a
+source this build can decode, which most of them do not.
+
+Two ways to close the remaining gap for those sites, both real and both already costed
+here:
+
+1. **Resolve the page to its stream, then transcode.** The transcode half is now built
+   (`/op77/media/probe` + `/op77/media/stream`, see
+   `docs/integration.md` §6c): hand it an HLS or MP4 URL and it returns VP9/Opus WebM
+   this build plays, with sound. What is still missing is the *resolution* step — turning
+   a player page into the stream URL its player would have requested, which is a
+   site-by-site extraction problem and is not attempted here.
 2. **A CEF build with `proprietary_codecs`.** The decoders are absent from this
    Chromium build, not from the platform. Enabling them plays H.264/AAC directly and
    makes the *page* capable instead of making each *source* compatible — a bigger
    change (the runtime is vendored and staged by the host's CMake) and the one that
-   removes the relay.
+   removes the relay entirely, including for the framed-site case above.
 
 Neither route touches DRM, and nothing will: the key is never handed to the client, so
 Netflix-level services stay impossible for a process under EAC.

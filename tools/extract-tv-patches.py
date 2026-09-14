@@ -35,7 +35,16 @@ FEATURE = re.compile(
     r"|AudioSink|allowsRemoteContent"
     # A world screen's teardown: the session ending, the native registry no
     # longer holding a screen, and the reason a page is released.
-    r"|materialised|destroyPage|session:ended",
+    r"|materialised|destroyPage|session:ended"
+    # Playing a link this build cannot decode: the host's own probe and stream
+    # routes, the decoder tools that answer them, the launch switch that stages
+    # those tools, and the frame grant that lets a pasted SITE into the page at
+    # all. The last group is the vocabulary of the page's own verdict line --
+    # `not_media` vs `not_stream_site` is exactly the distinction that decided
+    # whether a website link was framed or thrown away.
+    r"|TranscodePlan|Transcode|transcode|Decoder|decoder|ffprobe|ffmpeg"
+    r"|media/probe|media/stream|decoderDir"
+    r"|frame-src|embed_framed|embed_unverified|not_media|not_stream_site",
 )
 
 # The seam files. Three kinds are in here and each is treated differently:
@@ -81,6 +90,12 @@ SEAMS = [
     "webhost/src/SelfTestApp.cpp",
     "webhost/src/Main.cpp",
     "webhost/CMakeLists.txt",
+    # Where the decoder tools are staged from and where the frame-grant probe
+    # lives: two files whose only TV content is the launch switch and the
+    # integration test that observes a real frame being allowed in.
+    "webhost/src/HostRuntime.hpp",
+    "webhost/src/HostRuntime.cpp",
+    "webhost/tests/WebHostTests.cpp",
     # The menu tab, the placement controls, and the catalogue cross-check's
     # source of truth.
     "resources/gamemodes/freeroam/web/index.html",

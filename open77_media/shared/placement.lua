@@ -185,6 +185,88 @@ function Open77MediaPlacement.Nudge(position, yaw, direction, metres)
     return out, nil
 end
 
+---The rectangle's own front, in the prop's local frame: `up` crossed into
+---`right`.
+---
+---This is the fourth heading convention in this file and the only one that is
+---not the engine's, so it is worth being exact about. A quad is a rectangle: it
+---has a `right` axis, an `up` axis, and a normal the record never states. The
+---normal is `up x right` (a right-handed frame with z up, where `x` cross `y` is
+---`z`), and two families of records independently agree with it:
+---
+---   * the television family declares `faces = +Y`, and its quads are
+---     `right = +X, up = +Z` -- `up x right` = +Y.
+---   * the monitor and device families have their glass measured at --X of the
+---     mesh's own origin (screen meshes at X --0.075..--0.066 around an origin at
+---     0, the housed variants recessed 2-7 mm behind the bezel's --X face), and
+---     their quads are `right = +Y, up = +Z` -- `up x right` = --X.
+---
+---So it is a rule the assets confirm, not a hand-picked handedness. `cross = up x
+---right` gives, componentwise,
+---
+---     (up.y * right.z - up.z * right.y,
+---      up.z * right.x - up.x * right.z,
+---      up.x * right.y - up.y * right.x)
+---
+---Normalised, because a hand-authored record may write a raw direction (the
+---native side normalises too, see client/src/api/ScreenQuad.hpp's `Faces`).
+---@param quad table the rectangle as it is on the wire
+---@return number|nil x
+---@return number|nil y
+---@return number|nil z
+function Open77MediaPlacement.QuadFront(quad)
+    if type(quad) ~= "table" then return nil, nil, nil end
+    local right = quad.right
+    local up = quad.up
+    if type(right) ~= "table" or type(up) ~= "table" then return nil, nil, nil end
+
+    local rx, ry, rz = tonumber(right[1]) or 0.0, tonumber(right[2]) or 0.0, tonumber(right[3]) or 0.0
+    local ux, uy, uz = tonumber(up[1]) or 0.0, tonumber(up[2]) or 0.0, tonumber(up[3]) or 0.0
+    local x = uy * rz - uz * ry
+    local y = uz * rx - ux * rz
+    local z = ux * ry - uy * rx
+    local length = math.sqrt(x * x + y * y + z * z)
+    if length <= 0.0 then return nil, nil, nil end
+    return x / length, y / length, z / length
+end
+
+---The yaw a prop must be given so that the rectangle's front is turned back at a
+---caller whose own heading is `heading`.
+---
+---The set is put down *ahead* of the caller and turned to face them, which is
+---what the menu promises. The direction the front must end up pointing is
+---therefore the caller's forward, negated.
+---
+---`front` is `QuadFront`'s answer, so this works for every record without a
+---`faces` field: a rectangle whose normal runs along X (a monitor, a device
+---panel, a bare screen) is turned a quarter turn from the caller's own heading
+---rather than presented edge-on, which is what a flat half-turn used to do to
+---that whole half of the catalogue. A record that *does* declare `faces` is
+---called with that instead, so the side carrying the picture is the side turned
+---towards the caller and the render gate below agrees with the placement.
+---@param frontX number|nil the front direction, normalised or not
+---@param frontY number|nil
+---@param heading number the caller's heading, degrees
+---@return number|nil yaw degrees, or nil when the front is degenerate
+function Open77MediaPlacement.FacingYaw(frontX, frontY, heading)
+    local fx = tonumber(frontX)
+    local fy = tonumber(frontY)
+    if fx == nil or fy == nil or (fx == 0.0 and fy == 0.0) then return nil end
+
+    local radians = math.rad(tonumber(heading) or 0.0)
+    -- The prop is set down along the caller's forward, so the glass has to look
+    -- back down it: forward is (-sin, cos), so the target is (sin, -cos).
+    local targetX, targetY = math.sin(radians), -math.cos(radians)
+    -- The rotation that carries the front onto the target. Degrees, matching the
+    -- engine's counter-clockwise yaw; `Wrap` folds it into 0..360.
+    -- `math.atan(y, x)` is atan2, which is the spelling this project uses
+    -- everywhere else (race/client/main.lua's heading reader, the cordon
+    -- sweep): Lua 5.4 has no `math.atan2` at all, so the two-argument `atan` is
+    -- both the portable form and the local convention.
+    local yaw = math.deg(math.atan(targetY, targetX) - math.atan(fy, fx))
+    return Open77MediaPlacement.Wrap(yaw)
+end
+
 ---The heading a set has after being turned on the spot.
 ---
 ---"left" turns the set's own left, which is a positive rotation in a

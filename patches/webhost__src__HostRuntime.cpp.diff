@@ -1,0 +1,26 @@
+# TV-relevant hunks only, extracted from a working tree by
+# tools/extract-tv-patches.py. Apply by hand: this is not a patch
+# series, and the surrounding file has other unreleased work in it.
+diff --git a/webhost/src/HostRuntime.cpp b/webhost/src/HostRuntime.cpp
+index a2384cb5..af36df9f 100644
+--- a/webhost/src/HostRuntime.cpp
++++ b/webhost/src/HostRuntime.cpp
+@@ -41,12 +41,18 @@ bool EnvironmentSet(const wchar_t* const aName)
+     return GetEnvironmentVariableW(aName, value, static_cast<DWORD>(std::size(value))) != 0;
+ }
+ } // namespace
+ 
+ HostRuntime::HostRuntime(HostOptions aOptions)
+     : m_options(std::move(aOptions))
++    // The decoder tools are resolved once, at construction, from the one
++    // directory the game named. A missing tool leaves the routes disabled with
++    // a named reason rather than falling back to a PATH search.
++    , m_decoderPaths(m_options.decoderDirectory.empty()
++                         ? op77::WebUI::Transcode::DecoderPaths{}
++                         : op77::WebUI::Transcode::FindDecoderTools(m_options.decoderDirectory))
+     , m_verboseTrace(EnvironmentSet(L"OP77_WEBUI_TRACE_VERBOSE"))
+     // Measured 2026-09-04 in world: driving CEF from the game's Present quantised
+     // every page to multiples of the game frame (a 30 fps HUD composed at ~20/s,
+     // a 60 fps menu at 40/s) and the UI felt laggier than before. CEF's own
+     // scheduler holds the requested windowless_frame_rate exactly, so it stays
+     // the default; the external path is an opt-in for latency experiments.

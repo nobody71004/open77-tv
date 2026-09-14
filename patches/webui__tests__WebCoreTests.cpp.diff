@@ -2,7 +2,7 @@
 # tools/extract-tv-patches.py. Apply by hand: this is not a patch
 # series, and the surrounding file has other unreleased work in it.
 diff --git a/webui/tests/WebCoreTests.cpp b/webui/tests/WebCoreTests.cpp
-index f011342f..59926764 100644
+index f011342f..8cb1d697 100644
 --- a/webui/tests/WebCoreTests.cpp
 +++ b/webui/tests/WebCoreTests.cpp
 @@ -117,12 +117,13 @@ int main()
@@ -19,7 +19,7 @@ index f011342f..59926764 100644
      {
          return 1;
      }
-@@ -133,18 +134,71 @@ int main()
+@@ -133,18 +134,90 @@ int main()
                     createDecoded.generation == create.generation && createDecoded.entry == create.entry &&
                     createDecoded.allowedFiles == create.allowedFiles &&
                     createDecoded.width == create.width && createDecoded.height == create.height &&
@@ -45,8 +45,27 @@ index f011342f..59926764 100644
 +        !Check(std::string(ContentSecurityPolicy(WebPagePolicy::Strict)).find(
 +                   "frame-src 'none'") != std::string::npos &&
 +                   std::string(ContentSecurityPolicy(WebPagePolicy::Media)).find(
-+                       "https://www.youtube.com") != std::string::npos,
++                       "script-src 'self' 'unsafe-inline' https://www.youtube.com") !=
++                       std::string::npos,
 +               "page policy directives do not say what they are for") ||
++        // The frame grant: the one directive here that is a grant rather than a
++        // narrowing, and the one a site-based player cannot be served without.
++        // A pasted site is an origin this build cannot enumerate in advance, so
++        // the media policy frames any `https:` origin while the strict policy --
++        // every menu, HUD and panel -- frames nothing at all. Pinned as one
++        // sentence because each half alone is a lie: a `frame-src https:` that
++        // leaked into every surface, or a strict policy that quietly gained an
++        // origin, would both read as correct above. The strict half is asserted
++        // as "names no https origin anywhere", which is the property that makes
++        // it the policy every other surface can be trusted with.
++        !Check(std::string(ContentSecurityPolicy(WebPagePolicy::Media)).find(
++                   "frame-src https:;") != std::string::npos &&
++                   std::string(ContentSecurityPolicy(WebPagePolicy::Media)).find(
++                       "frame-src 'none'") == std::string::npos &&
++                   std::string(ContentSecurityPolicy(WebPagePolicy::Strict)).find(
++                       "https:") == std::string::npos,
++               "the frame grant is not confined to the one policy that exists to "
++               "show somebody else's page") ||
 +        // The half that is not a header. A page can be told what it may load and
 +        // still be unable to load any of it, because the host decides what leaves
 +        // the process: this pins the two halves to one policy, which is what was

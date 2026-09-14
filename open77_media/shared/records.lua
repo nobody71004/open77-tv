@@ -314,6 +314,20 @@ local records = {
     -- portrait one is a separate asset, not a rotation. Both are full screens, so
     -- the rectangle is the whole mesh -- and the mesh's normal is X, not Y, which
     -- is why `right` is (0,1,0) below. That is the mesh talking, not a preference.
+    --
+    -- WHY EVERY ONE OF THEM DECLARES `faces = -X`
+    --
+    -- The glass of every screen mesh in this family lies entirely on the -X side
+    -- of the mesh's own origin: `monitor_a_screen` spans X -0.0754..-0.0663 with
+    -- its origin at X 0, `monitor_b_screen` X -0.1140..-0.1002, `monitor_c_screen`
+    -- X -0.1149..-0.0938, `monitor_d_screen` X -0.0804..-0.0656, and the portrait
+    -- meshes are the same arithmetic about the other axis. That origin is where
+    -- the cabinet would be -- the housed siblings below put the same glass in a
+    -- body that is 7-11 cm deep to +X of it -- so the room, and the eye, are on
+    -- the -X side and the picture faces -X. Measured from the 2.31 meshes
+    -- (`boundingBox`, the same field the quad boxes above come from), and it is
+    -- also the direction `up x right` gives for these quads, which is the axis
+    -- the placement path turns towards the player.
     {
         id = "monitor.a",
         label = "Monitor, small",
@@ -325,6 +339,8 @@ local records = {
             up = { 0.0, 0.0, 1.0 },
             width = 0.5275,
             height = 0.3948,
+            -- Glass at X -0.0754..-0.0663, origin at X 0: the picture faces -X.
+            faces = { -1.0, 0.0, 0.0 },
         },
     },
     {
@@ -338,6 +354,8 @@ local records = {
             up = { 0.0, 0.0, 1.0 },
             width = 0.3950,
             height = 0.5282,
+            -- The portrait mesh, same offset from the same origin: faces -X.
+            faces = { -1.0, 0.0, 0.0 },
         },
     },
     {
@@ -351,6 +369,8 @@ local records = {
             up = { 0.0, 0.0, 1.0 },
             width = 0.8062,
             height = 0.5966,
+            -- Glass at X -0.1140..-0.1002, origin at X 0: the picture faces -X.
+            faces = { -1.0, 0.0, 0.0 },
         },
     },
     {
@@ -364,6 +384,8 @@ local records = {
             up = { 0.0, 0.0, 1.0 },
             width = 0.5972,
             height = 0.8072,
+            -- As `monitor.b`, stood on end: the picture still faces -X.
+            faces = { -1.0, 0.0, 0.0 },
         },
     },
     {
@@ -377,6 +399,8 @@ local records = {
             up = { 0.0, 0.0, 1.0 },
             width = 1.4031,
             height = 0.5970,
+            -- Glass at X -0.1149..-0.0938, origin at X 0: the picture faces -X.
+            faces = { -1.0, 0.0, 0.0 },
         },
     },
     {
@@ -390,6 +414,8 @@ local records = {
             up = { 0.0, 0.0, 1.0 },
             width = 0.5970,
             height = 1.4031,
+            -- As `monitor.c`, stood on end: the picture still faces -X.
+            faces = { -1.0, 0.0, 0.0 },
         },
     },
     {
@@ -403,6 +429,8 @@ local records = {
             up = { 0.0, 0.0, 1.0 },
             width = 0.9808,
             height = 0.4173,
+            -- Glass at X -0.0804..-0.0656, origin at X 0: the picture faces -X.
+            faces = { -1.0, 0.0, 0.0 },
         },
     },
     {
@@ -416,79 +444,122 @@ local records = {
             up = { 0.0, 0.0, 1.0 },
             width = 0.4173,
             height = 0.9808,
+            -- As `monitor.d`, stood on end: the picture still faces -X.
+            faces = { -1.0, 0.0, 0.0 },
         },
     },
 
     -- -------------------------------------------------------------------------
     -- Device panels: a monitor with its housing
     -- -------------------------------------------------------------------------
-    -- `monitor_device_*` is the whole monitor (screen plus bezel plus 7-11 cm of
-    -- depth), not a bare screen. The page goes on the measured front face -- X at
-    -- the box's maximum -- because a rectangle at the mesh's centre would be
-    -- buried inside the housing and never seen.
+    -- `monitor_device_*` is the whole monitor (housed screen, bezel and 7-11 cm
+    -- of depth), not a bare screen -- so there are two rectangles to choose from
+    -- and the mesh says which: the housing's own box and the glass mesh's box.
+    --
+    -- THE PAGE GOES ON THE GLASS, WHICH IS THE -X END
+    --
+    -- These records used to put the rectangle on the housing's +X face, read as
+    -- "the front face" because it is the box's maximum. It is the box's *back*:
+    -- the glass sits at the other end. Measured, all five:
+    --
+    --   device   housing X (its own mesh)      glass (its _screen_a mesh)
+    --   a        -0.0714 .. +0.0029           -0.0750 .. -0.0676
+    --   b        -0.1088 .. +0.0030           -0.1089 .. -0.1016
+    --   c        -0.1095 .. +0.0023           -0.1024 .. -0.0950
+    --   d        -0.0763 .. +0.0061           -0.0742 .. -0.0668
+    --   e        -0.1095 .. +0.0023           -0.1033 .. -0.0959
+    --
+    -- In every one the glass is at the -X end, recessed 0.1-7 mm behind the
+    -- bezel's own -X face, which is what a screen set into a bezel looks like.
+    -- So the picture faces -X -- the same direction as the bare monitors above,
+    -- whose glass is measured at -X of the same origin -- and a page at +X was
+    -- drawn on the back of the cabinet while the screen in front of the player
+    -- stayed blank. The rectangles below are the measured glass boxes, not the
+    -- housing's, so the page lands on the panel rather than on the bezel around
+    -- it; each is 1.5-2.5 cm smaller than the housing face it used to be given.
     {
         id = "device.a",
         label = "Device panel, small",
         model = "electronics.monitor.device.a",
-        blurb = "Small housed monitor. Front face 0.54 x 0.40 m.",
+        blurb = "Small housed monitor. 0.53 x 0.39 m screen.",
         quad = {
-            offset = { 0.002874, 0.000081, -0.000122 },
+            -- monitor_device_a_screen_a: X -0.0750..-0.0676, Y -0.2642..+0.2627,
+            -- Z -0.1955..+0.1951. The housing is X -0.0714..+0.0029.
+            offset = { -0.071323, -0.000722, -0.000187 },
             right = { 0.0, 1.0, 0.0 },
             up = { 0.0, 0.0, 1.0 },
-            width = 0.5403,
-            height = 0.4030,
+            width = 0.5269,
+            height = 0.3906,
+            -- The glass is at the housing's -X end: the picture faces -X.
+            faces = { -1.0, 0.0, 0.0 },
         },
     },
     {
         id = "device.b",
         label = "Device panel, medium",
         model = "electronics.monitor.device.b",
-        blurb = "Housed monitor. Front face 0.82 x 0.60 m.",
+        blurb = "Housed monitor. 0.79 x 0.58 m screen.",
         quad = {
-            offset = { 0.002971, 0.000000, -0.000329 },
+            -- monitor_device_b_screen_a: X -0.1089..-0.1016. Housing X
+            -- -0.1088..+0.0030, so the glass is flush with the bezel's front.
+            offset = { -0.105263, -0.000486, -0.000441 },
             right = { 0.0, 1.0, 0.0 },
             up = { 0.0, 0.0, 1.0 },
-            width = 0.8161,
-            height = 0.6043,
+            width = 0.7939,
+            height = 0.5849,
+            -- The glass is at the housing's -X end: the picture faces -X.
+            faces = { -1.0, 0.0, 0.0 },
         },
     },
     {
         id = "device.c",
         label = "Device panel, ultrawide",
         model = "electronics.monitor.device.c",
-        blurb = "Housed ultrawide. Front face 1.42 x 0.60 m.",
+        blurb = "Housed ultrawide. 1.40 x 0.58 m screen.",
         quad = {
-            offset = { 0.002268, -0.000694, -0.000329 },
+            -- monitor_device_c_screen_a: X -0.1024..-0.0950. Housing X
+            -- -0.1095..+0.0023, so the glass is recessed 7 mm behind the bezel.
+            offset = { -0.098700, -0.001055, -0.000441 },
             right = { 0.0, 1.0, 0.0 },
             up = { 0.0, 0.0, 1.0 },
-            width = 1.4159,
-            height = 0.6043,
+            width = 1.3964,
+            height = 0.5849,
+            -- The glass is at the housing's -X end: the picture faces -X.
+            faces = { -1.0, 0.0, 0.0 },
         },
     },
     {
         id = "device.d",
         label = "Device panel, wide",
         model = "electronics.monitor.device.d",
-        blurb = "Housed wide monitor. Front face 0.99 x 0.43 m.",
+        blurb = "Housed wide monitor. 0.98 x 0.41 m screen.",
         quad = {
-            offset = { 0.006129, -0.000542, 0.002458 },
+            -- monitor_device_d_screen_a: X -0.0742..-0.0668. Housing X
+            -- -0.0763..+0.0061, so the glass is 2 mm behind the bezel's front.
+            offset = { -0.070477, -0.000662, 0.001447 },
             right = { 0.0, 1.0, 0.0 },
             up = { 0.0, 0.0, 1.0 },
-            width = 0.9929,
-            height = 0.4271,
+            width = 0.9799,
+            height = 0.4119,
+            -- The glass is at the housing's -X end: the picture faces -X.
+            faces = { -1.0, 0.0, 0.0 },
         },
     },
     {
         id = "device.e",
         label = "Device panel, large",
         model = "electronics.monitor.device.e",
-        blurb = "Large housed display. Front face 1.42 x 0.79 m.",
+        blurb = "Large housed display. 1.40 x 0.77 m screen.",
         quad = {
-            offset = { 0.002268, 0.000000, -0.003122 },
+            -- monitor_device_e_screen_a: X -0.1033..-0.0959. Housing X
+            -- -0.1095..+0.0023, so the glass is recessed 6 mm behind the bezel.
+            offset = { -0.099575, 0.000000, -0.003339 },
             right = { 0.0, 1.0, 0.0 },
             up = { 0.0, 0.0, 1.0 },
-            width = 1.4154,
-            height = 0.7897,
+            width = 1.3964,
+            height = 0.7710,
+            -- The glass is at the housing's -X end: the picture faces -X.
+            faces = { -1.0, 0.0, 0.0 },
         },
     },
 
@@ -683,13 +754,25 @@ local records = {
         model = "electronics.monitor.surveillance",
         blurb = "Housed security monitor. Front face 0.55 x 0.38 m.",
         quad = {
-            -- hardware_surveillance_monitor_c: 0.3377 m of depth along X with the
-            -- front at X = 0.168836, so the page sits on that face.
-            offset = { 0.168836, 0.000000, 0.188592 },
+            -- hardware_surveillance_monitor_c: 0.3377 m of depth along X
+            -- (X -0.1688..+0.1688) with its own bounding box symmetric about the
+            -- origin, so unlike every other record in this file the mesh does
+            -- not say which of the two X faces is the front. The side is taken
+            -- from the family instead: this is a housed monitor, and on all
+            -- thirteen monitor and device records, where the glass *can* be
+            -- measured, it is at -X and the quads are the same `right = +Y,
+            -- up = +Z` as this one -- i.e. `up x right` is -X for the whole
+            -- family. Declared on that basis rather than on a measurement of
+            -- this mesh, which is the honest description: the page used to sit
+            -- on +X, which is the opposite face, and under a placement that
+            -- turns the quad's own front towards the player that put the
+            -- picture behind the monitor.
+            offset = { -0.168836, 0.000000, 0.188592 },
             right = { 0.0, 1.0, 0.0 },
             up = { 0.0, 0.0, 1.0 },
             width = 0.5517,
             height = 0.3774,
+            faces = { -1.0, 0.0, 0.0 },
         },
     },
 }
@@ -717,10 +800,22 @@ local records = {
 -- -----------------------------------------------------------------------------
 -- WHICH RECORDS DECLARE A FRONT, AND WHICH DO NOT
 -- -----------------------------------------------------------------------------
--- Declared (`faces`, picture only from that side -- the television family, all
--- of it measured against the mesh as described above):
+-- Declared (`faces`, picture only from that side). Every one of these rests on
+-- the glass of its own mesh, measured as described above:
 --
---   tv.16x9   tv.21x9   tv.large   tv.screen.16x9   tv.screen.21x9
+--   tv.16x9   tv.21x9   tv.large   tv.screen.16x9   tv.screen.21x9   +Y
+--       the glass sits 1 cm inside the body's +Y face (television_a_16x9 body
+--       Y -0.0505..+0.1255, screen plane at Y 0.1150..0.1158).
+--   monitor.*  (8)                                                 -X
+--       the glass spans 7-11 cm to -X of the mesh origin.
+--   device.a .. device.e  (5)                                      -X
+--       the glass sits at the housing's -X end, recessed behind its bezel.
+--   surveillance                                                   -X
+--       the one entry here the mesh does not settle: its housing is symmetric
+--       about X (X -0.1688..+0.1688). Taken from the thirteen monitor and device
+--       records above, which all measure -X and all have this record's own
+--       `right`/`up`. Said plainly here because it is the only declared front in
+--       this file that is a family convention rather than a measurement.
 --
 -- Undeclared, deliberately, and why -- each of these still draws from both
 -- sides, and `media.list` reports `facing.source=undeclared` for it:
@@ -730,23 +825,19 @@ local records = {
 --       mid-plane (screen mesh Y 0.0000, frame body Y -0.0150..+0.0150), so the
 --       asset itself does not say which side the picture is on. Declaring one
 --       would be a coin flip that a wrong answer turns into a blank set.
---   monitor.*
---       the same arithmetic says the glass is 7-11 cm to -X of the mesh origin
---       (monitor_a_screen X -0.0754..-0.0663 around an origin at X 0), i.e. the
---       picture faces -X -- but a bare screen mesh is a 9 mm slab whose two
---       faces are the same surface, so there is nothing to hide from behind and
---       no gain in gating it. Left undeclared rather than half-argued.
---   device.*
---       ambiguous, and worth saying so: the quad is the measured FRONT FACE of
---       the housing (monitor_device_a X -0.0714..+0.0029, page on +X), while the
---       monitor_device_*_screen_a mesh sits at the housing's -X end. The two
---       disagree, and until that is settled against the asset in game, gating
---       this family would risk blanking a monitor rather than fixing one.
---   panel.*, frame.*
---       zero-thickness, centred on their own origin, no housing: both sides are
---       the same surface.
---   surveillance
---       housing is symmetric about its origin (X -0.1688..+0.1688).
+--   panel.*
+--       zero-thickness, lying exactly on their own X=0 plane, no housing: both
+--       sides are the same surface, so there is no back to hide.
+--   frame.*
+--       the same, on their own Y=0 plane.
+--
+-- Note what is *not* in question for any of these: the axis. `up x right` (see
+-- `QuadFront` in shared/placement.lua) is the rectangle's own front, and the two
+-- measured families confirm it -- the television quads give it +Y and the
+-- monitor quads -X, which is the glass of each. That is the axis the spawn
+-- placement turns towards the player, so an undeclared record is still set down
+-- face-on rather than edge-on; what is missing for those families is only which
+-- of the two sides the picture is on, which is what `faces` answers.
 
 for _, record in ipairs(records) do
     Open77MediaRecords[record.id] = record

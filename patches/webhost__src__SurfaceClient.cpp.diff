@@ -2,10 +2,25 @@
 # tools/extract-tv-patches.py. Apply by hand: this is not a patch
 # series, and the surrounding file has other unreleased work in it.
 diff --git a/webhost/src/SurfaceClient.cpp b/webhost/src/SurfaceClient.cpp
-index d75b7b15..0d8dd1e8 100644
+index d75b7b15..25fea429 100644
 --- a/webhost/src/SurfaceClient.cpp
 +++ b/webhost/src/SurfaceClient.cpp
-@@ -94,12 +94,111 @@ SurfaceClient::SurfaceClient(std::weak_ptr<HostRuntime> aRuntime, CreateSurfaceP
+@@ -11,12 +11,14 @@
+ #include <sstream>
+ #include <format>
+ 
+ #include <dxgi1_4.h>
+ #include <utility>
+ 
++#include <op77/WebUI/Decoder.hpp>
++
+ #include "include/base/cef_callback.h"
+ #include "include/cef_parser.h"
+ #include "include/wrapper/cef_closure_task.h"
+ #include "include/cef_request_context.h"
+ #include "include/cef_request_context_handler.h"
+ #include "include/cef_stream.h"
+@@ -94,12 +96,111 @@ SurfaceClient::SurfaceClient(std::weak_ptr<HostRuntime> aRuntime, CreateSurfaceP
      config.js_query_function = "open77Query";
      config.js_cancel_function = "open77QueryCancel";
      m_router = CefMessageRouterBrowserSide::Create(config);
@@ -117,7 +132,7 @@ index d75b7b15..0d8dd1e8 100644
          m_definition.pixelWidth == 0 || m_definition.pixelHeight == 0 ||
          m_definition.width > kMaximumSurfaceDimension ||
          m_definition.height > kMaximumSurfaceDimension ||
-@@ -1289,26 +1398,39 @@ bool SurfaceClient::OnBeforeBrowse(CefRefPtr<CefBrowser> aBrowser, CefRefPtr<Cef
+@@ -1289,26 +1400,39 @@ bool SurfaceClient::OnBeforeBrowse(CefRefPtr<CefBrowser> aBrowser, CefRefPtr<Cef
          runtime->Trace("browser_before_browse:same=" + std::string(sameOrigin ? "yes:" : "no:") + url);
      if (sameOrigin)
      {
@@ -127,9 +142,9 @@ index d75b7b15..0d8dd1e8 100644
 -    return true;
 +    // A navigation off the page's own origin, refused -- except for a surface whose
 +    // policy is the one that exists to play somebody else's page. That policy is
-+    // what makes the browser embed reachable at all: this is the request gate, and
-+    // without it `frame-src https://www.youtube.com` in the header below describes
-+    // a privilege the host never grants. See `AllowsRemoteContent` in
++    // what makes a browser embed reachable at all: this is the request gate, and
++    // without it the `frame-src https:` in the header below describes a privilege
++    // the host never grants. See `AllowsRemoteContent` in
 +    // `webui/include/op77/WebUI/PagePolicy.hpp` -- the header and this gate are two
 +    // halves of one decision and are deliberately read from the same policy.
 +    return !op77::WebUI::AllowsRemoteContent(m_definition.pagePolicy);
@@ -159,8 +174,16 @@ index d75b7b15..0d8dd1e8 100644
  void SurfaceClient::OnRenderProcessTerminated(CefRefPtr<CefBrowser> aBrowser, TerminationStatus,
                                                 const int aErrorCode, const CefString& aErrorString)
  {
-@@ -1323,15 +1445,22 @@ CefRefPtr<CefResourceHandler> SurfaceClient::GetResourceHandler(CefRefPtr<CefBro
+@@ -1318,20 +1442,31 @@ void SurfaceClient::OnRenderProcessTerminated(CefRefPtr<CefBrowser> aBrowser, Te
+             std::to_string(aErrorCode) + ":" + aErrorString.ToString()});
+ }
+ 
+ CefRefPtr<CefResourceHandler> SurfaceClient::GetResourceHandler(CefRefPtr<CefBrowser>, CefRefPtr<CefFrame>,
+                                                                  CefRefPtr<CefRequest> aRequest)
  {
++    // The transcode routes are same-origin URLs that name no file, so they are
++    // decided before file resolution and never reach it.
++    if (auto route = MaybeServeTranscodeRoute(aRequest)) return route;
      std::filesystem::path path;
      if (!ResolveFile(aRequest->GetURL(), path)) return nullptr;
      auto stream = CefStreamReader::CreateForFile(path.wstring());
@@ -172,8 +195,9 @@ index d75b7b15..0d8dd1e8 100644
 +    // at creation, and every other page keeps the strict one. See
 +    // `PagePolicy.hpp` -- `script-src 'self'` and `frame-src 'none'` in the
 +    // strict policy are what refused YouTube's player script and then its embed,
-+    // which is why a television showed its own idle colour bars and never
-+    // played a link.
++    // and the `frame-src https:` the media policy carries now is what lets a
++    // pasted site -- an origin no build can enumerate in advance -- be shown on a
++    // television at all. Every other page keeps `'none'`.
      headers.emplace("Content-Security-Policy",
 -        "default-src 'self'; img-src 'self' data:; media-src 'self'; style-src 'self' 'unsafe-inline'; "
 -        "script-src 'self' 'unsafe-inline'; connect-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'");
@@ -184,3 +208,197 @@ index d75b7b15..0d8dd1e8 100644
      return new CefStreamResourceHandler(200, "OK", MimeType(path), std::move(headers), stream);
  }
  
+@@ -1439,12 +1574,193 @@ std::string SurfaceClient::MimeType(const std::filesystem::path& aPath)
+     if (extension == ".woff2") return "font/woff2";
+     if (extension == ".mp3") return "audio/mpeg";
+     if (extension == ".ogg") return "audio/ogg";
+     return "application/octet-stream";
+ }
+ 
++// ---------------------------------------------------------------------------
++// The transcode routes
++// ---------------------------------------------------------------------------
++//
++// Two same-origin URLs a media page may name, served from inside this process:
++//
++//     /op77/media/probe?u=...       what the decoder says the link is
++//     /op77/media/stream?u=...&ss=  the link, decoded live into WebM
++//
++// There is no listener, port or token: the requests arrive through CEF's own
++// resource dispatch, gated by `SameOrigin`, which means only the page itself
++// can name them -- the same trust boundary every other page file already sits
++// behind. A strict-policy page never reaches the decoder: the routes answer
++// `transcode_disabled` before the policy check would even matter, because a
++// page that cannot reach YouTube's origins has no use for a re-encoded stream
++// either.
++
++/// The path part of a URL, unescaped, without its query.
++std::string RoutePath(const std::string& aUrl)
++{
++    CefURLParts parts;
++    if (!CefParseURL(aUrl, parts)) return {};
++    const auto rules = static_cast<cef_uri_unescape_rule_t>(
++        UU_SPACES | UU_URL_SPECIAL_CHARS_EXCEPT_PATH_SEPARATORS);
++    std::string path = CefURIDecode(CefString(&parts.path), true, rules).ToString();
++    const std::size_t query = path.find('?');
++    if (query != std::string::npos) path.resize(query);
++    return path;
++}
++
++std::string RouteQueryPart(const std::string& aUrl)
++{
++    CefURLParts parts;
++    if (!CefParseURL(aUrl, parts)) return {};
++    return CefString(&parts.query).ToString();
++}
++
++/// A pipe-backed CEF reader: the WebM ffmpeg writes arrives as CEF reads it.
++///
++/// The owning handles live in the reader, so the lifetime is exactly the
++/// response: when CEF has read the last byte (or abandons the request), the
++/// object is released, the pipe closes, and the job handle's closure kills any
++/// still-running encoder. There is no ordering problem to reason about because
++/// there is nothing left to clean up on another thread.
++class PipeReader final : public CefReadHandler
++{
++public:
++    PipeReader(HANDLE aReadEnd, HANDLE aProcess, HANDLE aJob)
++        : m_readEnd(aReadEnd), m_process(aProcess), m_job(aJob)
++    {
++    }
++
++    ~PipeReader() override
++    {
++        if (m_readEnd != nullptr) CloseHandle(m_readEnd);
++        if (m_process != nullptr) CloseHandle(m_process);
++        if (m_job != nullptr) CloseHandle(m_job);
++    }
++
++    PipeReader(const PipeReader&) = delete;
++    PipeReader& operator=(const PipeReader&) = delete;
++
++    size_t Read(void* aPtr, const size_t aSize, const size_t aCount) override
++    {
++        if (m_readEnd == nullptr || aSize == 0 || aCount == 0) return 0;
++        // CEF asks for `aSize * aCount` bytes; a pipe read is capped at 0x7FFF,
++        // so clamp. A short read is not an error for this handler -- the next
++        // call continues the stream.
++        DWORD want = static_cast<DWORD>(aSize * aCount);
++        if (want > 0x7FFF) want = 0x7FFF;
++        DWORD got = 0;
++        if (!ReadFile(m_readEnd, aPtr, want, &got, nullptr)) return 0;
++        if (got == 0) return 0;
++        m_eof = false;
++        return static_cast<size_t>(got);
++    }
++
++    int Seek(int64_t, int) override { return -1; } // A live pipe does not seek.
++    int64_t Tell() override { return 0; }
++    int Eof() override { return m_eof ? 1 : 0; }
++    bool MayBlock() override { return true; }
++
++private:
++    HANDLE m_readEnd;
++    HANDLE m_process;
++    HANDLE m_job;
++    bool m_eof = true;
++
++    IMPLEMENT_REFCOUNTING(PipeReader);
++};
++
++/// The routes' shared answer shape. `470` is not a real HTTP status; anything
++/// 4xx stops a `<video>` element with a clear error and none of the real ones
++/// fits "the host refused this on purpose", so the body names it instead.
++CefRefPtr<CefResourceHandler> TextAnswer(const std::string& aBody, const char* const aType)
++{
++    auto* bytes = static_cast<uint8_t*>(malloc(aBody.size()));
++    if (bytes == nullptr) return nullptr;
++    memcpy(bytes, aBody.data(), aBody.size());
++    auto stream = CefStreamReader::CreateForData(bytes, aBody.size());
++    // CreateForData takes ownership of the allocation through a CefBinaryValue.
++    CefResponse::HeaderMap headers;
++    headers.emplace("Cache-Control", "no-store");
++    return new CefStreamResourceHandler(200, "OK", aType, std::move(headers), stream);
++}
++
++CefRefPtr<CefResourceHandler> SurfaceClient::MaybeServeTranscodeRoute(CefRefPtr<CefRequest> aRequest)
++{
++    const std::string url = aRequest->GetURL().ToString();
++    if (!SameOrigin(url)) return nullptr;
++    const std::string path = Lower(RoutePath(url));
++    const bool isProbe = path == "/op77/media/probe";
++    const bool isStream = path == "/op77/media/stream";
++    if (!isProbe && !isStream) return nullptr;
++
++    const auto runtime = m_runtime.lock();
++    const auto& decoder = runtime ? runtime->DecoderPaths() : op77::WebUI::Transcode::DecoderPaths{};
++    const std::string disabledReason = op77::WebUI::Transcode::DisabledReason(decoder);
++    if (!disabledReason.empty() || m_definition.pagePolicy != WebPagePolicy::Media)
++    {
++        const std::string body = "{\"verdict\":\"disabled\",\"detail\":\"" +
++            JsonQuote(disabledReason.empty() ? "this surface's page policy does not permit it" : disabledReason) +
++            "\"}";
++        runtime->Trace("media_route:refused policy=" +
++            std::string(Describe(m_definition.pagePolicy)) + " path=" + path);
++        return TextAnswer(body, "application/json");
++    }
++
++    const auto query = op77::WebUI::Transcode::ParseRouteQuery(RouteQueryPart(url));
++    if (!query.error.empty())
++    {
++        return TextAnswer(op77::WebUI::Transcode::BuildProbeJson({}, op77::WebUI::Transcode::Verdict::Nothing,
++                                                                 query.error),
++                          "application/json");
++    }
++
++    if (isProbe)
++    {
++        const auto result = op77::WebUI::Transcode::RunProbe(decoder, query.source);
++        op77::WebUI::Transcode::Probe probe;
++        std::string detail;
++        auto verdict = op77::WebUI::Transcode::Verdict::Nothing;
++        if (result.timedOut)
++        {
++            detail = "the decoder did not answer in time";
++        }
++        else if (!result.started || result.exitCode != 0)
++        {
++            detail = result.output.empty() ? "the decoder refused the link"
++                                           : result.output.substr(0, 200);
++        }
++        else
++        {
++            probe = op77::WebUI::Transcode::ParseProbeCsv(result.output);
++            verdict = op77::WebUI::Transcode::Judge(probe);
++        }
++        runtime->Trace("media_probe: " + op77::WebUI::Transcode::Describe(probe) + " -> " +
++            op77::WebUI::Transcode::Describe(verdict));
++        return TextAnswer(op77::WebUI::Transcode::BuildProbeJson(probe, verdict, detail),
++                          "application/json");
++    }
++
++    // The stream route. The response has no length -- it is live -- and the
++    // reader owns the three handles whose closure stops the encoder.
++    const auto start = op77::WebUI::Transcode::StartStream(decoder, query.source, query.startSeconds);
++    if (!start.started)
++    {
++        runtime->Trace("media_stream:failed " + start.failure);
++        return TextAnswer(op77::WebUI::Transcode::BuildProbeJson({}, op77::WebUI::Transcode::Verdict::Nothing,
++                                                                 start.failure),
++                          "application/json");
++    }
++    runtime->Trace("media_stream:started ss=" + std::to_string(query.startSeconds) + " src=" + query.source);
++    auto reader = CefRefPtr<PipeReader>(new PipeReader(start.readEnd, start.process, start.job));
++    CefResponse::HeaderMap headers;
++    headers.emplace("Cache-Control", "no-store");
++    headers.emplace("Access-Control-Allow-Origin", "*");
++    return new CefStreamResourceHandler(200, "OK", "video/webm", std::move(headers),
++        CefStreamReader::CreateForHandler(reader));
++}
++
+ std::string SurfaceClient::JsonQuote(const std::string_view aText)
+ {
+     std::ostringstream output;
+     output << '"';
+     for (const unsigned char value : aText)
+     {

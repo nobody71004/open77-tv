@@ -104,26 +104,49 @@ inline constexpr const char* kStrictContentSecurityPolicy =
 ///     reports its own state -- without it a page cannot tell a refused video
 ///     from a player that never started, which is exactly the blind spot that
 ///     made the original failure undiagnosable.
-///   * `frame-src` gets YouTube and its no-cookie host, and nothing else. This is
-///     the directive that was `'none'`; it is what refused the embed itself.
+///   * `frame-src` gets every `https:` origin, deliberately, and it is the one
+///     directive here that is a grant rather than a narrowing. This is the
+///     directive that was `'none'`, and then YouTube-only; the second form is
+///     what refused the link that made the limitation visible -- a site-based
+///     player (`freeonlinek.top/hdtoday`) whose page the television refused
+///     before the request ever left the process, so the screen sat on the idle
+///     pattern and the log said only `embed_unverified`. A television's job here
+///     is to show a page somebody pasted, and a pasted site is an origin this
+///     build cannot enumerate in advance: the list of sites that publish a
+///     player is not a list anybody can write, and every one of them is framed.
+///     The grant is `https:` rather than `*` so plaintext framing stays
+///     impossible. What it does *not* grant is control: the framed document runs
+///     under its own policy and origin, its network is its own, and a site that
+///     refuses framing (`X-Frame-Options`, `frame-ancestors` -- Google, Netflix)
+///     still shows nothing, which the page tells the player instead of guessing.
+///     The strict policy -- every menu, HUD and panel in the client -- keeps
+///     `'none'`, and this is the only surface that can ask for the media one.
 ///   * `media-src` is deliberately open over `https:`, because "plays any link
 ///     somebody pastes" is this page's whole specification and a direct media URL
 ///     has to load from its own host. `blob:` is for the page's own demuxing and
 ///     object URLs.
 ///   * `connect-src` stays narrow: the player API talks to its frame by
-///     `postMessage`, so the fetch surface only needs to cover YouTube's own
-///     endpoints.
+///     `postMessage`, so the fetch surface covers the host's own transcode
+///     routes (same-origin, so a lone `'self'` entry names them -- see below)
+///     plus YouTube's own endpoints.
 ///   * `object-src`, `base-uri`, `form-action` and `worker-src` stay shut. A page
 ///     that plays links has no reason to inject a plugin, rewrite its base URL,
 ///     post a form, or start a worker, and none of those are transitional.
+/// The `'self'` in `connect-src` is what lets the page fetch the host's own
+/// transcode routes (`/op77/media/probe`, `/op77/media/stream`): those are
+/// same-origin URLs served from inside the browser process, and they are how a
+/// link this build cannot decode becomes WebM it can. They carry no privilege
+/// beyond what the page already had -- the origin gate that guards them is the
+/// same one guarding every page file -- so naming them here grants a
+/// capability the surface's policy already implies, not a new one.
 inline constexpr const char* kMediaContentSecurityPolicy =
     "default-src 'self'; "
     "img-src 'self' data: https://i.ytimg.com https://*.ytimg.com https://*.ggpht.com; "
     "media-src 'self' blob: https:; "
     "style-src 'self' 'unsafe-inline' https://www.youtube.com; "
     "script-src 'self' 'unsafe-inline' https://www.youtube.com https://s.ytimg.com; "
-    "connect-src https://www.youtube.com https://*.googlevideo.com https://*.ytimg.com; "
-    "frame-src https://www.youtube.com https://www.youtube-nocookie.com; "
+    "connect-src 'self' https://www.youtube.com https://*.googlevideo.com https://*.ytimg.com; "
+    "frame-src https:; "
     "worker-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'";
 
 /// The directives a page is served under.

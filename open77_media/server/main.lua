@@ -293,25 +293,64 @@ local FACING_DISTANCE = 1.1
 ---the pursuit roadblocks: forward is `(-sin, cos)`, and a prop's yaw is a
 ---rotation about Z in degrees.
 ---
----The set is turned to face the caller -- heading + 180 -- because the game's
----screens are authored facing their own local +Y (the screen mesh of
----`television_a_16x9` sits at Y 0.1154, 1 cm inside the body's front face at
----Y 0.1255, so +Y is the glass). At yaw 0 a prop's +Y is world +Y, which is also
----where a caller at heading 0 is looking -- so placing it with the caller's own
----heading would present the back of the cabinet. Half a turn puts the glass
----towards them, which is what the menu promises.
+---The set is turned so the rectangle's own front -- the glass -- looks back at
+---the caller, which is what the menu promises. Which yaw that is depends on the
+---record, because the catalogue holds two axis conventions:
+---
+---   * the television family is authored facing its own local +Y (the screen
+---     mesh of `television_a_16x9` sits at Y 0.1154, 1 cm inside the body's
+---     front face at Y 0.1255), so its yaw is the caller's own plus half a turn;
+---   * the monitor, device and bare-screen families are authored facing their
+---     own local -X (the glass of `monitor_a_screen` spans X -0.0754..-0.0663
+---     around an origin at 0), so theirs is a quarter turn from the caller's
+---     heading -- and a fixed half turn used to leave every one of them standing
+---     edge-on to the person who spawned it: a sliver of a picture, which reads
+---     in game as no screen at all.
+---
+---So this asks the record. `QuadFront` derives the rectangle's own front from its
+---`up` and `right` axes and `FacingYaw` turns it onto the caller's line of sight,
+---so a new record is placed correctly the moment it is added and the families
+---cannot drift apart again. A record that declares `faces` is carried by that
+---declaration instead, so the side the picture is actually on is the side turned
+---towards the caller, and the client's render gate (`Faces`, in
+---client/src/api/ScreenQuad.hpp) is looking at the same side of the same panel.
 ---
 ---`media.place` does not go through this: an operator naming coordinates and a
 ---yaw is stating where the set is and which way it points, and second-guessing
 ---that would make it impossible to place one deliberately.
-local function facingPlacement(position, heading)
+---@param record table|nil the catalogue record, for its quad
+---@param position table { x, y, z, bucket }
+---@param heading number the caller's own heading, degrees
+---@return table placed position
+---@return number yaw degrees
+local function facingPlacement(record, position, heading)
     local radians = math.rad(heading)
+
+    -- The side carrying the picture, if the record states it; otherwise the
+    -- rectangle's own front, which is what the placement is really asking about.
+    local front = record ~= nil and record.quad ~= nil and record.quad.faces or nil
+    local frontX, frontY, faceZ
+    if type(front) == "table" then
+        frontX, frontY, faceZ = tonumber(front[1]) or 0.0, tonumber(front[2]) or 0.0, tonumber(front[3]) or 0.0
+    else
+        frontX, frontY, faceZ = Open77MediaPlacement.QuadFront(record ~= nil and record.quad or nil)
+    end
+
+    -- A panel whose front is vertical faces -- no picture is on it in this
+    -- engine -- and one that is degenerate cannot be answered; both fall back to
+    -- the half turn the catalogue used before placement was derived.
+    local yaw = nil
+    if frontX ~= nil and (frontX ~= 0.0 or frontY ~= 0.0) then
+        yaw = Open77MediaPlacement.FacingYaw(frontX, frontY, heading)
+    end
+    if yaw == nil then yaw = Open77MediaPlacement.Wrap(heading + 180.0) end
+
     return {
         x = position.x - math.sin(radians) * FACING_DISTANCE,
         y = position.y + math.cos(radians) * FACING_DISTANCE,
         z = position.z,
         bucket = position.bucket,
-    }, heading + 180.0
+    }, yaw
 end
 
 local function spawn(recordId, position, yaw, url, source)
@@ -815,7 +854,8 @@ RegisterNetEvent("open77:media:spawn", function(payload)
     local source = source
     if source == nil or type(payload) ~= "table" then return end
     local record = tostring(payload.record or "")
-    if Open77MediaRecord(record) == nil then
+    local definition = Open77MediaRecord(record)
+    if definition == nil then
         TriggerClientEvent("open77:media:result", source, false, "unknown_record")
         return
     end
@@ -832,7 +872,7 @@ RegisterNetEvent("open77:media:spawn", function(payload)
 
     -- Set down in front of the caller and turned to face them, rather than
     -- created through them. See `facingPlacement`.
-    local placed, facing = facingPlacement(position, acceptYaw(payload.yaw))
+    local placed, facing = facingPlacement(definition, position, acceptYaw(payload.yaw))
     local entry, reason = spawn(record, placed, facing, payload.url, source)
     if entry == nil then
         TriggerClientEvent("open77:media:result", source, false, tostring(reason))

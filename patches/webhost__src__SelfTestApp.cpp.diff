@@ -5,6 +5,152 @@ diff --git a/webhost/src/SelfTestApp.cpp b/webhost/src/SelfTestApp.cpp
 index e00d0f45..954a4142 100644
 --- a/webhost/src/SelfTestApp.cpp
 +++ b/webhost/src/SelfTestApp.cpp
+@@ -161,12 +179,145 @@ void SelfTestClient::OnLoadError(CefRefPtr<CefBrowser> aBrowser, CefRefPtr<CefFr
+                                  const ErrorCode, const CefString&, const CefString&)
+ {
+     CEF_REQUIRE_UI_THREAD();
+     Finish(kExitFailure, aBrowser);
+ }
+ 
++bool SelfTestClient::OnConsoleMessage(CefRefPtr<CefBrowser> aBrowser, const cef_log_severity_t,
++                                      const CefString& aMessage, const CefString&, const int)
++{
++    CEF_REQUIRE_UI_THREAD();
++    if (!m_probe || m_written) return false;
++    const std::string text = aMessage.ToString();
++    if (text.rfind(kProbePrefix, 0) != 0) return false;
++    m_written = true;
++    WriteProbeResult(text);
++    Finish(kExitSuccess, aBrowser);
++    return true;
++}
++
++void SelfTestClient::WriteProbeResult(const std::string& aLine)
++{
++    CEF_REQUIRE_UI_THREAD();
++    std::error_code error;
++    std::filesystem::create_directories(m_output.parent_path(), error);
++    std::ofstream stream(m_output, std::ios::binary | std::ios::trunc);
++    if (stream)
++    {
++        stream << aLine;
++        // The host's audio observation rides along as a second line. It is not
++        // merged into the page's JSON on purpose: the two halves are produced
++        // on different threads and by different processes, and a reader that
++        // wants to tell "the decoder played it" from "the host received PCM"
++        // needs them apart.
++        const std::string audio = AudioReport();
++        if (!audio.empty()) stream << "\n" << kAudioPrefix << audio;
++    }
++    Report(aLine.empty() ? "Open77 WebHost probe: the page reported nothing"
++                         : "Open77 WebHost probe: " + aLine);
++    const std::string audio = AudioReport();
++    if (!audio.empty()) Report(std::string(kAudioPrefix) + audio);
++}
++
++std::string SelfTestClient::AudioReport()
++{
++    const int64_t packets = m_audioPackets.load();
++    const int32_t streams = m_audioStreams.load();
++    if (streams == 0 && packets == 0)
++    {
++        std::lock_guard<std::mutex> guard(m_audioErrorMutex);
++        if (m_audioError.empty()) return {};
++        return "{\"streams\":0,\"packets\":0,\"error\":\"" + m_audioError + "\"}";
++    }
++    uint32_t peakBits = m_audioPeakBits.load();
++    float peak = 0.0F;
++    std::memcpy(&peak, &peakBits, sizeof(peak));
++    std::string error;
++    {
++        std::lock_guard<std::mutex> guard(m_audioErrorMutex);
++        error = m_audioError;
++    }
++    return "{\"streams\":" + std::to_string(streams) + ",\"stops\":" + std::to_string(m_audioStops.load()) +
++           ",\"packets\":" + std::to_string(packets) + ",\"frames\":" + std::to_string(m_audioFrames.load()) +
++           ",\"channels\":" + std::to_string(m_audioChannels.load()) +
++           ",\"sampleRate\":" + std::to_string(m_audioSampleRate.load()) +
++           ",\"peak\":" + std::to_string(peak) + ",\"error\":\"" + error + "\"}";
++}
++
++bool SelfTestClient::GetAudioParameters(CefRefPtr<CefBrowser>, CefAudioParameters& aParams)
++{
++    // Probe mode answers with CEF's own defaults and records what it was offered:
++    // overriding them here would hide whether the defaults are usable.
++    //
++    // This call is also the first question in the audio investigation, and its
++    // absence is an answer: if this line never appears, CEF never routed audio
++    // output to the client at all, and the fault is in how the browser was
++    // created -- not in the PCM handling further down.
++    m_audioSampleRate.store(aParams.sample_rate);
++    Report("Open77 WebHost probe: CEF offered audio parameters rate=" + std::to_string(aParams.sample_rate) +
++           " layout=" + std::to_string(static_cast<int32_t>(aParams.channel_layout)));
++    return true;
++}
++
++void SelfTestClient::OnAudioStreamStarted(CefRefPtr<CefBrowser>, const CefAudioParameters& aParams,
++                                          const int aChannels)
++{
++    m_audioStreams.fetch_add(1);
++    m_audioSampleRate.store(aParams.sample_rate);
++    m_audioChannels.store(aChannels);
++    Report("Open77 WebHost probe: audio stream started rate=" + std::to_string(aParams.sample_rate) +
++           " channels=" + std::to_string(aChannels));
++}
++
++void SelfTestClient::OnAudioStreamPacket(CefRefPtr<CefBrowser>, const float** aData, const int aFrames,
++                                         const int64_t)
++{
++    m_audioPackets.fetch_add(1);
++    m_audioFrames.fetch_add(aFrames);
++    if (aData == nullptr) return;
++    const int32_t channels = m_audioChannels.load();
++    float peak = 0.0F;
++    for (int32_t channel = 0; channel < channels; ++channel)
++    {
++        const float* samples = aData[channel];
++        if (samples == nullptr) continue;
++        for (int frame = 0; frame < aFrames; ++frame)
++        {
++            const float magnitude = samples[frame] < 0.0F ? -samples[frame] : samples[frame];
++            if (magnitude > peak) peak = magnitude;
++        }
++    }
++    // Monotonic max: the report must not depend on which packet the reader
++    // happens to look at, and a race between two writers may only lose a peak.
++    uint32_t current = m_audioPeakBits.load(std::memory_order_relaxed);
++    for (;;)
++    {
++        float currentPeak = 0.0F;
++        std::memcpy(&currentPeak, &current, sizeof(currentPeak));
++        if (peak <= currentPeak) return;
++        uint32_t desired = 0;
++        std::memcpy(&desired, &peak, sizeof(desired));
++        if (m_audioPeakBits.compare_exchange_weak(current, desired, std::memory_order_relaxed)) return;
++    }
++}
++
++void SelfTestClient::OnAudioStreamStopped(CefRefPtr<CefBrowser>)
++{
++    m_audioStops.fetch_add(1);
++}
++
++void SelfTestClient::OnAudioStreamError(CefRefPtr<CefBrowser>, const CefString& aMessage)
++{
++    const std::string message = aMessage.ToString();
++    {
++        std::lock_guard<std::mutex> guard(m_audioErrorMutex);
++        if (m_audioError.empty()) m_audioError = message;
++    }
++    Report("Open77 WebHost probe: audio stream error: " + message);
++}
++
+ void SelfTestClient::Finish(const int aExitCode, CefRefPtr<CefBrowser> aBrowser)
+ {
+     m_exitCode = aExitCode;
+     m_written = true;
+     if (aBrowser) aBrowser->GetHost()->CloseBrowser(true);
+     else CefQuitMessageLoop();
 @@ -221,49 +372,60 @@ bool SelfTestClient::WriteBitmap(const void* const aBuffer, const int aWidth, co
          stream.write(reinterpret_cast<const char*>(rows + static_cast<size_t>(row) * aRowPitch),
                       static_cast<std::streamsize>(rowBytes));

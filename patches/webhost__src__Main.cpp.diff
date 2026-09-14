@@ -2,7 +2,7 @@
 # tools/extract-tv-patches.py. Apply by hand: this is not a patch
 # series, and the surrounding file has other unreleased work in it.
 diff --git a/webhost/src/Main.cpp b/webhost/src/Main.cpp
-index 40ecca21..72d9cd25 100644
+index 40ecca21..bbcda930 100644
 --- a/webhost/src/Main.cpp
 +++ b/webhost/src/Main.cpp
 @@ -3,17 +3,20 @@
@@ -26,7 +26,7 @@ index 40ecca21..72d9cd25 100644
  
  namespace
  {
-@@ -70,26 +73,42 @@ int RunMain(HINSTANCE aInstance, void* aSandboxInfo)
+@@ -70,34 +73,51 @@ int RunMain(HINSTANCE aInstance, void* aSandboxInfo)
      // starts Chromium, so it runs and returns before any CEF process is spawned.
      if (!SwitchValue("open77-self-test-interop").empty())
      {
@@ -74,3 +74,12 @@ index 40ecca21..72d9cd25 100644
          op77::WebHost::HostOptions options{
              .pipeName = SwitchValue("open77-pipe"),
              .token = NarrowAscii(SwitchValue("open77-token")),
+             .parentProcessId = ParseProcessId(SwitchValue("open77-parent")),
+             .dataDirectory = SwitchValue("open77-data"),
++            .decoderDirectory = SwitchValue("open77-decoder-dir"),
+         };
+         runtime = std::make_shared<op77::WebHost::HostRuntime>(std::move(options));
+         app = new op77::WebHost::WebHostApp(runtime);
+     }
+     const int childExit = CefExecuteProcess(arguments, app, aSandboxInfo);
+     if (childExit >= 0)

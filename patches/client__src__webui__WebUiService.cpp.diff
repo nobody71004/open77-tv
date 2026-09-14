@@ -2,7 +2,7 @@
 # tools/extract-tv-patches.py. Apply by hand: this is not a patch
 # series, and the surrounding file has other unreleased work in it.
 diff --git a/client/src/webui/WebUiService.cpp b/client/src/webui/WebUiService.cpp
-index db02375c..f0eb224e 100644
+index db02375c..4ec39884 100644
 --- a/client/src/webui/WebUiService.cpp
 +++ b/client/src/webui/WebUiService.cpp
 @@ -136,12 +136,27 @@ struct Surface
@@ -33,7 +33,32 @@ index db02375c..f0eb224e 100644
      std::atomic_bool gpuUsePending{};
      std::atomic_uint64_t lastUseFence{};
  
-@@ -1820,15 +1835,17 @@ SurfaceId Create(const CreateOptions& aOptions, std::string& aError)
+@@ -520,17 +535,23 @@ bool LaunchHost(std::string& aError)
+     if (directoryError)
+     {
+         aError = "web_data_directory_failed";
+         CloseHandle(job);
+         return false;
+     }
++    // The staged decoder directory sits beside the plugin's own files. The
++    // host resolves the two executables from exactly this path -- no PATH
++    // search, no fallback -- so a missing tool disables the transcode routes
++    // with a named reason instead of executing whatever it finds.
++    const std::wstring decoderDirectory = s_pluginDirectory / L"decoder";
+     const std::wstring command = QuoteArgument(s_hostExecutable.wstring()) + L" " +
+         QuoteArgument(L"--open77-pipe=" + s_pipeName) + L" " +
+         QuoteArgument(L"--open77-token=" + Utf8ToWide(s_token)) + L" " +
+         QuoteArgument(L"--open77-parent=" + std::to_wstring(GetCurrentProcessId())) + L" " +
+-        QuoteArgument(L"--open77-data=" + s_dataDirectory.wstring());
++        QuoteArgument(L"--open77-data=" + s_dataDirectory.wstring()) + L" " +
++        QuoteArgument(L"--open77-decoder-dir=" + decoderDirectory);
+     std::vector<wchar_t> mutableCommand(command.begin(), command.end());
+     mutableCommand.push_back(L'\0');
+     STARTUPINFOW startup{sizeof(startup)};
+     PROCESS_INFORMATION process{};
+     if (!CreateProcessW(s_hostExecutable.c_str(), mutableCommand.data(), nullptr, nullptr, FALSE,
+                         CREATE_NO_WINDOW | CREATE_SUSPENDED, nullptr,
+@@ -1820,15 +1841,17 @@ SurfaceId Create(const CreateOptions& aOptions, std::string& aError)
          .deviceScaleFactor = 1.0F,
          .framesPerSecond = aOptions.framesPerSecond,
          .layer = aOptions.layer,
@@ -51,7 +76,7 @@ index db02375c..f0eb224e 100644
      }
      if (s_connected.load(std::memory_order_acquire)) SendCreate(surface);
      return id;
-@@ -2046,13 +2063,21 @@ std::vector<SurfaceStatus> DescribeSurfaces()
+@@ -2046,13 +2069,21 @@ std::vector<SurfaceStatus> DescribeSurfaces()
              status.cpuGraphicsBytes = surface->cpuGraphicsBytes.load(std::memory_order_acquire);
              status.drawPixels = surface->drawPixels.load(std::memory_order_acquire);
              // Exactly the predicate Draw() applies, so `drawn=no` next to the
@@ -73,7 +98,7 @@ index db02375c..f0eb224e 100644
      }
      std::ranges::sort(result, [](const SurfaceStatus& aLeft, const SurfaceStatus& aRight) {
          return aLeft.surface < aRight.surface;
-@@ -2470,12 +2495,17 @@ void Draw(const float aViewportWidth, const float aViewportHeight)
+@@ -2470,12 +2501,17 @@ void Draw(const float aViewportWidth, const float aViewportHeight)
      std::vector<std::shared_ptr<Surface>> surfaces;
      for (const auto& surface : allSurfaces)
      {

@@ -1,0 +1,69 @@
+# TV-relevant hunks only, extracted from a working tree by
+# tools/extract-tv-patches.py. Apply by hand: this is not a patch
+# series, and the surrounding file has other unreleased work in it.
+diff --git a/webhost/src/HostRuntime.hpp b/webhost/src/HostRuntime.hpp
+index 4bfa8c70..755faa5d 100644
+--- a/webhost/src/HostRuntime.hpp
++++ b/webhost/src/HostRuntime.hpp
+@@ -11,12 +11,13 @@
+ #include <thread>
+ #include <unordered_map>
+ #include <vector>
+ 
+ #include <op77/WebUI/Messages.hpp>
+ #include <op77/WebUI/NamedPipe.hpp>
++#include <op77/WebUI/Decoder.hpp>
+ 
+ #include "include/cef_browser.h"
+ 
+ namespace op77::WebHost
+ {
+ class SurfaceClient;
+@@ -24,12 +25,17 @@ class SurfaceClient;
+ struct HostOptions
+ {
+     std::wstring pipeName;
+     std::string token;
+     uint32_t parentProcessId{};
+     std::wstring dataDirectory;
++    // Where ffprobe.exe and ffmpeg.exe were staged, passed by the game from
++    // its own plugin directory. Empty means the transcode routes are disabled:
++    // a decoder discovered by searching PATH would be one an attacker with
++    // filesystem write access could replace, so there is no fallback.
++    std::wstring decoderDirectory;
+ };
+ 
+ class HostRuntime final : public std::enable_shared_from_this<HostRuntime>
+ {
+ public:
+     explicit HostRuntime(HostOptions aOptions);
+@@ -64,12 +70,15 @@ public:
+     void NotifyTransport(const op77::WebUI::SurfaceTransportPayload& aPayload);
+     void ForwardWebEvent(op77::WebUI::MessageType aType, const op77::WebUI::WebEventPayload& aPayload);
+     [[nodiscard]] uint64_t AllocateRequest();
+     void SurfaceClosed(op77::WebUI::SurfaceId aSurface);
+     void Trace(std::string_view aMessage);
+     [[nodiscard]] uint32_t ParentProcessId() const { return m_options.parentProcessId; }
++    /// The staged decoder tools, resolved once at construction. `probe` empty
++    /// means the transcode routes answer "disabled" rather than spawn anything.
++    [[nodiscard]] const op77::WebUI::Transcode::DecoderPaths& DecoderPaths() const { return m_decoderPaths; }
+ 
+ private:
+     void ReaderMain();
+     void PostToUi(op77::WebUI::Message aMessage);
+     void HandleOnUi(const op77::WebUI::Message& aMessage);
+     void CreateSurface(const op77::WebUI::CreateSurfacePayload& aPayload);
+@@ -79,12 +88,13 @@ private:
+     void CloseAll();
+     void Finish();
+     [[nodiscard]] bool Send(op77::WebUI::MessageType aType, std::vector<uint8_t> aPayload,
+                             uint16_t aFlags = 0);
+ 
+     HostOptions m_options;
++    op77::WebUI::Transcode::DecoderPaths m_decoderPaths;
+     op77::WebUI::PipeConnection m_pipe;
+     std::thread m_reader;
+     std::atomic_bool m_stopping{};
+     std::atomic_bool m_cefReady{};
+     std::atomic_uint64_t m_sequence{1};
+     std::atomic_uint64_t m_request{1};

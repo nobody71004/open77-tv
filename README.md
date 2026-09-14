@@ -19,7 +19,9 @@ open77_media/          the resource -- this is the television
                          monitors, panels, frames and a security monitor -- each
                          with a quad measured from its own mesh (see below)
   shared/placement.lua   where "nudge it left" points, as arithmetic
-  web/tv.html|css|js     the page one television shows
+  web/tv.html|css|js     the page one television shows: YouTube's own player, a
+                         framed third-party site, or the host's decode route for a
+                         link this CEF build cannot play itself
   tests/                 three suites: records (1229 assertions), placement (68),
                          client (41)
 native/
@@ -30,6 +32,9 @@ native/
                          being presented, so a moving set's picture does not step
   PagePolicy.hpp         which page may load what -- the CSP directives and the
                          host's own request gate, as one decision in one place
+  TranscodePlan.hpp      what to do with a link this build cannot decode: the
+                         probe/stream decision and the decoder argv that carries it out
+  Decoder.hpp            running the decoder tools: probe, stream, seek, cleanup
   AudioSink.hpp|cpp      browser audio into the game's mixer
 patches/                 TV-only hunks of the host-side seams (see docs/integration.md)
 docs/
@@ -40,6 +45,8 @@ tests/
   MediaPlacementIntegrationTests.cs  the placement path through the real resource
                                 host and the real prop registry
   ScreenQuadTests.cpp, ScreenMotionTests.cpp   the two pure host modules
+  TranscodePlanTests.cpp, DecoderE2ETests.cpp  the decode decision, and the real
+                                decoder over real HTTP (skips if ffmpeg is absent)
   fixtures/                     a snapshot of open77_admin's prop-model aliases
 tools/
   run-suite.py           run the three Lua suites with no monorepo
@@ -117,9 +124,9 @@ and the method are in `docs/webui-media-and-audio.md`:
 | WebM / Ogg (VP9 + Opus, Vorbis) | works, with seek |
 | Vimeo | works as an embed |
 | plain `.mp4` / `.m4v` / `.mov` | **refused** — no H.264/AAC decoder in this build |
-| `.mp3` / `.m4a` / `.aac` | **refused** — no MP3/AAC decoder |
-| HLS (`.m3u8`), MPEG-DASH (`.mpd`) | **refused** — not implemented in this build (MSE is present; `isTypeSupported` refuses the MP4 codec strings it would need) |
-| `hdtoday`-style "watch free movies" sites (e.g. `freeonlinek.top/hdtoday`) | **refused, and this is the general case** — they are JS shells over HLS/MP4 that is H.264 + AAC, which is exactly the pair this build cannot decode. Nothing about the site is the problem; the codec is. |
+| `.mp3` / `.m4a` / `.aac` | **decoded by the host** through the transcode route, like `.mp4` |
+| a link this build cannot decode (`.mp4`, `.m4v`, `.mov`, `.m3u8`, `.mpd`, `.ts`, `.flv`, `.mkv`) | **the host decodes it** — `/op77/media/probe` asks `ffprobe` what the link is, and `/op77/media/stream` hands the page the same link re-encoded to VP9/Opus WebM. The page shows the decoder's first picture, and the seek bar disables itself until the stream declares a duration rather than lying. Without the decoder staged the verdict is `disabled` and the screen says which tools are missing. |
+| a site somebody pasted (`hdtoday`-style pages, anything without a media extension) | **framed, and its own player decides** — the media policy frames any `https:` origin, so the site's page is shown in a sandboxed frame and the log says `embed_framed` when a document arrived. Whether its *video* plays is then the site's own business: these sites are JS shells over HLS/MP4 that is H.264 + AAC, the pair this build cannot decode, so a site whose player does no codec detection will show its UI and refuse the stream. Nothing about the site is the problem; the codec is. |
 | Netflix, and any Widevine/PlayReady service | **impossible** — no CDM. A CDM cannot ship inside a process running under EAC, and Netflix additionally gates desktop playback on a hardware signature a CEF host cannot present. |
 
 The refusals are deliberate and visible: the page names the codec and why, on
@@ -197,6 +204,32 @@ each one is in the suites as well as in the code:
   Without it a screen is drawn from whichever side you stand on — "the television
   is playing on both sides" — and the snapshot now reports `facing` so the log
   says which of the three it is: behind it, in front of it, or undeclared.
+* **A pasted site is framed, and the page can say so.** The media policy granted
+  frames to YouTube and its no-cookie host and nothing else, so a website link
+  was refused by our own header before the request left the process — the screen
+  sat on the idle pattern and the log said only `embed_unverified`. It now frames
+  any `https:` origin (never plaintext), the frame runs sandboxed with
+  `allow-top-navigation-by-user-activation` so a click can follow a site's own
+  player but a silent redirect cannot take the screen, and the frame's `load`
+  event is reported as `embed_framed`: the one thing this side can honestly
+  observe about somebody else's document. `webhost/tests/WebHostTests.cpp`
+  serves the same page under both policies and asserts the pair — media frames,
+  strict refuses — against the real host and real Chromium.
+* **A page is no longer mistaken for a dead stream.** The probe is where every
+  unknown link goes (ffprobe is the only thing here that knows what a link is),
+  and its `nothing` verdict used to be terminal: `probing (https://…/hdtoday/)`
+  followed by `not_media (the decoder refused the link)`, with the frame that was
+  waiting on the other side never built. The extension now decides which of the
+  two it is — a link that names a media container and that nothing claimed is
+  dead and says so; a link that names no container is a site and gets framed
+  (`not_stream_site`, then the framed path).
+* **A link this build cannot decode is decoded by the host**
+  (`native/TranscodePlan.hpp`, `native/Decoder.hpp`). `ffprobe` answers what a
+  link is; `ffmpeg` re-encodes what this Chromium cannot play into VP9/Opus WebM
+  and serves it from inside the browser process, so the element, the transport,
+  the volume and the seek logic are the same ones a native WebM uses. The decoder
+  tools are staged next to the host and named at launch, so a host without them
+  answers `disabled` with the reason instead of showing a black rectangle.
 * **Remote content is one decision in two files.** A CSP directive is a
   *permission*; the host's `GetResourceRequestHandler` is the *gate*. The header
   described a privilege the host then cancelled, and the only symptom was a

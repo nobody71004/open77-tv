@@ -161,6 +161,42 @@ Both halves now come from the same file, and `webui/tests/WebCoreTests.cpp` pins
 the directives. Nothing in the resource can name a policy; it can only ask for
 one.
 
+### The frame grant, which is the half a *site* needs
+
+`frame-src` is the one directive in that header that is a grant rather than a
+narrowing, and it took two corrections. It started as `'none'`, which refused the
+embed the page builds for a YouTube link. It then became YouTube plus its
+no-cookie host — right for YouTube, and still fatal for the case the feature
+exists for: a site somebody pasted. That link was refused before the request left
+the process (the site itself permitted framing; our header was the refusal), and
+a page cannot see a directive it was never served, so the only evidence was
+`embed_unverified` on a screen showing its own idle pattern.
+
+The media policy now carries `frame-src https:` and the strict policy — every
+menu, HUD and panel — still carries `'none'`. `webui/tests/WebCoreTests.cpp`
+asserts that as one sentence: the grant present in exactly one policy, and the
+strict policy naming no `https:` origin at all. Plaintext framing stays
+impossible. The frame is then sandboxed — `allow-scripts allow-same-origin
+allow-forms allow-popups allow-popups-to-escape-sandbox
+allow-top-navigation-by-user-activation allow-presentation` — because the first
+two are what let a site's own player run, a click may follow that player to
+another URL, and the silent redirect that would otherwise take the screen (and
+the player's controls with it) cannot.
+
+The page reports the frame's `load` event as `embed_framed`, and that line is the
+difference between two failures that look identical on screen: a frame our policy
+refused never navigates and never fires it, while a site that refuses to be
+framed (`X-Frame-Options`, `frame-ancestors`) still arrives as an error page and
+does. It means "a document was allowed to arrive" — never "there is a picture",
+which stays unobservable from here.
+
+`webhost/tests/WebHostTests.cpp` proves the pair inside the real host: the same
+page served to two surfaces, one per policy, each reporting which refusal it hit
+(`{"violation":"","load":true,…}` against
+`{"violation":"frame-src","load":false,…}`). The pair is the point — a probe
+that can only ever answer "blocked" would satisfy a media-only assertion and mean
+nothing.
+
 ## 6b. Audio
 
 **`webhost/src/AudioSink.{hpp,cpp}`** (copied whole into `native/`)
@@ -172,6 +208,41 @@ in the self-test. `webhost/src/WebHostApp.cpp`, `SelfTestApp.{hpp,cpp}` and
 `webhost/CMakeLists.txt` carry the rest of the wiring, including the media
 capability probe that answers "what can this build actually play" with
 measurements rather than assumptions.
+
+## 6c. The decoder, for links this build cannot play
+
+**`webui/include/op77/WebUI/TranscodePlan.hpp`** and **`Decoder.hpp`** (copied
+whole into `native/`), **`webhost/src/HostRuntime.{hpp,cpp}`**,
+**`webhost/src/Main.cpp`**, **`webhost/src/SurfaceClient.{hpp,cpp}`**,
+**`client/src/webui/WebUiService.cpp`**
+
+This Chromium ships no H.264 and no AAC decoder, so an `.mp4` or an HLS playlist
+is a black rectangle handed to a `<video>` element. The host can decode it, and
+the seam is small because the page keeps its own element:
+
+* `/op77/media/probe?u=…` runs `ffprobe` on the link and answers with the
+  container, the codecs and a verdict — `playable`, `transcoded`, `disabled` or
+  `nothing`. It is served by `SurfaceClient::GetResourceHandler`, the same
+  handler that serves the page's own files, so it is same-origin, **in-process
+  and socket-free**: no listener, no port, no token, nothing reachable from
+  outside the browser that is rendering the page.
+* `/op77/media/stream?u=…` runs `ffmpeg` and answers with VP9/Opus WebM. The
+  page's element gets the *route* as its `src`, so transport, volume and the
+  seek bar are the same code paths a native WebM uses; the duration is unknown
+  until the stream declares one, and the bar disables itself rather than lying.
+
+Two things about that argv are worth keeping, because both were measured as
+failures and both are silent: `-dash 1` fails the WebM header and writes **zero
+bytes**, and an unescaped comma inside the scale filter terminates the
+filtergraph. `webui/tests/TranscodePlanTests.cpp` pins the strings;
+`tests/DecoderE2ETests.cpp` runs the real `ffprobe`/`ffmpeg` over real HTTP and
+skips (rather than fails) when the tools are not staged next to the test.
+
+The decoder tools live in `<plugin>/decoder/` and the path reaches the host as a
+launch switch — `Main.cpp` parses it, `HostRuntime` holds it, `WebUiService`
+passes it at host start, and a host started without it answers `disabled` with
+the reason instead of showing a black rectangle. Nothing here helps a DRM
+service, and nothing can: the key is never handed over.
 
 ## 7. The suites
 
@@ -211,6 +282,17 @@ monorepo: it preloads the vendored alias snapshot (or a live checkout with
 `--from`), stages the resource in a temp directory for the client suite's
 `OPEN77_REPO_ROOT`, and fails if any suite reports zero assertions as well as if
 one fails.
+
+Four C++ suites live here too, and each one exists because its subject fails
+silently in game: `tests/ScreenQuadTests.cpp` (the quad arithmetic and the
+facing gate), `tests/ScreenMotionTests.cpp` (the two-sample blend, including the
+staleness refusal), `tests/TranscodePlanTests.cpp` (the probe verdicts and the
+decoder argv, down to the quoting `CommandLineToArgvW` has to accept) and
+`tests/DecoderE2ETests.cpp` (the real decoder over real HTTP: probe answers,
+the stream is VP9/Opus WebM, `-ss` seeks). The frame grant is asserted twice on
+purpose — as directives in the policy test, and as behaviour in
+`patches/webhost__tests__WebHostTests.cpp.diff`, where the real host, the real
+header and real Chromium are all in the loop.
 
 ---
 

@@ -1,0 +1,220 @@
+# TV-relevant hunks only, extracted from a working tree by
+# tools/extract-tv-patches.py. Apply by hand: this is not a patch
+# series, and the surrounding file has other unreleased work in it.
+diff --git a/webhost/tests/WebHostTests.cpp b/webhost/tests/WebHostTests.cpp
+index 68da2a3a..3a7fecd3 100644
+--- a/webhost/tests/WebHostTests.cpp
++++ b/webhost/tests/WebHostTests.cpp
+@@ -46,12 +47,17 @@
+ 
+ namespace
+ {
+ using namespace op77::WebUI;
+ using Microsoft::WRL::ComPtr;
+ 
++/// The two surfaces the frame-grant probe occupies: the same page, served under
++/// each policy, so one run contains its own control.
++constexpr uint64_t kFrameProbeMediaSurface = 18;
++constexpr uint64_t kFrameProbeStrictSurface = 19;
++
+ bool Check(const bool aCondition, const std::string& aMessage)
+ {
+     if (!aCondition) std::cerr << aMessage << '\n';
+     return aCondition;
+ }
+ 
+@@ -453,12 +459,51 @@ undeclared.src = 'web/secret.svg';
+ 
+     {
+         std::ofstream companion(resource / L"web" / L"companion.html", std::ios::binary | std::ios::trunc);
+         companion << "<!doctype html><body style='background:transparent'><script>Open77.ready();</script></body>";
+     }
+ 
++    // The frame-grant probe page. It frames one third-party origin and reports
++    // WHICH of the two possible refusals happened, because on screen they are
++    // indistinguishable: a frame this host's policy refused never navigates at
++    // all and raises a CSP violation, while a site that refuses to be framed
++    // arrives as an error page and fires `load` -- and a page cannot see inside
++    // a cross-origin document to tell those apart any other way. The same file is
++    // served to two surfaces below, one under each policy, so the test is its own
++    // control: a probe that only ever says "blocked" proves nothing.
++    {
++        std::ofstream probe(resource / L"web" / L"frame-probe.html", std::ios::binary | std::ios::trunc);
++        probe << R"HTML(<!doctype html><html><body><script>
++Open77.ready();
++const state = { violation: "", load: false, frames: 0, note: "none" };
++let sent = false;
++function report(note) {
++  if (sent) return;
++  sent = true;
++  state.note = note;
++  state.frames = performance.getEntriesByType("resource")
++    .filter(entry => entry.initiatorType === "iframe").length;
++  Open77.emit("frame:probe", state);
++}
++document.addEventListener("securitypolicyviolation", event => {
++  if (String(event.violatedDirective).indexOf("frame-src") === 0) state.violation = event.violatedDirective;
++  report("violation");
++});
++const frame = document.createElement("iframe");
++frame.setAttribute("sandbox", "allow-scripts allow-same-origin allow-forms " +
++  "allow-popups allow-popups-to-escape-sandbox allow-top-navigation-by-user-activation " +
++  "allow-presentation");
++frame.addEventListener("load", () => { state.load = true; report("load"); });
++frame.addEventListener("error", () => report("error"));
++frame.src = "https://example.com/";
++document.body.appendChild(frame);
++setTimeout(() => report("timeout"), 9000);
++</script></body></html>)HTML";
++        if (!Check(static_cast<bool>(probe), "frame probe page write failed")) { cleanup(); return 1; }
++    }
++
+     // The GPU half only runs when this process can be a D3D12 consumer and the
+     // operator did not switch the transport off for the host.
+     const bool gpuDisabledByEnvironment = GetEnvironmentVariableW(L"OP77_WEBUI_DISABLE_GPU", nullptr, 0) != 0;
+     Gpu gpu;
+     std::string gpuError;
+     const bool gpuAvailable = CreateGpu(gpu, gpuError);
+@@ -619,15 +664,24 @@ undeclared.src = 'web/secret.svg';
+     bool transportGpuSeen = false;
+     bool transportCpuSeen = false;
+     std::string transportDetail;
+     std::deque<GpuFrameReadyPayload> gpuFrames;
+     size_t gpuFramesTotal = 0;
+     bool consumeRevealFrames = false;
++    // Kept alive for the whole run: the host maps these at surface creation and
++    // writes into them for as long as the surface exists.
++    std::vector<std::unique_ptr<SharedFrameBuffer>> probeFrames;
+     std::string expectedOpening;
+     bool openingReceived = false;
+     bool openingRendered = false;
++    // The frame-grant probe, one report per surface: the media-policy surface
++    // may frame the origin, and the strict-policy surface must refuse it.
++    bool mediaFrameReported = false;
++    bool mediaFrameFramed = false;
++    bool strictFrameReported = false;
++    bool strictFrameRefused = false;
+ 
+     const auto dispatch = [&](const Message& aMessage) {
+         std::cerr << "stage=message type=" << static_cast<int>(aMessage.type) << "\n";
+         switch (aMessage.type)
+         {
+         case MessageType::SurfaceCreated: created = true; break;
+@@ -642,24 +696,43 @@ undeclared.src = 'web/secret.svg';
+             }
+             break;
+         }
+         case MessageType::JsToLuaEvent:
+         {
+             WebEventPayload event;
+-            if (DecodePayload(aMessage, event) && event.surface == 1)
++            if (DecodePayload(aMessage, event))
+             {
+-                if (event.name == "ui:ready") readyEvent = true;
+-                if ((event.name == "test:received" || event.name == "test:rendered") &&
+-                    event.json.find(expectedOpening) != std::string::npos &&
+-                    event.json.find("\"hidden\":false") != std::string::npos)
++                if (event.surface == 1)
++                {
++                    if (event.name == "ui:ready") readyEvent = true;
++                    if ((event.name == "test:received" || event.name == "test:rendered") &&
++                        event.json.find(expectedOpening) != std::string::npos &&
++                        event.json.find("\"hidden\":false") != std::string::npos)
++                    {
++                        if (event.name == "test:received") openingReceived = true;
++                        else openingRendered = true;
++                    }
++                    if (event.name == "vfs:undeclared" && event.json.find("true") != std::string::npos)
++                        undeclaredBlocked = true;
++                }
++                if (event.name == "frame:probe")
+                 {
+-                    if (event.name == "test:received") openingReceived = true;
+-                    else openingRendered = true;
++                    std::cerr << "stage=frame_probe surface=" << event.surface << " json=" << event.json << '\n';
++                    if (event.surface == kFrameProbeMediaSurface)
++                    {
++                        mediaFrameReported = true;
++                        mediaFrameFramed = event.json.find("\"violation\":\"\"") != std::string::npos &&
++                            event.json.find("\"load\":true") != std::string::npos;
++                    }
++                    else if (event.surface == kFrameProbeStrictSurface)
++                    {
++                        strictFrameReported = true;
++                        strictFrameRefused = event.json.find("\"violation\":\"frame-src\"") != std::string::npos &&
++                            event.json.find("\"load\":false") != std::string::npos;
++                    }
+                 }
+-                if (event.name == "vfs:undeclared" && event.json.find("true") != std::string::npos)
+-                    undeclaredBlocked = true;
+             }
+             break;
+         }
+         case MessageType::JsInvoke:
+         {
+             WebEventPayload invoke;
+@@ -1103,12 +1176,64 @@ undeclared.src = 'web/secret.svg';
+                     std::cerr << "stage=async_cpu_burst_resize ok=" << passed << "\n";
+                 }
+             }
+         }
+     }
+ 
++    // --- 4. The frame grant, end to end ---------------------------------------
++    //
++    // A television that shows somebody else's page is the one surface whose job
++    // cannot be done without framing an origin this build did not write down in
++    // advance, and the earlier policy framed none of them: the screen sat on its
++    // own idle pattern while the log said `embed_unverified`, which is what "the
++    // link does not play" looked like from the outside. The two halves of the
++    // fix are a `frame-src https:` in the media header and the request gate in
++    // `SurfaceClient`, and this stage is the only place both are real at once:
++    // the host writes the header, decides the gate, runs Chromium, and the page
++    // in it reports which refusal it hit.
++    //
++    // Run unconditionally: the CPU/GPU split above is a transport question, and
++    // a frame is a navigation. Both probes use the SAME page, so the pair is its
++    // own control -- a probe that can only ever answer "blocked" would satisfy a
++    // media-only assertion and mean nothing.
++    {
++        for (const auto& probe : {std::pair{kFrameProbeMediaSurface, WebPagePolicy::Media},
++                                  std::pair{kFrameProbeStrictSurface, WebPagePolicy::Strict}})
++        {
++            const auto name = mappingName + L".FrameProbe." + std::to_wstring(probe.first);
++            auto mapping = std::make_unique<SharedFrameBuffer>();
++            passed = passed && mapping->Create(name, pixelWidth, pixelHeight, error);
++            auto frameProbe = create;
++            frameProbe.surface = probe.first;
++            frameProbe.origin = "r-frame-probe-" + std::to_string(probe.first) + "-g-1.cym-ui";
++            frameProbe.entry = "web/frame-probe.html";
++            frameProbe.allowedFiles = {"web/frame-probe.html"};
++            frameProbe.frameMapping = Utf8(name);
++            frameProbe.pagePolicy = probe.second;
++            frameProbe.visible = true;
++            frameProbe.framesPerSecond = 12;
++            passed = passed && SendPayload(connection, MessageType::CreateSurface, sequence++, frameProbe, error) &&
++                pump([&] {
++                    return probe.first == kFrameProbeMediaSurface ? mediaFrameReported : strictFrameReported;
++                }, std::chrono::seconds(25));
++            Check(probe.first == kFrameProbeMediaSurface ? mediaFrameReported : strictFrameReported,
++                  probe.first == kFrameProbeMediaSurface
++                      ? "the media surface's page never reported whether it could frame a third-party origin"
++                      : "the strict surface's page never reported whether it could frame a third-party origin");
++            probeFrames.push_back(std::move(mapping));
++        }
++        passed = passed && Check(mediaFrameFramed,
++            "a media surface was not allowed to frame a third-party origin, or our own policy "
++            "raised the frame-src violation -- the frame grant and the request gate disagree");
++        passed = passed && Check(strictFrameRefused,
++            "a strict-policy surface framed a third-party origin: the grant escaped the one page "
++            "policy that exists to show somebody else's page");
++        std::cerr << "stage=frame_grant media_framed=" << mediaFrameFramed << " strict_refused="
++                  << strictFrameRefused << "\n";
++    }
++
+     static_cast<void>(Send(connection, MessageType::Shutdown, sequence++, {}, error));
+     std::cerr << "stage=shutdown_sent passed=" << passed << " gpuSkipped=" << gpuSkipped << "\n";
+     const DWORD wait = WaitForSingleObject(process.hProcess, 10000);
+     if (wait != WAIT_OBJECT_0)
+     {
+         TerminateProcess(process.hProcess, 98);
