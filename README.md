@@ -11,23 +11,100 @@ happens to be looking at.
 ```
 open77_media/          the resource -- this is the television
   open77.lua             manifest: permissions, the page, what ships to clients
-  server/main.lua        authority: which screen exists, on which prop, showing what
-  client/main.lua        binds a surface to a prop and keeps the quad on it
-  shared/records.lua     the catalogue: 8 television records, their models and quads
+  server/main.lua        authority: which screen exists, on which prop, showing what;
+                         `media.move` / `media.rotate` nudge and turn a set
+  client/main.lua        binds a surface to a prop, keeps the quad on it, decides
+                         which sets are worth materialising, releases pages on exit
+  shared/records.lua     the catalogue: 36 records -- the game's real televisions,
+                         monitors, panels, frames and a security monitor -- each
+                         with a quad measured from its own mesh (see below)
+  shared/placement.lua   where "nudge it left" points, as arithmetic
   web/tv.html|css|js     the page one television shows
-  tests/records_test.lua the catalogue suite (208 assertions)
+  tests/                 three suites: records (1229 assertions), placement (68),
+                         client (41)
 native/
   MediaScreens.hpp|cpp   the host-side module: bind a surface to a prop, project
                          its screen quad, publish overlay items, line-of-sight test
+  ScreenQuad.hpp         the quad arithmetic and the declared-front (facing) gate
+  ScreenMotion.hpp       blending the last two projected corner sets at the frame
+                         being presented, so a moving set's picture does not step
+  PagePolicy.hpp         which page may load what -- the CSP directives and the
+                         host's own request gate, as one decision in one place
+  AudioSink.hpp|cpp      browser audio into the game's mixer
 patches/                 TV-only hunks of the host-side seams (see docs/integration.md)
 docs/
   integration.md         every seam, what it does, and the gotcha that bites
   webui-media-and-audio.md  what this CEF build can and cannot actually play
-tests/fixtures/          a snapshot of open77_admin's prop-model aliases
+tests/
+  MediaRecordsTests.cs          the catalogue suite inside the C# test host
+  MediaPlacementIntegrationTests.cs  the placement path through the real resource
+                                host and the real prop registry
+  ScreenQuadTests.cpp, ScreenMotionTests.cpp   the two pure host modules
+  fixtures/                     a snapshot of open77_admin's prop-model aliases
 tools/
-  run-suite.py           run the suite with no monorepo
+  run-suite.py           run the three Lua suites with no monorepo
   extract-tv-patches.py  regenerate patches/ from a checkout
 ```
+
+## The catalogue is measured, not estimated
+
+The first version of this catalogue reached for whatever props already had host
+entities -- signage, a painting, a vending machine -- and sized their screen
+rectangles by eye. It spawned, and it was honest about what it was, but none of it
+was a television: picking "Framed panel" put a web page on a painting.
+
+These records are the game's own screens. Every `model` is a 2.31 mesh from the
+cooked-archive inventory, and every quad is that mesh's **measured bounding box**:
+
+```
+WolvenKit.CLI extract -gp <game> -r '.*(television_|screen_device_|smart_frame_|...)' -o work -q
+WolvenKit.CLI convert serialize work -o json -q      # read Data.RootChunk.boundingBox
+```
+
+Two shapes occur and they are quoted differently. A *screen* mesh is the display,
+so the rectangle is the whole mesh and `offset` is where its geometry sits inside
+its own origin (0.42 m up the television's body, for the 16:9 set). A *body* mesh
+with a separate screen mesh beside it -- `television_a_16x9` plus
+`television_a_16x9_screen_a` -- spawns the body and places the **screen mesh's**
+box on it, which is only valid while the two share an origin; the suite asserts
+containment so a re-authored asset cannot quietly paint outside the cabinet. A few
+meshes are *housings* with no screen submesh at all (`tv_large_a`, the device
+panels, the security monitor) and there the rectangle is the measured front face,
+labelled as such rather than dressed up as a screen measurement.
+
+### Aspect ratio is per record
+
+A surface is one CEF surface mapped 1:1 onto the quad with UVs 0..1, so a surface
+of the wrong shape stretches the picture. The game's real screens are 16:9, 21:9
+(2.39), 4:3-ish, 2.35 ultrawide, 2:1, square, and portrait 9:16 / 3:4 / 9:21, so
+the surface is derived from the rectangle by `Open77MediaSurfaceFor` -- long side
+1280, short side rounded to the nearest even pixel -- and the client calls it with
+the quad it was actually sent, so `media.quad` retunes the surface too. A 21:9
+screen showing a 16:9 video letterboxes it, which is what a 21:9 screen does.
+
+`server/main.lua` creates a television at volume 75 (`DEFAULT_VOLUME`), and the
+page starts at the same 75 so the slider and the mixer agree from the first frame.
+A pasted link auto-detects and plays: the page puts `autoplay=1` on the embed, and
+the CEF host runs `--autoplay-policy=no-user-gesture-required` because the URL is
+set by the *server* and the player looking at the set often cannot click it.
+
+### A record only spawns once its host entity has been built
+
+This is the part that bites. An alias in `Props.cpp` is not a spawnable prop until
+the asset build emits `cyberm\entities\props\open77_prop_<slug>.ent` for it, and a
+record whose host is missing does not fail -- the prop creation falls back to the
+marker mesh, so you get a floor decal with a page stretched over it.
+
+So adding a record is two steps, in this order:
+
+```
+pwsh scripts/build-prop-hosts.ps1 -WolvenKitCli <cp77tools> -GameRoot <game> \
+     -OutputRoot <pack tree> -WorkRoot <work> -OnlyAlias <alias,alias,...>
+# then a full build-assets.ps1 run to pack Open77.archive
+```
+
+and `EveryCataloguePropHasAGeneratedHost` in the server suite fails until it has
+been run (`docs/generated/prop-hosts.json` is the asset build's own manifest).
 
 ## What actually plays
 
@@ -36,18 +113,122 @@ and the method are in `docs/webui-media-and-audio.md`:
 
 | Source | Result |
 |---|---|
-| YouTube (`watch?v=`, `youtu.be/`, `/shorts/`, `/live/`, `/embed/`) | works, and is controllable |
+| YouTube (`watch?v=`, `youtu.be/`, `/shorts/`, `/live/`, `/embed/`) | works, and is controllable — it serves VP9/AV1 to a Chromium that says it has no H.264 |
 | WebM / Ogg (VP9 + Opus, Vorbis) | works, with seek |
 | Vimeo | works as an embed |
 | plain `.mp4` / `.m4v` / `.mov` | **refused** — no H.264/AAC decoder in this build |
 | `.mp3` / `.m4a` / `.aac` | **refused** — no MP3/AAC decoder |
-| HLS (`.m3u8`), MPEG-DASH (`.mpd`) | **refused** — not implemented in this build |
+| HLS (`.m3u8`), MPEG-DASH (`.mpd`) | **refused** — not implemented in this build (MSE is present; `isTypeSupported` refuses the MP4 codec strings it would need) |
+| `hdtoday`-style "watch free movies" sites (e.g. `freeonlinek.top/hdtoday`) | **refused, and this is the general case** — they are JS shells over HLS/MP4 that is H.264 + AAC, which is exactly the pair this build cannot decode. Nothing about the site is the problem; the codec is. |
 | Netflix, and any Widevine/PlayReady service | **impossible** — no CDM. A CDM cannot ship inside a process running under EAC, and Netflix additionally gates desktop playback on a hardware signature a CEF host cannot present. |
 
 The refusals are deliberate and visible: the page names the codec and why, on
 screen. Handing an `.mp4` to a `<video>` element produces a silent black
 rectangle, which is the same picture as "the composite is broken" and costs an
 afternoon to tell apart.
+
+### The measured evidence, and the two real ways out
+
+The figures above are from a probe run inside the real host, kept in
+`docs/webui-media-and-audio.md`: `canPlayType('video/mp4; codecs="avc1…"')`
+answers empty, `MediaSource.isTypeSupported('video/mp4; codecs="avc1.42E01E,
+mp4a.40.2"')` answers false, a real `<video>` load fails with
+`NotSupportedError`, and `EME` exists while both Widevine and PlayReady answer
+`NotSupportedError`. WebM/VP9 answers `probably` and plays.
+
+So an H.264 source can only reach a world screen after something has changed its
+codec, and there are exactly two honest ways to do that:
+
+1. **A transcode proxy in front of the page.** Resolve the page to its real
+   stream and hand the screen a VP9/Opus version of it — `ffmpeg` will take an
+   HLS/MP4 source and produce either a WebM file or an HLS playlist whose
+   segments are VP9, which this build plays. That makes "paste a link" work for
+   H.264 sites and changes nothing else, at the cost of a process and the CPU to
+   transcode. It does not help DRM services, and it cannot: the key is never
+   handed over.
+2. **A CEF build with proprietary codecs.** The decoders are absent from this
+   Chromium build, not from the platform, so a build with `proprietary_codecs`
+   enabled plays H.264/AAC directly — no proxy, no transcode, no extra process.
+   It is a bigger change (the runtime ships next to the host and is staged by
+   the host's CMake), and it is the one that makes the *page* capable instead of
+   making a *stream* compatible.
+
+Neither route makes a paid service playable. Both make the free, unencrypted
+H.264 web work, which is what a pasted link usually is.
+
+## What changed after the first extraction
+
+The repository started as a snapshot. Everything below landed afterwards, and
+each one is in the suites as well as in the code:
+
+* **`media.move` / `media.rotate`** — a set can be nudged along its own axes
+  (forward/back/left/right/up/down) and turned on the spot, from the console or
+  the menu. The prop is *patched*, never respawned, so every player watching
+  sees the cabinet slide rather than disappear and reappear, and the screen needs
+  nothing at all: the quad is in the prop's own frame, so it follows for free.
+  The arithmetic (`shared/placement.lua`) is pinned by its own suite, and
+  `tests/MediaPlacementIntegrationTests.cs` drives the path end to end through
+  the real resource host and the real prop registry — the fourth seam, where a
+  command can report success while the registry still holds the old transform.
+* **A page no longer outlives its world.** The native half releases every screen
+  when the world goes away; this resource is *not* stopped by a world change. That
+  mismatch composited a television over the next loading screen. The client now
+  releases on `open77:session:ended` and, once a second, drops and rebuilds any
+  page whose native screen is gone.
+* **The screen budget is by distance.** Six surfaces per client, and the ranking
+  used to give every already-materialised screen absolute priority — so a set
+  spawned at your feet could never win a slot while six others were up anywhere
+  within 90 m, and it stood there as a prop with a page and no picture. Nearest
+  first now, with a 5 m hysteresis so a page is not swapped away by a set that is
+  marginally closer.
+* **Volume and mute are reported.** The page says which channel carried a
+  command and what the player ended up applying; the client logs the on-screen
+  control at the click, before the round trip; the server answers a control that
+  names a set it does not hold instead of returning silently. Without that, "the
+  slider does nothing" and "the slider changed a television three kilometres
+  away" look identical in a log.
+* **A set's picture is anchored to the frame that is presented**
+  (`native/ScreenMotion.hpp`). Corners are projected once per game tick (24–69
+  Hz, jittery) while the overlay draws per presented frame — with frame
+  generation, frames that sit *between* those ticks. The picture used to hold a
+  corner set for up to 42 ms and then jump, which read as the image sliding
+  around on its own cabinet while you walked.
+* **A record can declare which side its picture is on** (`native/ScreenQuad.hpp`).
+  Without it a screen is drawn from whichever side you stand on — "the television
+  is playing on both sides" — and the snapshot now reports `facing` so the log
+  says which of the three it is: behind it, in front of it, or undeclared.
+* **Remote content is one decision in two files.** A CSP directive is a
+  *permission*; the host's `GetResourceRequestHandler` is the *gate*. The header
+  described a privilege the host then cancelled, and the only symptom was a
+  player script that said it had been refused. Both now come from
+  `native/PagePolicy.hpp`.
+* **`media.spawn` / `media.place` accept an omitted URL.** The usage string said
+  `[url]`; the code refused nil with `url_must_be_a_string`, so "spawn a
+  television here" failed with a message about an argument the operator had
+  deliberately left out.
+* **The host-name check derives instead of transcribing.**
+  `tests/MediaRecordsTests.cs` used to carry a hand-written list of the host's
+  functions, and it went stale: it named `Open77.props` as create/remove/all
+  only, so the placement feature's `setTransform` — a real binding on both
+  runtimes — failed as if it were a typo. It now parses the two registration
+  sites, is **per runtime** (the client and the server surfaces differ, and the
+  bug it exists for was a name used on the side that does not have it), and
+  asserts on its own output so a parser that stops matching fails loudly.
+
+### The base game's drive-in screen is not this
+
+The drive-in in the Badlands (the Bushido film Johnny takes Rogue to) is a
+level-local screen fed by the game's own movie system, not a CEF surface: the
+film is shipped media played into a material the level owns. Hijacking it would
+be engine-side work against a system this repository has not reverse-engineered,
+and none of it is verifiable from here.
+
+What *is* the same idea and is reachable: a **spawned** large screen prop — a
+billboard, a 33:10 sign, one of the cinema-sized quads in the catalogue — placed
+wherever the operator wants, running this feature's page, with the menu showing
+which set is in front of you. Proximity is already how a client decides what to
+materialise, so "walk up to it and it is the nearest set" is a property of the
+existing code rather than a new system.
 
 ## The honest limitations
 

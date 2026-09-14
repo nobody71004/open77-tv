@@ -1,0 +1,29 @@
+# TV-relevant hunks only, extracted from a working tree by
+# tools/extract-tv-patches.py. Apply by hand: this is not a patch
+# series, and the surrounding file has other unreleased work in it.
+diff --git a/webui/include/op77/WebUI/Protocol.hpp b/webui/include/op77/WebUI/Protocol.hpp
+index 61edd898..bc4a256f 100644
+--- a/webui/include/op77/WebUI/Protocol.hpp
++++ b/webui/include/op77/WebUI/Protocol.hpp
+@@ -16,13 +16,20 @@ constexpr uint32_t kProtocolMagic = 0x574D5943U; // "CYMW" in little-endian memo
+ // shape this hardware opens from D3D12) but hands it over BY HANDLE: the host
+ // sends its own handle values, the game duplicates them out of the host
+ // process and opens them with ID3D12Device::OpenSharedHandle. No kernel object
+ // is ever named (OpenSharedHandleByName is what failed in v4). It also carries
+ // the game's adapter LUID (Chromium, host and game must share one adapter),
+ // external begin-frames, and the transport a surface is on.
+-constexpr uint16_t kProtocolVersion = 5;
++//
++// Version 6 adds one byte to `CreateSurfacePayload`: the page policy a surface
++// is served under (`WebUI::WebPagePolicy`). It is a version bump rather than a
++// silently-ignored trailing field because the payload decoder rejects any
++// trailing bytes, so a v5 host paired with a v6 client would fail to create
++// EVERY surface -- and it would do so as a surface that simply never appears.
++// The bump turns that into `unsupported_protocol_version`, which names itself.
++constexpr uint16_t kProtocolVersion = 6;
+ // Optional HostHello flags, backward compatible with v5 peers. A legacy host
+ // advertises zero: keep sending its pacing hints and use committed mappings.
+ constexpr uint16_t kHostPacingKnown = 1U << 0U;
+ constexpr uint16_t kHostExternalBeginFrames = 1U << 1U;
+ constexpr uint16_t kHostDeferredFrameCommit = 1U << 2U;
+ [[nodiscard]] constexpr bool HostNeedsBeginFrames(const uint16_t aFlags)

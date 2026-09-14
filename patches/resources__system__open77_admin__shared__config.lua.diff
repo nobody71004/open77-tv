@@ -1,0 +1,45 @@
+# TV-relevant hunks only, extracted from a working tree by
+# tools/extract-tv-patches.py. Apply by hand: this is not a patch
+# series, and the surrounding file has other unreleased work in it.
+diff --git a/resources/system/open77_admin/shared/config.lua b/resources/system/open77_admin/shared/config.lua
+index 505c9dc7..b3267faa 100644
+--- a/resources/system/open77_admin/shared/config.lua
++++ b/resources/system/open77_admin/shared/config.lua
+@@ -296,12 +296,37 @@ Open77AdminConfig = {
+             "industrial.fire_extinguisher", "industrial.trolley", "industrial.cart",
+             "industrial.generator", "industrial.gas_pump", "industrial.shop_rack",
+             "industrial.machine", "industrial.vent.rooftop",
+             "industrial.vent.shaft",
+             "pipe.small", "pipe.medium", "pipe.round", "pipe.waste",
+             "electronics.monitor", "electronics.monitor.device",
++            -- The game's own televisions and monitors. Mirrors the block of the
++            -- same names in `Props.cpp`'s `kModelAliases`, which stays the source
++            -- of truth; this list is what the media catalogue is checked against,
++            -- so a television record can only ever name a prop that exists.
++            "electronics.tv.16x9", "electronics.tv.21x9",
++            "electronics.tv.neokitsch.16x9", "electronics.tv.neokitsch.21x9",
++            "electronics.tv.screen.16x9", "electronics.tv.screen.21x9",
++            "electronics.tv.screen.neokitsch.16x9", "electronics.tv.screen.neokitsch.21x9",
++            "electronics.tv.large",
++            "electronics.monitor.device.a", "electronics.monitor.device.b",
++            "electronics.monitor.device.c", "electronics.monitor.device.d",
++            "electronics.monitor.device.e",
++            "electronics.monitor.screen.a", "electronics.monitor.screen.b",
++            "electronics.monitor.screen.c", "electronics.monitor.screen.d",
++            "electronics.monitor.screen.a.vertical",
++            "electronics.monitor.screen.b.vertical",
++            "electronics.monitor.screen.c.vertical",
++            "electronics.monitor.screen.d.vertical",
++            "electronics.screen.21x9", "electronics.screen.16x9",
++            "electronics.screen.4x3", "electronics.screen.3x4",
++            "electronics.screen.9x16", "electronics.screen.9x21",
++            "electronics.screen.2x1",
++            "electronics.frame.a", "electronics.frame.ab", "electronics.frame.ac",
++            "electronics.frame.ad", "electronics.frame.ae", "electronics.frame.af",
++            "electronics.monitor.surveillance", "furniture.tv_stand",
+             "electronics.vending_machine", "electronics.vending_machine.small",
+             "electronics.vending_machine.drink", "electronics.arcade",
+             "electronics.jukebox", "electronics.server", "electronics.cash_register",
+             "electronics.fuse_box", "electronics.camera", "electronics.air_conditioner",
+             "light.lantern.japanese", "light.lantern.chinese", "light.ceiling",
+             "light.fluorescent", "light.spotlight", "light.desk", "light.hanging",

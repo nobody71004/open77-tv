@@ -69,11 +69,40 @@
 // THE ONE THING THAT IS NOT SETTLED BY MEASUREMENT HERE
 // ---------------------------------------------------------------------------
 //
-// The composite is a screen-space quad, so the screen is drawn with the overlay
-// -- which is after the game's own scene and after CEF's HUD surfaces. A screen
-// therefore always draws above HUD elements that are physically behind it in the
-// world. That is a property of the pass, not of this module, and closing it
-// means giving the overlay a depth test, which is a different piece of work.
+// The composite is a screen-space quad with no depth test, so a screen is drawn
+// over the game's world whatever stands between the camera and it. That is a
+// property of the pass, not of this module, and closing it means giving the
+// overlay a depth buffer, which is a different piece of work.
+//
+// Its RELATION TO THE INTERFACE is settled, and it took a report to settle it:
+// screens are published as `WorldOverlay::Style::Screen` and the caller draws
+// that layer BEFORE the CEF pages (`WorldOverlay::Layer::Screens`), so opening
+// the freeroam menu covers a television instead of the television covering the
+// menu. Anything that changes the order of those two calls brings that back.
+//
+// ---------------------------------------------------------------------------
+// WHICH SIDE OF THE PANEL CARRIES THE PICTURE
+// ---------------------------------------------------------------------------
+//
+// A quad is a rectangle, and a rectangle has two sides. Nothing in a projection
+// distinguishes them, so a television seen from behind carried its video on the
+// back of the cabinet as convincingly as on the glass ("tvs are playing videos
+// on both sides"). The rule that puts the picture the right way up
+// (`ScreenQuad::Orient`) deliberately keeps the picture readable from either
+// side and therefore cannot answer this: by the time the picture is upright, the
+// fact that it is on the wrong side has been erased.
+//
+// So the record declares it -- `Quad::faces`, a direction in the prop's own
+// frame, authored beside the rectangle in the catalogue and checked against the
+// asset's own measured geometry (see the note above each record). One dot
+// product per screen per tick decides it, and a record that declares nothing is
+// drawn from both sides exactly as before: a screen that vanishes on a guess is
+// worse than a screen seen through its own cabinet.
+//
+// This is not the occlusion test and does not replace it. Occlusion answers "is
+// something in the way"; this answers "is this the back of the thing". A set
+// standing free in a room has nothing in the way from behind and needs this gate
+// to stop showing its picture through the cabinet.
 
 #include <cstdint>
 #include <string>
@@ -121,6 +150,18 @@ struct Quad
     /// sheet.
     float width{1.2F};
     float height{0.68F};
+    /// Which way the display looks, as a direction in the prop's own local frame
+    /// -- `{0, 1, 0}` for a television whose picture is on its +Y face. A zero
+    /// vector, the default, means the record does not say and the screen draws
+    /// from both sides.
+    ///
+    /// It is deliberately a direction in the *asset's* frame rather than a
+    /// derived convention (a winding order, a cross product of `right` and `up`,
+    /// or the sign of `offset`). Each of those encodes an assumption about
+    /// handedness that this file has already been wrong about once -- see
+    /// `ScreenQuad.hpp`. A direction written down is one number that can be
+    /// checked against the mesh and corrected in one place.
+    float faces[3]{0.0F, 0.0F, 0.0F};
 };
 
 /// Everything `Bind` accepts, and what `SnapshotAll` reports back.
@@ -145,11 +186,19 @@ struct Snapshot
     std::string owner;
     Definition definition;
     /// Whether the last game tick got as far as publishing an item for it.
-    /// False for a prop that is not projected, a quad that is off-view, or a
-    /// screen behind geometry -- `reason` says which.
+    /// False for a prop that is not projected, a quad that is off-view, a screen
+    /// behind geometry, or a screen being looked at from behind -- `reason` says
+    /// which, and `behind_panel` is the facing gate.
     bool drawn{};
     std::string reason;
     float distance{};
+    /// Whether the record declared a front at all, and, when it did, whether the
+    /// eye was on the wrong side of it. `known = false` is a record that never
+    /// said which side the picture is on -- those still draw from both sides, and
+    /// saying so out loud is the difference between an unfinished catalogue entry
+    /// and a mystery.
+    bool facingKnown{};
+    bool facingAway{};
 };
 
 /// Registers a screen. The owner string is the resource name, exactly as with

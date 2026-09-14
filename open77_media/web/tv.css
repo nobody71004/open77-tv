@@ -35,6 +35,16 @@ html, body {
 .media { display: none; background: #000; border: 0; }
 .media.on { display: block; }
 
+/* The embed is a container: whichever player tv.js puts in it (YouTube's own
+   frame, or a plain iframe when the API script cannot be fetched) has to fill
+   the screen exactly, or the picture would sit in a corner of it. */
+#embed > iframe {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+
 video.media { object-fit: contain; }
 
 /* ---------------------------------------------------------------------------

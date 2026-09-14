@@ -1,0 +1,22 @@
+# TV-relevant hunks only, extracted from a working tree by
+# tools/extract-tv-patches.py. Apply by hand: this is not a patch
+# series, and the surrounding file has other unreleased work in it.
+diff --git a/webhost/CMakeLists.txt b/webhost/CMakeLists.txt
+index 21f27872..e70cdb0f 100644
+--- a/webhost/CMakeLists.txt
++++ b/webhost/CMakeLists.txt
+@@ -5,12 +5,14 @@ endif()
+ add_library(Open77.WebHost SHARED)
+ 
+ target_sources(
+     Open77.WebHost
+     PRIVATE
+         src/Main.cpp
++        src/AudioSink.cpp
++        src/AudioSink.hpp
+         src/HostRuntime.cpp
+         src/HostRuntime.hpp
+         src/InteropSelfTest.cpp
+         src/InteropSelfTest.hpp
+         src/SelfTestApp.cpp
+         src/SelfTestApp.hpp

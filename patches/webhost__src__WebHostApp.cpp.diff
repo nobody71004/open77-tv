@@ -1,0 +1,34 @@
+# TV-relevant hunks only, extracted from a working tree by
+# tools/extract-tv-patches.py. Apply by hand: this is not a patch
+# series, and the surrounding file has other unreleased work in it.
+diff --git a/webhost/src/WebHostApp.cpp b/webhost/src/WebHostApp.cpp
+index 814d1897..65f5a7ee 100644
+--- a/webhost/src/WebHostApp.cpp
++++ b/webhost/src/WebHostApp.cpp
+@@ -60,13 +60,25 @@ WebHostApp::WebHostApp(std::shared_ptr<HostRuntime> aRuntime)
+ void WebHostApp::OnBeforeCommandLineProcessing(const CefString&, CefRefPtr<CefCommandLine> aCommandLine)
+ {
+     aCommandLine->AppendSwitch("disable-extensions");
+     aCommandLine->AppendSwitch("disable-pdf-extension");
+     aCommandLine->AppendSwitch("disable-component-update");
+     aCommandLine->AppendSwitch("disable-background-networking");
+-    aCommandLine->AppendSwitchWithValue("autoplay-policy", "user-gesture-required");
++    // Media plays without a local gesture, and that is a requirement of the
++    // feature rather than a convenience. A television's URL is set by the SERVER
++    // -- a console operator, the menu, or another player -- so the player looking
++    // at the set frequently has given the page no gesture at all, and cannot: the
++    // surface is not in front of them to click. Under
++    // `user-gesture-required` a pasted link loads the player, shows its poster
++    // frame and sits there silent, which reads as "the television is broken" and
++    // has no fix from inside the game.
++    //
++    // The self-test host has run with this value from the start
++    // (`SelfTestApp.cpp`), so this makes the shipped host match the configuration
++    // the media pipeline was measured under instead of diverging from it.
++    aCommandLine->AppendSwitchWithValue("autoplay-policy", "no-user-gesture-required");
+     // Off-screen frames are handed over as D3D11 textures; DirectComposition
+     // has no window to compose into here and only adds a copy (FiveM disables
+     // it for the same reason).
+     aCommandLine->AppendSwitch("disable-direct-composition");
+     // The game named the adapter it renders on. Chromium's GPU process must
+     // create its shared textures there, or the game cannot open them: pin it

@@ -2,10 +2,10 @@
 # tools/extract-tv-patches.py. Apply by hand: this is not a patch
 # series, and the surrounding file has other unreleased work in it.
 diff --git a/client/src/webui/WebUiService.hpp b/client/src/webui/WebUiService.hpp
-index 8c3cdb03..fbd121ea 100644
+index 8c3cdb03..d3a92155 100644
 --- a/client/src/webui/WebUiService.hpp
 +++ b/client/src/webui/WebUiService.hpp
-@@ -34,12 +34,17 @@ struct CreateOptions
+@@ -34,12 +34,24 @@ struct CreateOptions
      bool visible{true};
      // Independent from the visibility requested by the page owner. A caller
      // can prepare a visible surface while a world is loading, then allow its
@@ -17,13 +17,20 @@ index 8c3cdb03..fbd121ea 100644
 +    // otherwise be drawn fullscreen over the player. See the flag's own note in
 +    // WebUiService.cpp for why it is neither `visible` nor `presentationAllowed`.
 +    bool hudSuppressed{false};
++    // Which page policy the surface is served under. `Strict` for every menu,
++    // HUD and panel; `Media` for the one page whose job is to play a pasted
++    // link, because YouTube's player script and its embed frame are otherwise
++    // refused before the request leaves the renderer. The directives behind each
++    // name live in `webui/include/op77/WebUI/PagePolicy.hpp` and nowhere else --
++    // a resource may name a policy, never write one.
++    WebUI::WebPagePolicy pagePolicy{WebUI::WebPagePolicy::Strict};
      std::optional<std::array<float, 4>> drawBounds;
  };
  
  struct Event
  {
      WebUI::SurfaceId surface{};
-@@ -80,12 +85,15 @@ struct SurfaceStatus
+@@ -80,12 +92,15 @@ struct SurfaceStatus
      std::string resource;
      uint64_t generation{};
      uint8_t layer{};
@@ -39,7 +46,7 @@ index 8c3cdb03..fbd121ea 100644
      bool closing{};
      bool texture{};
      bool drawn{};
-@@ -206,12 +214,33 @@ void OnGraphicsShutdown();
+@@ -206,12 +221,33 @@ void OnGraphicsShutdown();
  // is the newest one the host produced.
  void AcquireFrames(uint64_t aCompletedFence);
  [[nodiscard]] bool PrepareFrame(ID3D12GraphicsCommandList* aCommands, uint32_t aFrameIndex,

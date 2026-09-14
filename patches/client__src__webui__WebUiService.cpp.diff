@@ -2,7 +2,7 @@
 # tools/extract-tv-patches.py. Apply by hand: this is not a patch
 # series, and the surrounding file has other unreleased work in it.
 diff --git a/client/src/webui/WebUiService.cpp b/client/src/webui/WebUiService.cpp
-index db02375c..af68dcf4 100644
+index db02375c..f0eb224e 100644
 --- a/client/src/webui/WebUiService.cpp
 +++ b/client/src/webui/WebUiService.cpp
 @@ -136,12 +136,27 @@ struct Surface
@@ -33,10 +33,14 @@ index db02375c..af68dcf4 100644
      std::atomic_bool gpuUsePending{};
      std::atomic_uint64_t lastUseFence{};
  
-@@ -1823,12 +1838,13 @@ SurfaceId Create(const CreateOptions& aOptions, std::string& aError)
+@@ -1820,15 +1835,17 @@ SurfaceId Create(const CreateOptions& aOptions, std::string& aError)
+         .deviceScaleFactor = 1.0F,
+         .framesPerSecond = aOptions.framesPerSecond,
+         .layer = aOptions.layer,
          .zIndex = aOptions.zIndex,
          .transparent = aOptions.transparent,
          .visible = aOptions.visible,
++        .pagePolicy = aOptions.pagePolicy,
      };
      surface->visible.store(aOptions.visible, std::memory_order_release);
      surface->presentationAllowed.store(aOptions.presentationAllowed, std::memory_order_release);
@@ -47,7 +51,7 @@ index db02375c..af68dcf4 100644
      }
      if (s_connected.load(std::memory_order_acquire)) SendCreate(surface);
      return id;
-@@ -2046,13 +2062,21 @@ std::vector<SurfaceStatus> DescribeSurfaces()
+@@ -2046,13 +2063,21 @@ std::vector<SurfaceStatus> DescribeSurfaces()
              status.cpuGraphicsBytes = surface->cpuGraphicsBytes.load(std::memory_order_acquire);
              status.drawPixels = surface->drawPixels.load(std::memory_order_acquire);
              // Exactly the predicate Draw() applies, so `drawn=no` next to the
@@ -69,7 +73,7 @@ index db02375c..af68dcf4 100644
      }
      std::ranges::sort(result, [](const SurfaceStatus& aLeft, const SurfaceStatus& aRight) {
          return aLeft.surface < aRight.surface;
-@@ -2470,12 +2494,17 @@ void Draw(const float aViewportWidth, const float aViewportHeight)
+@@ -2470,12 +2495,17 @@ void Draw(const float aViewportWidth, const float aViewportHeight)
      std::vector<std::shared_ptr<Surface>> surfaces;
      for (const auto& surface : allSurfaces)
      {

@@ -1,0 +1,94 @@
+# TV-relevant hunks only, extracted from a working tree by
+# tools/extract-tv-patches.py. Apply by hand: this is not a patch
+# series, and the surrounding file has other unreleased work in it.
+diff --git a/webui/tests/WebCoreTests.cpp b/webui/tests/WebCoreTests.cpp
+index f011342f..59926764 100644
+--- a/webui/tests/WebCoreTests.cpp
++++ b/webui/tests/WebCoreTests.cpp
+@@ -117,12 +117,13 @@ int main()
+         .deviceScaleFactor = 2.0F,
+         .framesPerSecond = 30,
+         .layer = SurfaceLayer::Menu,
+         .zIndex = 12,
+         .transparent = true,
+         .visible = true,
++        .pagePolicy = WebPagePolicy::Media,
+     };
+     std::vector<uint8_t> createBytes;
+     if (!Check(EncodePayload(create, createBytes), "create payload encode failed"))
+     {
+         return 1;
+     }
+@@ -133,18 +134,71 @@ int main()
+                    createDecoded.generation == create.generation && createDecoded.entry == create.entry &&
+                    createDecoded.allowedFiles == create.allowedFiles &&
+                    createDecoded.width == create.width && createDecoded.height == create.height &&
+                    createDecoded.pixelWidth == create.pixelWidth &&
+                    createDecoded.pixelHeight == create.pixelHeight &&
+                    createDecoded.deviceScaleFactor == create.deviceScaleFactor &&
+-                   createDecoded.layer == create.layer && createDecoded.zIndex == create.zIndex,
++                   createDecoded.layer == create.layer && createDecoded.zIndex == create.zIndex &&
++                   createDecoded.pagePolicy == create.pagePolicy,
+                "create payload mismatch"))
+     {
+         return 1;
+     }
+ 
++    // The policy is what decides whether a page may reach the network at all, so
++    // the two things worth pinning are that it survives the wire and that the
++    // mapping is total: an unknown value must fail closed to the strict policy
++    // rather than inheriting whatever the receiving build happens to prefer.
++    if (!Check(PolicyFromWire(0) == WebPagePolicy::Strict &&
++                   PolicyFromWire(1) == WebPagePolicy::Media &&
++                   PolicyFromWire(200) == WebPagePolicy::Strict,
++               "page policy mapping is not the closed set it claims") ||
++        !Check(std::string(ContentSecurityPolicy(WebPagePolicy::Strict)).find(
++                   "frame-src 'none'") != std::string::npos &&
++                   std::string(ContentSecurityPolicy(WebPagePolicy::Media)).find(
++                       "https://www.youtube.com") != std::string::npos,
++               "page policy directives do not say what they are for") ||
++        // The half that is not a header. A page can be told what it may load and
++        // still be unable to load any of it, because the host decides what leaves
++        // the process: this pins the two halves to one policy, which is what was
++        // false while a television was served the media header and had every
++        // request it made refused on the other side of the process.
++        !Check(AllowsRemoteContent(WebPagePolicy::Strict) == false &&
++                   AllowsRemoteContent(WebPagePolicy::Media) == true,
++               "a policy that permits nothing must not reach the network, and the "
++               "one that exists to play a link must") ||
++        !Check(AllowsRemoteContent(WebPagePolicy::Media) ==
++                   (std::string(ContentSecurityPolicy(WebPagePolicy::Media)) !=
++                    std::string(kStrictContentSecurityPolicy)) &&
++                   AllowsRemoteContent(WebPagePolicy::Strict) ==
++                   (std::string(ContentSecurityPolicy(WebPagePolicy::Strict)) !=
++                    std::string(kStrictContentSecurityPolicy)),
++               "the header and the request gate disagree about one policy"))
++    {
++        return 1;
++    }
++
++    // A payload naming a policy this build does not have is refused, not
++    // downgraded: that is a disagreement between two builds and it must be
++    // visible as one.
++    {
++        std::vector<uint8_t> unknown;
++        if (!Check(EncodePayload(create, unknown), "create payload encode failed"))
++        {
++            return 1;
++        }
++        unknown.back() = 200;
++        CreateSurfacePayload rejected;
++        Message unknownMessage{MessageType::CreateSurface, 0, 10, std::move(unknown)};
++        if (!Check(!DecodePayload(unknownMessage, rejected),
++                   "an unknown page policy was accepted"))
++        {
++            return 1;
++        }
++    }
++
+     SurfaceResizePayload resize{
+         .surface = 9,
+         .generation = 4,
+         .frameMapping = "Local\\Open77.WebUI.Frame.9.Resize.1",
+         .width = 1920,
+         .height = 1080,

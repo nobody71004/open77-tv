@@ -8,7 +8,7 @@
 --
 --   python tools/run-suite.py --refresh-fixture --from <checkout>
 --
--- 185 aliases, vendored as-is; nothing here is hand-edited.
+-- 222 aliases, vendored as-is; nothing here is hand-edited.
 Open77AdminConfig = {
   props = {
     models = {
@@ -129,6 +129,43 @@ Open77AdminConfig = {
       "pipe.waste",
       "electronics.monitor",
       "electronics.monitor.device",
+      "electronics.tv.16x9",
+      "electronics.tv.21x9",
+      "electronics.tv.neokitsch.16x9",
+      "electronics.tv.neokitsch.21x9",
+      "electronics.tv.screen.16x9",
+      "electronics.tv.screen.21x9",
+      "electronics.tv.screen.neokitsch.16x9",
+      "electronics.tv.screen.neokitsch.21x9",
+      "electronics.tv.large",
+      "electronics.monitor.device.a",
+      "electronics.monitor.device.b",
+      "electronics.monitor.device.c",
+      "electronics.monitor.device.d",
+      "electronics.monitor.device.e",
+      "electronics.monitor.screen.a",
+      "electronics.monitor.screen.b",
+      "electronics.monitor.screen.c",
+      "electronics.monitor.screen.d",
+      "electronics.monitor.screen.a.vertical",
+      "electronics.monitor.screen.b.vertical",
+      "electronics.monitor.screen.c.vertical",
+      "electronics.monitor.screen.d.vertical",
+      "electronics.screen.21x9",
+      "electronics.screen.16x9",
+      "electronics.screen.4x3",
+      "electronics.screen.3x4",
+      "electronics.screen.9x16",
+      "electronics.screen.9x21",
+      "electronics.screen.2x1",
+      "electronics.frame.a",
+      "electronics.frame.ab",
+      "electronics.frame.ac",
+      "electronics.frame.ad",
+      "electronics.frame.ae",
+      "electronics.frame.af",
+      "electronics.monitor.surveillance",
+      "furniture.tv_stand",
       "electronics.vending_machine",
       "electronics.vending_machine.small",
       "electronics.vending_machine.drink",

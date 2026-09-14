@@ -83,6 +83,15 @@ end
 -- convenience for the person typing; it is not a boundary, because the same
 -- message can be sent with any client.
 local function acceptUrl(url)
+    -- Absent and empty are the same answer: a set with nothing to show. The
+    -- usage string on every caller -- `media.spawn <record> [yaw] [url]`,
+    -- `media.place <record> <x> <y> <z> [yaw] [url]` -- offers the URL as
+    -- optional, and it is genuinely optional: `acceptUrl(nil)` refusing with
+    -- `url_must_be_a_string` made the bracket a lie, so "spawn a television here"
+    -- from the console failed with a message about an argument the operator had
+    -- deliberately left out. A non-string that is not nil is still refused by
+    -- name -- a number or a table in that slot is a mistake worth reading.
+    if url == nil then return "" end
     if type(url) ~= "string" then return nil, "url_must_be_a_string" end
     if url == "" then return "" end
     if #url > MAX_URL_LENGTH then return nil, "url_too_long" end
@@ -235,6 +244,16 @@ end
 
 local MAX_MEDIA = 64
 
+---The volume a television is created at.
+---
+---75 rather than 100, and rather than silence. A screen is usually put down in
+---company, and a screen that starts at full scale is a screen somebody has to walk
+---over and turn down before anything else happens -- every time. A screen that
+---starts at zero reads as broken. 75 is audible, clearly not maximum, and is the
+---same number the page falls back to before the server has said anything, so the
+---first frame and every frame after it agree.
+local DEFAULT_VOLUME = 75
+
 ---Creates a television: one prop, one screen, bound together by prop id.
 ---
 ---The prop is created first. If it is refused there is nothing to bind a screen
@@ -254,6 +273,47 @@ local function acceptYaw(value)
     return math.max(-360.0, math.min(360.0, yaw))
 end
 
+---How far in front of the caller a menu-spawned screen is set down.
+---
+---Clears two things rather than picked for taste: the deepest cabinet in the
+---catalogue (the game's televisions measure 0.18 m front to back and `tv.large`
+---0.227 m, from their cooked meshes' bounding boxes) and the player's own body,
+---which is about 0.35 m in radius. At the old distance of zero the set was
+---created through the player and read as "nothing spawned": you are inside it,
+---its faces are back-face culled, and the picture -- a screen plane 1 cm inside
+---the body's front face -- points the way you happen to be facing rather than at
+---you.
+local FACING_DISTANCE = 1.1
+
+---Where a menu-spawned screen goes, and which way it faces.
+---
+---The heading arrives from the caller (the client's `character.state().yaw`,
+---clamped), because the server cannot read one. The conversion from heading to a
+---direction is the project's own, used by the race client's spawn transforms and
+---the pursuit roadblocks: forward is `(-sin, cos)`, and a prop's yaw is a
+---rotation about Z in degrees.
+---
+---The set is turned to face the caller -- heading + 180 -- because the game's
+---screens are authored facing their own local +Y (the screen mesh of
+---`television_a_16x9` sits at Y 0.1154, 1 cm inside the body's front face at
+---Y 0.1255, so +Y is the glass). At yaw 0 a prop's +Y is world +Y, which is also
+---where a caller at heading 0 is looking -- so placing it with the caller's own
+---heading would present the back of the cabinet. Half a turn puts the glass
+---towards them, which is what the menu promises.
+---
+---`media.place` does not go through this: an operator naming coordinates and a
+---yaw is stating where the set is and which way it points, and second-guessing
+---that would make it impossible to place one deliberately.
+local function facingPlacement(position, heading)
+    local radians = math.rad(heading)
+    return {
+        x = position.x - math.sin(radians) * FACING_DISTANCE,
+        y = position.y + math.cos(radians) * FACING_DISTANCE,
+        z = position.z,
+        bucket = position.bucket,
+    }, heading + 180.0
+end
+
 local function spawn(recordId, position, yaw, url, source)
     local record = Open77MediaRecord(recordId)
     if record == nil then return nil, "unknown_record" end
@@ -262,19 +322,21 @@ local function spawn(recordId, position, yaw, url, source)
     local cleanUrl, urlError = acceptUrl(url)
     if cleanUrl == nil then return nil, urlError end
 
+    local facing = acceptYaw(yaw)
     local prop, propError = Open77.props.create({
         model = record.model,
         position = { x = position.x, y = position.y, z = position.z },
-        yaw = acceptYaw(yaw),
+        yaw = facing,
         bucket = position.bucket,
         -- No collision, and this is a fix for a specific problem rather than a
-        -- preference. A television is spawned where its owner is standing (the
-        -- same place `prop.here` puts a prop), so with the props default of
-        -- static collision the player is *inside* the thing they just spawned
-        -- and can be pushed out of the world by it or pinned against it. A
-        -- screen is not something to stand on, so the honest answer is that it
-        -- has no collision at all -- and the prop can then be moved freely with
-        -- `media.place` if it is in the way visually.
+        -- preference. A screen put down within arm's reach is one the player can
+        -- be pushed out of the world by, or pinned against, with the props
+        -- default of static collision -- the menu path sets the set down 1.1 m
+        -- ahead so nothing is ever created *through* the caller, and this keeps
+        -- the same promise for the console path, where the operator names the
+        -- spot. A screen is not something to stand on, so the honest answer is
+        -- that it has no collision at all -- and the prop can then be moved
+        -- freely with `media.place` if it is in the way visually.
         physics = "none",
         collision = false,
     })
@@ -289,11 +351,16 @@ local function spawn(recordId, position, yaw, url, source)
         record = record.id,
         label = record.label,
         url = cleanUrl or "",
-        volume = 100,
+        volume = DEFAULT_VOLUME,
         muted = false,
         paused = false,
         quad = copyQuad(record.quad),
         position = { x = position.x, y = position.y, z = position.z },
+        -- Kept because it is now a placement decision rather than a detail: the
+        -- menu path derives it from the caller's heading (`facingPlacement`),
+        -- and `media.list` reports it so "which way is it pointing" has an
+        -- answer that does not need a screenshot.
+        yaw = facing,
         source = source,
     }
     media[id] = entry
@@ -316,8 +383,12 @@ end
 
 local function describeEntry(entry)
     return string.format(
-        "media=%d prop=%s record=%s url=%s volume=%d muted=%s paused=%s",
+        "media=%d prop=%s record=%s pos=%.2f,%.2f,%.2f yaw=%.1f " ..
+        "url=%s volume=%d muted=%s paused=%s",
         entry.id, tostring(entry.prop), tostring(entry.record),
+        tonumber(entry.position.x) or 0.0, tonumber(entry.position.y) or 0.0,
+        tonumber(entry.position.z) or 0.0,
+        tonumber(entry.yaw) or 0.0,
         entry.url == "" and "(idle screen)" or entry.url,
         entry.volume, tostring(entry.muted), tostring(entry.paused))
 end
@@ -442,6 +513,99 @@ command("media.remove", "media.remove <id>", true, function(source, args, raw)
     output(source, raw, true, string.format("television %d removed", id))
 end)
 
+-- =============================================================================
+-- PLACEMENT: WHERE THE SET STANDS AND WHICH WAY IT POINTS
+-- =============================================================================
+-- A television is spawned about a metre in front of the player who asked for it,
+-- which is the right default and never quite the right answer: it ends up
+-- hovering over a crate, half inside a wall, or a hand's width away from flush
+-- with the shelf it was meant to sit on. Fixing that by hand meant
+-- `media.remove` and re-spawning until it landed, which throws away the URL and
+-- resets the volume -- and there was no way at all to turn a set that had come
+-- out facing the wrong way.
+--
+-- So a set can be nudged and turned. The arithmetic (which way "left" is, what a
+-- turn does to the heading) is in `shared/placement.lua`, pure and tested; this
+-- is the half that talks to the prop registry.
+--
+-- The prop is patched, never respawned: `Open77.props.setTransform` changes the
+-- transform of the entity that is already there, so every player watching sees
+-- the set slide rather than a set disappear and a new one appear, and the screen
+-- needs nothing at all -- the quad is in the prop's own frame, so it follows the
+-- cabinet for free.
+
+---Applies a placement to a set, and leaves the entry alone if the registry says
+---no. Returns the reason on refusal, which is the caller's to report.
+---@param entry table the media entry
+---@param position table|nil the new position, or nil to keep the current one
+---@param yaw number|nil the new heading, or nil to keep the current one
+---@return boolean ok
+---@return string|nil reason
+local function applyPlacement(entry, position, yaw)
+    if entry == nil then return false, "no_such_television" end
+    local target = position or entry.position
+    local facing = yaw or entry.yaw
+    if type(target) ~= "table" or facing == nil then
+        return false, "no_placement_recorded"
+    end
+    local ok, reason = Open77.props.setTransform(tonumber(entry.prop) or entry.prop, {
+        position = { x = target.x, y = target.y, z = target.z, bucket = target.bucket },
+        yaw = facing,
+    })
+    if not ok then
+        return false, "prop_move_rejected:" .. tostring(reason)
+    end
+    -- Only on success: `media.list` reads these, and a refused move that updated
+    -- them would report a set standing somewhere it is not.
+    entry.position = {
+        x = target.x, y = target.y, z = target.z, bucket = target.bucket,
+    }
+    entry.yaw = facing
+    return true, nil
+end
+
+command("media.move", "media.move <id> <forward|back|left|right|up|down> [metres]", true,
+    function(source, args, raw)
+        if args.n < 2 or args.n > 3 then error("wrong argument count", 0) end
+        local entry = media[math.floor(number(args[1]))]
+        if entry == nil then return output(source, raw, false, "no such television") end
+        local direction = string.lower(tostring(args[2]))
+        local metres = args[3] and number(args[3]) or nil
+        local position, moveError = Open77MediaPlacement.Nudge(
+            entry.position, entry.yaw, direction, metres)
+        if position == nil then
+            return output(source, raw, false, "move refused: " .. tostring(moveError))
+        end
+        local ok, reason = applyPlacement(entry, position, nil)
+        if not ok then
+            return output(source, raw, false, "move refused: " .. tostring(reason))
+        end
+        broadcast(nil)
+        output(source, raw, true, string.format(
+            "television %d moved %s to %.2f,%.2f,%.2f (yaw %.1f)", entry.id,
+            direction, entry.position.x, entry.position.y, entry.position.z, entry.yaw))
+    end)
+
+command("media.rotate", "media.rotate <id> <left|right> [degrees]", true,
+    function(source, args, raw)
+        if args.n < 2 or args.n > 3 then error("wrong argument count", 0) end
+        local entry = media[math.floor(number(args[1]))]
+        if entry == nil then return output(source, raw, false, "no such television") end
+        local direction = string.lower(tostring(args[2]))
+        local degrees = args[3] and number(args[3]) or nil
+        local yaw, turnError = Open77MediaPlacement.Turn(entry.yaw, direction, degrees)
+        if yaw == nil then
+            return output(source, raw, false, "rotate refused: " .. tostring(turnError))
+        end
+        local ok, reason = applyPlacement(entry, nil, yaw)
+        if not ok then
+            return output(source, raw, false, "rotate refused: " .. tostring(reason))
+        end
+        broadcast(nil)
+        output(source, raw, true, string.format(
+            "television %d turned %s to yaw %.1f", entry.id, direction, entry.yaw))
+    end)
+
 -- Live quad tuning, and the reason the quad is on the wire at all.
 --
 -- The catalogue's rectangles are authored estimates: the props hosts publish no
@@ -543,7 +707,20 @@ RegisterNetEvent("open77:media:control", function(action, payload)
     local source = source
     if source == nil or type(action) ~= "string" or type(payload) ~= "table" then return end
     local entry = media[math.floor(tonumber(payload.id) or -1)]
-    if entry == nil then return end
+    if entry == nil then
+        -- Answered, not swallowed.
+        --
+        -- This returned in silence, and silence is the reason a volume or mute
+        -- complaint could not be settled from a log: a page asking about a
+        -- television the server does not have produced no reply, no line, and no
+        -- distinction from a request that never arrived at all. The id is the
+        -- whole content of the message when it goes wrong, so the answer names
+        -- it -- and a client whose row carries no id now says so out loud
+        -- instead of looking like a control that does nothing.
+        TriggerClientEvent("open77:media:result", source, false,
+            "unknown_media_id:" .. tostring(payload.id))
+        return
+    end
 
     if action == "spawn" then
         -- Spawning needs a world position and is handled on its own event, so
@@ -587,6 +764,39 @@ RegisterNetEvent("open77:media:control", function(action, payload)
             return
         end
         entry[action] = payload.value
+    elseif action == "move" then
+        -- The menu's path to the same arithmetic the `media.move` command uses.
+        -- Both go through `Open77MediaPlacement`, so the distance clamps and the
+        -- axis convention are decided in one place; the only thing this branch
+        -- adds is that a payload cannot ask for a nudge larger than the step
+        -- ceiling, because this message comes from a client.
+        local position, moveError = Open77MediaPlacement.Nudge(entry.position, entry.yaw,
+            payload.direction, tonumber(payload.metres) or nil)
+        if position == nil then
+            TriggerClientEvent("open77:media:result", source, false,
+                "move_refused:" .. tostring(moveError))
+            return
+        end
+        local moved, moveReason = applyPlacement(entry, position, nil)
+        if not moved then
+            TriggerClientEvent("open77:media:result", source, false,
+                "move_refused:" .. tostring(moveReason))
+            return
+        end
+    elseif action == "rotate" then
+        local yaw, turnError = Open77MediaPlacement.Turn(entry.yaw, payload.direction,
+            tonumber(payload.degrees) or nil)
+        if yaw == nil then
+            TriggerClientEvent("open77:media:result", source, false,
+                "rotate_refused:" .. tostring(turnError))
+            return
+        end
+        local turned, turnReason = applyPlacement(entry, nil, yaw)
+        if not turned then
+            TriggerClientEvent("open77:media:result", source, false,
+                "rotate_refused:" .. tostring(turnReason))
+            return
+        end
     elseif action == "remove" then
         remove(entry.id)
     else
@@ -620,11 +830,19 @@ RegisterNetEvent("open77:media:spawn", function(payload)
         return
     end
 
-    local entry, reason = spawn(record, position, payload.yaw, payload.url, source)
+    -- Set down in front of the caller and turned to face them, rather than
+    -- created through them. See `facingPlacement`.
+    local placed, facing = facingPlacement(position, acceptYaw(payload.yaw))
+    local entry, reason = spawn(record, placed, facing, payload.url, source)
     if entry == nil then
         TriggerClientEvent("open77:media:result", source, false, tostring(reason))
         return
     end
+    -- The placement is on the record as well as in the world, so `media.list`
+    -- -- the only view an operator has -- reports where the set actually is.
+    print(string.format("media %d placed: record=%s model=%s at %.2f,%.2f,%.2f yaw=%.1f",
+        entry.id, entry.record, record, entry.position.x, entry.position.y,
+        entry.position.z, entry.yaw))
     broadcast(nil)
     TriggerClientEvent("open77:media:result", source, true,
         string.format("television %d created", entry.id))

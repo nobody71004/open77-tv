@@ -2,7 +2,7 @@
 # tools/extract-tv-patches.py. Apply by hand: this is not a patch
 # series, and the surrounding file has other unreleased work in it.
 diff --git a/client/CMakeLists.txt b/client/CMakeLists.txt
-index 9fae800f..fe301a38 100644
+index 9fae800f..705389be 100644
 --- a/client/CMakeLists.txt
 +++ b/client/CMakeLists.txt
 @@ -51,12 +53,14 @@ target_sources(
@@ -20,3 +20,32 @@ index 9fae800f..fe301a38 100644
          src/api/NativeMap.hpp
          src/api/Screen.cpp
          src/api/Screen.hpp
+@@ -276,12 +280,28 @@ if(BUILD_TESTING)
+     add_executable(Open77.DilationAuthorisation.Tests
+         tests/DilationAuthorisationTests.cpp src/api/DilationAuthorisation.cpp)
+     target_include_directories(Open77.DilationAuthorisation.Tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+     set_target_properties(Open77.DilationAuthorisation.Tests PROPERTIES FOLDER "Tests")
+     add_test(NAME Open77.DilationAuthorisation.Tests COMMAND Open77.DilationAuthorisation.Tests)
+ 
++    # The screen-quad mapping is pure by design: which corner of a television's
++    # panel carries the texture's origin cannot fail loudly, so it is tested
++    # against the measured mesh rather than trusted.
++    add_executable(Open77.ScreenQuad.Tests tests/ScreenQuadTests.cpp)
++    target_include_directories(Open77.ScreenQuad.Tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
++    set_target_properties(Open77.ScreenQuad.Tests PROPERTIES FOLDER "Tests")
++    add_test(NAME Open77.ScreenQuad.Tests COMMAND Open77.ScreenQuad.Tests)
++
++    # The blend that puts a published quad where the presented frame is, rather
++    # than where the last game tick left it. Pure arithmetic for the same reason:
++    # a rectangle that slides on its own television is invisible to every log.
++    add_executable(Open77.ScreenMotion.Tests tests/ScreenMotionTests.cpp)
++    target_include_directories(Open77.ScreenMotion.Tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
++    set_target_properties(Open77.ScreenMotion.Tests PROPERTIES FOLDER "Tests")
++    add_test(NAME Open77.ScreenMotion.Tests COMMAND Open77.ScreenMotion.Tests)
++
+     add_executable(Open77.AirPresentation.Tests tests/AirPresentationTests.cpp)
+     add_executable(Open77.MirrorLocomotion.Tests tests/MirrorLocomotionTests.cpp)
+     target_include_directories(Open77.MirrorLocomotion.Tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+     set_target_properties(Open77.MirrorLocomotion.Tests PROPERTIES FOLDER "Tests")
+     add_test(NAME Open77.MirrorLocomotion.Tests COMMAND Open77.MirrorLocomotion.Tests)
+     target_include_directories(Open77.AirPresentation.Tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")

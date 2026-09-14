@@ -1,0 +1,82 @@
+# TV-relevant hunks only, extracted from a working tree by
+# tools/extract-tv-patches.py. Apply by hand: this is not a patch
+# series, and the surrounding file has other unreleased work in it.
+diff --git a/webhost/src/SurfaceClient.hpp b/webhost/src/SurfaceClient.hpp
+index e83feac1..0f4cce04 100644
+--- a/webhost/src/SurfaceClient.hpp
++++ b/webhost/src/SurfaceClient.hpp
+@@ -1,22 +1,25 @@
+ #pragma once
+ 
+ #include <filesystem>
+ #include <array>
++#include <atomic>
+ #include <chrono>
+ #include <memory>
+ #include <string>
+ #include <unordered_map>
+ #include <unordered_set>
+ 
+ #include <d3d11_4.h>
+ #include <wrl/client.h>
+ 
+ #include <op77/WebUI/Messages.hpp>
+ #include <op77/WebUI/SharedFrameBuffer.hpp>
+ 
++#include "AudioSink.hpp"
++
+ #include "include/cef_client.h"
+ #include "include/cef_request_handler.h"
+ #include "include/cef_request_context.h"
+ #include "include/cef_resource_request_handler.h"
+ #include "include/wrapper/cef_message_router.h"
+ 
+@@ -65,12 +69,29 @@ public:
+ 
+     CefRefPtr<CefRenderHandler> GetRenderHandler() override { return this; }
+     CefRefPtr<CefLifeSpanHandler> GetLifeSpanHandler() override { return this; }
+     CefRefPtr<CefLoadHandler> GetLoadHandler() override { return this; }
+     CefRefPtr<CefDisplayHandler> GetDisplayHandler() override { return this; }
+     CefRefPtr<CefRequestHandler> GetRequestHandler() override { return this; }
++    // Every surface is a browser, so every surface can have audio: a page the
++    // resource ships may play a sound or a stream, and windowless CEF gives no
++    // device of its own. The PCM is handed to this process and played through
++    // AudioSink, which is why the surface feels like it has a speaker.
++    CefRefPtr<CefAudioHandler> GetAudioHandler() override { return this; }
++
++    // The device's shared-mode format has to be agreed before CEF starts a
++    // stream: a shared-mode client may not choose its own sample rate, so
++    // answering with CEF's 44.1 kHz default on a 48 kHz device would play every
++    // page fast and sharp. Probed once, before the first stream.
++    bool GetAudioParameters(CefRefPtr<CefBrowser> aBrowser, CefAudioParameters& aParams) override;
++    void OnAudioStreamStarted(CefRefPtr<CefBrowser> aBrowser, const CefAudioParameters& aParams,
++                              int aChannels) override;
++    void OnAudioStreamPacket(CefRefPtr<CefBrowser> aBrowser, const float** aData, int aFrames,
++                             int64_t aPts) override;
++    void OnAudioStreamStopped(CefRefPtr<CefBrowser> aBrowser) override;
++    void OnAudioStreamError(CefRefPtr<CefBrowser> aBrowser, const CefString& aMessage) override;
+ 
+     bool OnProcessMessageReceived(CefRefPtr<CefBrowser> aBrowser, CefRefPtr<CefFrame> aFrame,
+                                   CefProcessId aSourceProcess,
+                                   CefRefPtr<CefProcessMessage> aMessage) override;
+     void GetViewRect(CefRefPtr<CefBrowser> aBrowser, CefRect& aRect) override;
+     bool GetScreenInfo(CefRefPtr<CefBrowser> aBrowser, CefScreenInfo& aScreenInfo) override;
+@@ -228,12 +254,18 @@ private:
+     bool m_sharedTextures{};
+     bool m_gpuFallback{};
+     bool m_ringFallbackAllowed{};
+     std::string m_transport{"cpu"};
+     bool m_externalBeginFrames{};
+     std::chrono::steady_clock::time_point m_nextBeginFrame{};
++
++    std::unique_ptr<AudioSink> m_audio;
++    AudioSink::Format m_audioFormat{};
++    std::atomic<bool> m_audioFormatKnown{false};
++    std::atomic<bool> m_audioReported{false};
++    std::atomic<bool> m_audioFormatFailed{false};
+     bool m_paintCallbackLogged{};
+     bool m_acceleratedPaintCallbackLogged{};
+     bool m_acceleratedPaintInfoLogged{};
+     bool m_sourceOpenFailureLogged{};
+     bool m_viewSizeMismatchLogged{};
+ 

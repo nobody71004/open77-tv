@@ -2,10 +2,51 @@
 # tools/extract-tv-patches.py. Apply by hand: this is not a patch
 # series, and the surrounding file has other unreleased work in it.
 diff --git a/client/src/webui/WorldOverlay.hpp b/client/src/webui/WorldOverlay.hpp
-index d236bc3f..d24b4770 100644
+index d236bc3f..04c8d26d 100644
 --- a/client/src/webui/WorldOverlay.hpp
 +++ b/client/src/webui/WorldOverlay.hpp
-@@ -135,12 +135,28 @@ inline constexpr int kStaleCeilingMilliseconds = 2000;
+@@ -45,19 +45,34 @@
+ // is not a new renderer; it is a few hundred draw calls against a renderer that
+ // already ships.
+ //
+ // The producers keep the projection they already do, on the game thread, and
+ // publish *screen-space* items here. `Draw` consumes the newest published frame
+ // during the ImGui frame that is about to be presented. The remaining phase
+-// error is therefore the game-thread-to-present offset -- at most one frame,
+-// against the many frames of CEF buffering it replaces.
++// error is therefore the game-thread-to-present offset, against the many frames
++// of CEF buffering it replaces.
+ //
+-// That one frame is the floor for this approach, and it is worth being explicit
+-// about why. The real ground truth is the camera the *render* thread used, and
+-// we do not have it: `gameCameraSystem::ProjectPoint` is an RTTI call that is
+-// only safe on the game thread. Closing the last frame would mean reading the
++// "At most one frame" was the claim, and a measured session showed it was wrong
++// in the direction that matters: the game thread published at 24-69 Hz while the
++// frame was presented faster and, with frame generation, on frames interpolated
++// between those updates. An item's position was therefore held for up to 42 ms
++// and then jumped, against a world that moved smoothly underneath it. For a
++// small plate that reads as a stutter. For a screen -- a rectangle on a prop,
++// seen at walking speed -- it is the picture sliding around on its own
++// television, which is how it was reported.
++//
++// So a screen is no longer drawn from the newest sample alone: `ScreenMotion.hpp`
++// keeps the two most recent corner sets per surface and places the quad at the
++// fraction of that interval the presented frame sits at, clamped, so it advances
++// every presented frame instead of every game tick. A session whose producer and
++// display already agree draws the newest sample exactly, as it always did.
++//
++// What is left is the true floor of this approach, and it is worth being
++// explicit about why. The real ground truth is the camera the *render* thread
++// used, and we do not have it: `gameCameraSystem::ProjectPoint` is an RTTI call
++// that is only safe on the game thread. Closing that would mean reading the
+ // engine's own view constant buffer from the render thread, which is a different
+ // and much larger piece of reverse engineering.
+ //
+ // ---------------------------------------------------------------------------
+ // WHAT STAYS IN CEF
+ // ---------------------------------------------------------------------------
+@@ -135,12 +150,28 @@ inline constexpr int kStaleCeilingMilliseconds = 2000;
  enum class Style : uint8_t
  {
      Plate,  ///< a name above a body: label, optional distance, legibility backdrop
@@ -34,3 +75,50 @@ index d236bc3f..d24b4770 100644
  
  /// Packs a colour the way `ImDrawList` wants it, so no producer has to include
  /// ImGui to describe one. `ParseColor` accepts the same `#RRGGBB` / `#RRGGBBAA`
+@@ -238,13 +282,45 @@ void Clear();
+ /// back to the built-in font when none of the candidates is readable.
+ void OnImGuiReady();
+ void OnImGuiShutdown();
+ 
+ /// Render thread, inside an ImGui frame, after `WebUiService::Draw` so native
+ /// items land above the CEF surfaces rather than under them.
+-void Draw(float aViewportWidth, float aViewportHeight);
++/// Which half of the overlay a draw call is responsible for.
++///
++/// The overlay is composited into the same ImGui draw list as the CEF pages, so
++/// the ORDER of the two calls is the layering: whatever is queued first is
++/// underneath. That order is not the same for every style, which is why this is
++/// an argument rather than a detail of `Draw`.
++///
++///   * A **screen** is a rectangle that exists in the world -- a television. It
++///     belongs UNDER the pages, so opening the freeroam menu covers the picture
++///     instead of the picture covering the menu. It used to be drawn after the
++///     pages, and a spawned television then painted over the whole menu.
++///   * A **label, card, ring or dot** is an annotation OF the world drawn for the
++///     player: a marker, a nameplate, a distance. Those want to be read, so they
++///     sit above the pages exactly as before.
++///
++/// `Draw` defaults to `Annotations` so every existing producer keeps the
++/// layering it was written against, and only a caller that knows it has screens
++/// on this frame asks for the other half.
++enum class Layer : uint8_t
++{
++    Screens,
++    Annotations,
++};
++
++/// One half of the overlay. Call `Screens` before `WebUiService::Draw` and
++/// `Annotations` after it; calling only one half is legal and draws nothing for
++/// the other's styles.
++///
++/// Every call re-reads the published frames, which is cheap and idempotent: the
++/// stale-producer sweep is guarded by its own warning flag and the item sort is
++/// over at most `kMaximumItems` entries.
++void Draw(float aViewportWidth, float aViewportHeight,
++          Layer aLayer = Layer::Annotations);
+ 
+ /// Logger for the stall warning. Same handle every other subsystem uses; the
+ /// overlay draws on the render thread and has no other way to be heard.
+ void Initialize(RED4ext::v1::PluginHandle aHandle, const RED4ext::v1::Sdk* aSdk);
+ 
+ /// True when at least one producer has something to draw. The overlay hook skips

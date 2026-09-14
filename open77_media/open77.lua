@@ -21,6 +21,11 @@ reload_policy "local"
 -- succeed -- and lets the prop move without the screen caring.
 shared_script "shared/records.lua"
 
+-- Where a set stands and which way it points, nudged and turned from the menu or
+-- the console. Pure arithmetic (which way "left" is, what a quarter turn does to
+-- a heading), shared because the server applies it and the tests pin it.
+shared_script "shared/placement.lua"
+
 server_script "server/main.lua"
 client_script "client/main.lua"
 
@@ -33,10 +38,13 @@ web_ui_page "web/tv.html"
 web_ui_auto_create false
 web_files { "web/**" }
 
--- Carried, not executed. The suite is run by `tools/lua-test/run.lua` (and by
--- the Lua test harness in the C# suite); listing it under `files` is what makes
+-- Carried, not executed. The suites are run by `tools/lua-test/run.lua` (and by
+-- the Lua test harness in the C# suite); listing them under `files` is what makes
 -- the packaged resource include the bytes rather than shipping without them.
-files { "tests/records_test.lua" }
+-- All three, including the client half: a resource whose catalogue suite ships
+-- and whose client suite does not is one where the half that chooses which screens
+-- to materialise is the half nobody can run outside the game.
+files { "tests/records_test.lua", "tests/placement_test.lua", "tests/client_test.lua" }
 
 permissions {
     -- Spawn/remove/URL requests from the menu, and the state pushes back down.

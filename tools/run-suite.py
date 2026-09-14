@@ -17,6 +17,11 @@ Two sources, in order of preference:
 
 `--refresh-fixture --from <checkout>` rewrites the snapshot from a real tree.
 
+The catalogue suite is not the only one: the placement arithmetic (which way
+"left" is on a set that is not axis-aligned) and the client half (which screens a
+client materialises, and what it releases when the session ends) are pure Lua
+too, and all three run here.
+
 usage:
   python tools/run-suite.py [--lua <interpreter>] [--from <checkout>]
   python tools/run-suite.py --refresh-fixture --from <checkout>
@@ -26,13 +31,31 @@ import argparse
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent.parent
 FIXTURE = HERE / "tests" / "fixtures" / "open77_admin-props-models.lua"
 ADMIN_CONFIG = "resources/system/open77_admin/shared/config.lua"
 RECORDS = "open77_media/shared/records.lua"
+PLACEMENT = "open77_media/shared/placement.lua"
 SUITE = "open77_media/tests/records_test.lua"
+PLACEMENT_SUITE = "open77_media/tests/placement_test.lua"
+CLIENT_SUITE = "open77_media/tests/client_test.lua"
+RESOURCE = "open77_media"
+
+# The three pure suites, in the order they have to run.
+#
+# The catalogue suite comes first because it is the only one that needs the
+# admin alias list, and the client suite comes LAST because it installs
+# process-wide `Open77`, `CreateThread` and `Wait` stubs so the resource can be
+# loaded outside the game -- a suite that ran after it would see those instead of
+# nothing. `tools/lua-test/run.lua` in the monorepo makes the same point.
+SUITES = [
+    ("open77_media / records", [RECORDS], SUITE),
+    ("open77_media / placement", [PLACEMENT], PLACEMENT_SUITE),
+    ("open77_media / client", [RECORDS], CLIENT_SUITE),
+]
 
 # Dumps the live models list as the fixture body, so vendoring is a copy of what
 # the server actually publishes rather than a transcription.
@@ -138,17 +161,40 @@ def main():
         print("preloading the vendored admin-model snapshot "
               "(pass --from <checkout> for the live list)")
 
-    body = (
-        f"assert(loadfile({lua_literal(admin)}))()\n"
-        f"assert(loadfile({lua_literal(HERE / RECORDS)}))()\n"
-        f"assert(loadfile({lua_literal(HERE / SUITE)}))()\n"
-        "local r = TestResult\n"
-        "assert(type(r) == 'table', 'the suite published no TestResult')\n"
-        "print(('assertions passed: %d, failed: %d'):format(r.passed, r.failed))\n"
-        "for _, f in ipairs(r.failures or {}) do print('  FAIL: ' .. f) end\n"
-        "os.exit(r.failed == 0 and r.passed > 0 and 0 or 1)\n"
-    )
-    code, out, err = run(lua, body)
+    # The client suite resolves the resource through `OPEN77_REPO_ROOT` (the
+    # monorepo layout, `resources/system/open77_media/...`). This repository is
+    # not that layout, so one is staged in a temp directory rather than teaching
+    # the suite a second way to find its own resource -- the suite is a copy of
+    # the file that runs in the monorepo and has to stay one.
+    staged = Path(tempfile.mkdtemp(prefix="open77-tv-"))
+    layout = staged / "resources" / "system"
+    layout.mkdir(parents=True)
+    shutil.copytree(HERE / RESOURCE, layout / RESOURCE)
+    print(f"staged the resource at {layout / RESOURCE} for the client suite")
+
+    body = [f"assert(loadfile({lua_literal(admin)}))()\n"]
+    for name, preload, suite in SUITES:
+        chunk = []
+        # The client suite is the only one that needs to know where the resource
+        # lives, and it reads that from a global rather than from the CWD.
+        if suite == CLIENT_SUITE:
+            chunk.append(f"OPEN77_REPO_ROOT = {lua_literal(staged)}\n")
+        for path in preload:
+            chunk.append(f"assert(loadfile({lua_literal(HERE / path)}))()\n")
+        chunk.append("TestResult = nil\n")
+        chunk.append(f"assert(loadfile({lua_literal(HERE / suite)}))()\n")
+        chunk.append(
+            "local r = TestResult\n"
+            "assert(type(r) == 'table', 'the suite published no TestResult')\n"
+            f"print(('{name}: %d passed, %d failed'):format(r.passed, r.failed))\n"
+            "for _, f in ipairs(r.failures or {}) do print('  FAIL: ' .. f) end\n"
+            "if r.failed > 0 or r.passed == 0 then failed = true end\n"
+        )
+        body.extend(chunk)
+    body.append("os.exit(failed and 1 or 0)\n")
+
+    code, out, err = run(lua, "failed = false\n" + "".join(body))
+    shutil.rmtree(staged, ignore_errors=True)
     sys.stdout.write(out)
     if err.strip():
         sys.stderr.write(err)

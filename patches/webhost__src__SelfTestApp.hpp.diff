@@ -1,0 +1,153 @@
+# TV-relevant hunks only, extracted from a working tree by
+# tools/extract-tv-patches.py. Apply by hand: this is not a patch
+# series, and the surrounding file has other unreleased work in it.
+diff --git a/webhost/src/SelfTestApp.hpp b/webhost/src/SelfTestApp.hpp
+index 5792f1a8..43ff07bc 100644
+--- a/webhost/src/SelfTestApp.hpp
++++ b/webhost/src/SelfTestApp.hpp
+@@ -12,75 +16,142 @@ namespace op77::WebHost
+ {
+ /// One browser, one frame, one BMP, exit. In CPU mode the frame comes from
+ /// OnPaint; in GPU mode from OnAcceleratedPaint, opened through a local D3D11
+ /// device the way the production host does, so the test proves the shared
+ /// texture contract (pooled handle, valid inside the callback) on this
+ /// machine and this driver.
++///
++/// A third mode answers a different question with the same harness: `probe`
++/// loads a page and writes back what *this* libcef build can actually play and
++/// decrypt. Media capability is a property of the CEF distribution (codec
++/// branding, whether a CDM was shipped), and reading it out of a build config
++/// instead of out of the running browser is how you end up promising a TV that
++/// plays YouTube and discovering it cannot on the machine it ships to.
+ class SelfTestClient final : public CefClient,
+                              public CefRenderHandler,
+                              public CefLifeSpanHandler,
+-                             public CefLoadHandler
++                             public CefLoadHandler,
++                             public CefDisplayHandler,
++                             public CefAudioHandler
+ {
+ public:
+     // Exit codes RunMain returns for the self-test process.
+     static constexpr int kExitSuccess = 0;
+     static constexpr int kExitFailure = 4;
+     static constexpr int kExitNoAcceleratedPaint = 7;
++    static constexpr int kExitProbeEmpty = 8;
+ 
+-    SelfTestClient(std::filesystem::path aOutput, bool aGpu);
++    /// The page's report reaches the host on the JS console, not through a
++    /// return value: CEF 144's ExecuteJavaScript is fire-and-forget, so the only
++    /// supported read-back is a console message. The page prints exactly one
++    /// line, prefixed with this, once its asynchronous key-system check has
++    /// settled -- which is why there is no polling loop on this side.
++    static constexpr const char* kProbePrefix = "OP77PROBE:";
++
++    /// The host's own half of the media answer, written as a second line next to
++    /// the page's report. A page can play a stream and the user still hear
++    /// nothing: windowless CEF delivers no audio device of its own, so the PCM
++    /// only exists if the client implements CefAudioHandler and consumes it.
++    /// Counting the packets on this side is what separates "the page played"
++    /// from "the player can play it".
++    static constexpr const char* kAudioPrefix = "OP77AUDIO:";
++
++    SelfTestClient(std::filesystem::path aOutput, bool aGpu, bool aProbe = false);
+ 
+     CefRefPtr<CefRenderHandler> GetRenderHandler() override { return this; }
+     CefRefPtr<CefLifeSpanHandler> GetLifeSpanHandler() override { return this; }
+     CefRefPtr<CefLoadHandler> GetLoadHandler() override { return this; }
++    CefRefPtr<CefDisplayHandler> GetDisplayHandler() override { return this; }
++    // Probe mode only: the production host has no audio consumer yet, and
++    // handing CEF a handler that drops the PCM would be worse than none.
++    CefRefPtr<CefAudioHandler> GetAudioHandler() override { return m_probe ? this : nullptr; }
+ 
+     void GetViewRect(CefRefPtr<CefBrowser> aBrowser, CefRect& aRect) override;
+     void OnPaint(CefRefPtr<CefBrowser> aBrowser, PaintElementType aType,
+                  const RectList& aDirtyRects, const void* aBuffer, int aWidth, int aHeight) override;
+     void OnAcceleratedPaint(CefRefPtr<CefBrowser> aBrowser, PaintElementType aType,
+                             const RectList& aDirtyRects,
+                             const CefAcceleratedPaintInfo& aInfo) override;
+     void OnAfterCreated(CefRefPtr<CefBrowser> aBrowser) override;
+     void OnLoadError(CefRefPtr<CefBrowser> aBrowser, CefRefPtr<CefFrame> aFrame,
+                      ErrorCode aErrorCode, const CefString& aErrorText,
+                      const CefString& aFailedUrl) override;
+     void OnBeforeClose(CefRefPtr<CefBrowser> aBrowser) override;
++    bool OnConsoleMessage(CefRefPtr<CefBrowser> aBrowser, cef_log_severity_t aLevel,
++                          const CefString& aMessage, const CefString& aSource, int aLine) override;
++
++    // Audio handler. These arrive on Chromium's audio thread while the rest of
++    // this class lives on the UI thread, so every counter is atomic and the
++    // error text is the only string under a lock.
++    bool GetAudioParameters(CefRefPtr<CefBrowser> aBrowser, CefAudioParameters& aParams) override;
++    void OnAudioStreamStarted(CefRefPtr<CefBrowser> aBrowser, const CefAudioParameters& aParams,
++                              int aChannels) override;
++    void OnAudioStreamPacket(CefRefPtr<CefBrowser> aBrowser, const float** aData, int aFrames,
++                             int64_t aPts) override;
++    void OnAudioStreamStopped(CefRefPtr<CefBrowser> aBrowser) override;
++    void OnAudioStreamError(CefRefPtr<CefBrowser> aBrowser, const CefString& aMessage) override;
+ 
+     [[nodiscard]] bool Succeeded() const { return m_exitCode == kExitSuccess; }
+     [[nodiscard]] int ExitCode() const { return m_exitCode; }
+     void OnDeadline();
+ 
+ private:
+     bool WriteBitmap(const void* aBuffer, int aWidth, int aHeight, size_t aRowPitch);
+     bool CaptureAcceleratedFrame(const CefAcceleratedPaintInfo& aInfo, std::string& aError);
+     void Finish(int aExitCode, CefRefPtr<CefBrowser> aBrowser);
++    // Probe mode: write the page's report where the caller asked for it, and
++    // stop. One report per run; a page that logs twice is a page bug, and the
++    // second line must not overwrite a good file with a worse one.
++    void WriteProbeResult(const std::string& aLine);
++    // The host-side audio observation, as JSON, or an empty string when the
++    // page never started a stream. Peak amplitude is what makes this evidence:
++    // packets alone would also be produced by a muted or silent stream.
++    [[nodiscard]] std::string AudioReport();
+ 
+     std::filesystem::path m_output;
+     bool m_gpu{};
++    bool m_probe{};
+     bool m_written{};
+     int m_exitCode{kExitFailure};
+     CefRefPtr<CefBrowser> m_browser;
+ 
++    std::atomic<int64_t> m_audioPackets{};
++    std::atomic<int64_t> m_audioFrames{};
++    std::atomic<int32_t> m_audioChannels{};
++    std::atomic<int32_t> m_audioSampleRate{};
++    std::atomic<int32_t> m_audioStreams{};
++    std::atomic<int32_t> m_audioStops{};
++    std::atomic<uint32_t> m_audioPeakBits{}; // float, stored bitwise so the report stays lock-free
++    std::mutex m_audioErrorMutex;
++    std::string m_audioError;
++
+     IMPLEMENT_REFCOUNTING(SelfTestClient);
+     DISALLOW_COPY_AND_ASSIGN(SelfTestClient);
+ };
+ 
+ class SelfTestApp final : public CefApp, public CefBrowserProcessHandler
+ {
+ public:
+-    SelfTestApp(std::filesystem::path aOutput, bool aGpu);
++    SelfTestApp(std::filesystem::path aOutput, bool aGpu, bool aProbe = false,
++                std::string aUrl = {});
+ 
+     CefRefPtr<CefBrowserProcessHandler> GetBrowserProcessHandler() override { return this; }
+     void OnBeforeCommandLineProcessing(const CefString& aProcessType,
+                                        CefRefPtr<CefCommandLine> aCommandLine) override;
+     void OnContextInitialized() override;
+ 
+     [[nodiscard]] CefRefPtr<SelfTestClient> Client() const { return m_client; }
+ 
+ private:
+     std::filesystem::path m_output;
+     bool m_gpu{};
++    bool m_probe{};
++    // Empty means the built-in OSR page. Probe mode normally passes a URL on a
++    // secure origin, because half of what it measures (key systems) is refused
++    // outright outside one and the refusal would be misread as "no CDM".
++    std::string m_url;
+     CefRefPtr<SelfTestClient> m_client;
+ 
+     IMPLEMENT_REFCOUNTING(SelfTestApp);
+     DISALLOW_COPY_AND_ASSIGN(SelfTestApp);
+ };
+ } // namespace op77::WebHost

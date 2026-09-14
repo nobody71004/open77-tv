@@ -1,6 +1,7 @@
 #include "api/MediaScreens.hpp"
 
 #include "api/Camera.hpp"
+#include "api/ScreenQuad.hpp"
 #include "api/Props.hpp"
 #include "api/WorldQuery.hpp"
 #include "engine/RttiAccess.hpp"
@@ -54,6 +55,18 @@ struct Entry
     bool drawn{};
     std::string reason{"not yet published"};
     float distance{};
+    /// Which way round this screen's picture goes, as last decided from the
+    /// projection. Held per screen, and passed back in on the next frame, because
+    /// near edge-on the two candidate edges project to nearly the same place and
+    /// the comparison is noise -- see `kOrientationDeadband`. Without the memory
+    /// the picture would flip back and forth while a player walked past a set.
+    ScreenQuad::Orientation orientation{};
+    /// The facing test's last outcome: whether the record declared a front at
+    /// all, and whether the eye is behind it. Reported through `SnapshotAll` so
+    /// `media.list` can answer "which side is that set's picture on" and "why is
+    /// that screen blank" without a screenshot.
+    bool facingKnown{};
+    bool facingAway{};
 };
 
 RED4ext::v1::PluginHandle s_pluginHandle;
@@ -101,39 +114,6 @@ float Dot(const RED4ext::Vector4& aLeft, const RED4ext::Vector4& aRight)
     return (aLeft.X * aRight.X) + (aLeft.Y * aRight.Y) + (aLeft.Z * aRight.Z);
 }
 
-RED4ext::Vector4 Cross(const RED4ext::Vector4& aLeft, const RED4ext::Vector4& aRight)
-{
-    return {
-        (aLeft.Y * aRight.Z) - (aLeft.Z * aRight.Y),
-        (aLeft.Z * aRight.X) - (aLeft.X * aRight.Z),
-        (aLeft.X * aRight.Y) - (aLeft.Y * aRight.X),
-        0.0F};
-}
-
-bool Normalize(RED4ext::Vector4& aValue)
-{
-    const float length = std::sqrt(std::max(0.0F, Dot(aValue, aValue)));
-    if (!(length > 1.0e-4F) || !std::isfinite(length))
-    {
-        return false;
-    }
-    aValue = Scale(aValue, 1.0F / length);
-    return true;
-}
-
-/// Rotates a vector by a quaternion, spelled out the way `Api::Camera` spells it
-/// for the same reason that file gives: the quaternion the engine applies to a
-/// transform is the only basis guaranteed to agree with the entity, and
-/// reproducing the engine's axis convention by hand is how a screen ends up
-/// facing into its own wall.
-RED4ext::Vector4 Rotate(const RED4ext::Quaternion& aRotation, const RED4ext::Vector4& aValue)
-{
-    const RED4ext::Vector4 axis{aRotation.i, aRotation.j, aRotation.k, 0.0F};
-    const auto first = Cross(axis, aValue);
-    const auto second = Cross(axis, Add(first, Scale(aValue, aRotation.r)));
-    return Add(aValue, Scale(second, 2.0F));
-}
-
 bool Finite(const RED4ext::Vector4& aValue)
 {
     return std::isfinite(aValue.X) && std::isfinite(aValue.Y) && std::isfinite(aValue.Z);
@@ -164,58 +144,70 @@ bool ReadPlacement(
     return Finite(aPosition);
 }
 
-/// The four world-space corners of a screen, top-left first, clockwise.
+/// The four world-space corners of a screen, in `ScreenQuad::Corners`' own tagged
+/// order -- two of them off `+right`, two off `-right`, two off `+up`, two off
+/// `-up` -- and NOT yet in texture order.
 ///
-/// `aRight` and `aUp` are the author's axes in the prop's local frame. Neither
-/// is required to be unit length or exactly perpendicular, so a record can tilt
-/// a monitor back by writing the up axis as a raw direction; the Gram-Schmidt
-/// step below is what makes that safe, and it is the reason the public struct
-/// does not demand orthonormal input from a script.
+/// Texture order is decided after the projection, from where those corners landed
+/// on screen (`ScreenQuad::Orient`), because that is the only description of
+/// "which way is the picture's left" that cannot be a half-turn out. This
+/// function got that wrong once by deriving the orientation from the prop mesh's
+/// own UVs, which encode the game's material texture and not this one.
+///
+/// The geometry itself lives in `api/ScreenQuad.hpp`, pure and tested, because a
+/// screen whose picture is a half-turn out cannot fail loudly: it is the right
+/// place, the right size, on the right prop, drawing every frame, and unreadable.
+/// The wire rectangle as the pure mapping in `api/ScreenQuad.hpp` sees it.
+///
+/// The two structs are intentionally separate -- one is a scripting-layer shape
+/// and one is engine-free arithmetic -- so the copy lives in one function that
+/// both the corner builder and the facing test read, rather than in two places
+/// that could drift.
+ScreenQuad::Quad MappingFor(const Definition& aDefinition)
+{
+    const auto& quad = aDefinition.quad;
+    ScreenQuad::Quad mapping{};
+    mapping.offset[0] = quad.offset[0];
+    mapping.offset[1] = quad.offset[1];
+    mapping.offset[2] = quad.offset[2];
+    mapping.right[0] = quad.right[0];
+    mapping.right[1] = quad.right[1];
+    mapping.right[2] = quad.right[2];
+    mapping.up[0] = quad.up[0];
+    mapping.up[1] = quad.up[1];
+    mapping.up[2] = quad.up[2];
+    mapping.width = quad.width;
+    mapping.height = quad.height;
+    mapping.faces[0] = quad.faces[0];
+    mapping.faces[1] = quad.faces[1];
+    mapping.faces[2] = quad.faces[2];
+    return mapping;
+}
+
 bool ScreenCorners(
     const Entry& aEntry,
     const RED4ext::Vector4& aWorldPosition,
     const RED4ext::Quaternion& aOrientation,
     std::vector<RED4ext::Vector4>& aOut)
 {
-    const auto& quad = aEntry.definition.quad;
-    if (!(quad.width > 0.01F) || !(quad.height > 0.01F))
+    const ScreenQuad::Quad mapping = MappingFor(aEntry.definition);
+
+    const ScreenQuad::Vec3 position{aWorldPosition.X, aWorldPosition.Y, aWorldPosition.Z};
+    const ScreenQuad::Rotation rotation{aOrientation.i, aOrientation.j, aOrientation.k,
+                                        aOrientation.r};
+
+    ScreenQuad::Vec3 corners[4]{};
+    if (!ScreenQuad::Corners(mapping, position, rotation, corners))
     {
         return false;
     }
-
-    auto right = Rotate(aOrientation, RED4ext::Vector4{
-        quad.right[0], quad.right[1], quad.right[2], 0.0F});
-    if (!Normalize(right))
-    {
-        return false;
-    }
-    auto up = Rotate(aOrientation, RED4ext::Vector4{
-        quad.up[0], quad.up[1], quad.up[2], 0.0F});
-    // Remove the component of `up` that lies along `right`. A perpendicular pair
-    // passes through unchanged; a skewed one is squared up rather than rejected,
-    // because the alternative is a script that silently draws nothing.
-    up = Sub(up, Scale(right, Dot(up, right)));
-    if (!Normalize(up))
-    {
-        return false;
-    }
-
-    const auto offset = Rotate(aOrientation, RED4ext::Vector4{
-        quad.offset[0], quad.offset[1], quad.offset[2], 0.0F});
-    const auto centre = RED4ext::Vector4{
-        aWorldPosition.X + offset.X, aWorldPosition.Y + offset.Y,
-        aWorldPosition.Z + offset.Z, 1.0F};
-
-    const auto halfWidth = Scale(right, quad.width * 0.5F);
-    const auto halfHeight = Scale(up, quad.height * 0.5F);
-    const auto top = Add(centre, halfHeight);
-    const auto bottom = Sub(centre, halfHeight);
 
     aOut.clear();
-    aOut.push_back(Sub(top, halfWidth));     // top-left
-    aOut.push_back(Add(top, halfWidth));     // top-right
-    aOut.push_back(Add(bottom, halfWidth));  // bottom-right
-    aOut.push_back(Sub(bottom, halfWidth));  // bottom-left
+    aOut.reserve(4);
+    for (const auto& corner : corners)
+    {
+        aOut.push_back(RED4ext::Vector4{corner.x, corner.y, corner.z, 1.0F});
+    }
     return true;
 }
 
@@ -254,6 +246,12 @@ bool BuildItem(
     WorldOverlay::Item& aOut,
     std::string& aReason)
 {
+    // Cleared here rather than left over: a screen that stops being built at all
+    // (its prop unstreamed, its quad refused) must not keep reporting yesterday's
+    // answer about which side the eye was on.
+    aEntry.facingKnown = false;
+    aEntry.facingAway = false;
+
     // Locate the prop. `ProjectedEntity` is the props registry's own mapping
     // from the server's id to this client's entity id, which is the whole reason
     // a screen can be bound before its prop has streamed in: the binding is a
@@ -291,6 +289,31 @@ bool BuildItem(
         (world[0].Y + world[1].Y + world[2].Y + world[3].Y) * 0.25F,
         (world[0].Z + world[1].Z + world[2].Z + world[3].Z) * 0.25F,
         0.0F};
+
+    // Which side of the panel the eye is on, when the record says.
+    //
+    // A television seen from behind used to carry its video on the back of the
+    // cabinet: the projection says where the rectangle is and nothing at all
+    // about which of its two sides is the picture, and the orientation rule that
+    // keeps the picture upright deliberately works from either side. Only the
+    // asset knows, so the record declares it (`Quad::faces`) and this is the one
+    // dot product that reads it. A record that declares nothing keeps the old
+    // behaviour -- drawn from both sides -- because blanking a screen on an
+    // undeclared front would turn a missing catalogue number into a missing
+    // television.
+    const ScreenQuad::Facing facing = ScreenQuad::Faces(
+        MappingFor(aEntry.definition),
+        ScreenQuad::Vec3{position.X, position.Y, position.Z},
+        ScreenQuad::Rotation{orientation.i, orientation.j, orientation.k, orientation.r},
+        ScreenQuad::Vec3{aView.position.X, aView.position.Y, aView.position.Z});
+    aEntry.facingKnown = facing.known;
+    aEntry.facingAway = facing.away;
+    if (facing.known && facing.away)
+    {
+        aReason = "behind_panel";
+        return false;
+    }
+
     const auto relative = Sub(centre, aView.position);
     const float depth = Dot(relative, aView.forward);
     // Behind the camera, or close enough to the plane that the perspective
@@ -328,7 +351,11 @@ bool BuildItem(
     aOut.depth = depth;
     aOut.distance = distance;
     aOut.maximumDistance = kMaximumDistance;
-    aOut.corners.resize(8);
+    // The engine's projection is NDC; the overlay works in 0..1 from the
+    // top-left, the same conversion every other producer applies. Collected in
+    // the corners' own tagged order first, because the orientation below is a
+    // question about positions and not about which one is the texture's origin.
+    float screen[8]{};
     for (size_t index = 0; index < 4; ++index)
     {
         if (!std::isfinite(projected[index].X) || !std::isfinite(projected[index].Y))
@@ -336,10 +363,26 @@ bool BuildItem(
             aReason = "projection_not_finite";
             return false;
         }
-        // The engine's projection is NDC; the overlay works in 0..1 from the
-        // top-left, the same conversion every other producer applies.
-        aOut.corners[index * 2] = (projected[index].X + 1.0F) * 0.5F;
-        aOut.corners[index * 2 + 1] = (1.0F - projected[index].Y) * 0.5F;
+        screen[index * 2] = (projected[index].X + 1.0F) * 0.5F;
+        screen[index * 2 + 1] = (1.0F - projected[index].Y) * 0.5F;
+    }
+    // Which way round the picture goes, from where the panel landed. Read, not
+    // assumed: this is the whole reason the panel's own axes are no longer used
+    // to decide it, and the previous decision is carried in so a screen that is
+    // nearly edge-on keeps the answer it had instead of flapping.
+    aEntry.orientation = ScreenQuad::Orient(screen, aEntry.orientation);
+    // Now in texture order -- top-left, top-right, bottom-right, bottom-left --
+    // which is the order `WebUiService::DrawSurfaceQuad` reads as (0,0), (1,0),
+    // (1,1), (0,1).
+    aOut.corners.resize(8);
+    constexpr std::array<std::array<int, 2>, 4> kTextureOrder{{{{0, 0}}, {{1, 0}}, {{1, 1}}, {{0, 1}}}};
+    for (size_t slot = 0; slot < kTextureOrder.size(); ++slot)
+    {
+        const int source =
+            ScreenQuad::CornerForTexture(aEntry.orientation, kTextureOrder[slot][0],
+                                         kTextureOrder[slot][1]);
+        aOut.corners[slot * 2] = screen[source * 2];
+        aOut.corners[slot * 2 + 1] = screen[source * 2 + 1];
     }
     // The centre, in the same space, for the anchor-based paths that are not
     // taken for a screen but are read by the debug bridge.
@@ -513,6 +556,8 @@ std::vector<Snapshot> SnapshotAll(const std::string_view aOwner)
         snapshot.drawn = entry.drawn;
         snapshot.reason = entry.reason;
         snapshot.distance = entry.distance;
+        snapshot.facingKnown = entry.facingKnown;
+        snapshot.facingAway = entry.facingAway;
         result.push_back(std::move(snapshot));
     }
     std::ranges::sort(result, [](const Snapshot& left, const Snapshot& right) {

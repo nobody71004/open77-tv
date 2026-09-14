@@ -2,13 +2,24 @@
 # tools/extract-tv-patches.py. Apply by hand: this is not a patch
 # series, and the surrounding file has other unreleased work in it.
 diff --git a/scripting/include/op77/Scripting/ResourceHost.hpp b/scripting/include/op77/Scripting/ResourceHost.hpp
-index 6707ef5c..c169654e 100644
+index 6707ef5c..a53e2b07 100644
 --- a/scripting/include/op77/Scripting/ResourceHost.hpp
 +++ b/scripting/include/op77/Scripting/ResourceHost.hpp
-@@ -118,12 +118,17 @@ struct WebUiCreateRequest
+@@ -115,15 +115,28 @@ struct WebUiCreateRequest
+     bool visible{true};
+     // Privileged: render the CONNECTED SERVER's declared loading screen (from its
+     // verified pack files) instead of the caller's own resource. Requires
      // webui.system; the surface is still confined to the server pack by its own
      // origin + allowed files (see WebUiLoadScreen).
      bool loadScreen{};
++    // Which client-owned page policy the surface is served under: 0 is the
++    // strict same-origin policy every menu and HUD uses, 1 is the media policy
++    // that lets a page embed a player (see `webui/include/op77/WebUI/
++    // PagePolicy.hpp` for the directives). A raw number rather than that enum so
++    // this layer keeps no dependency on the web protocol -- the same reason
++    // `layer` above is a `uint8_t` and not `SurfaceLayer`. Anything out of range
++    // is refused at creation, so a request cannot name a policy twice.
++    uint8_t pagePolicy{};
      // Optional compositor crop: logical x/y/width/height, negative x/y anchor
      // from the right/bottom. Not sent to CEF; never changes page layout/input.
      std::optional<std::array<float, 4>> drawBounds;
@@ -23,7 +34,7 @@ index 6707ef5c..c169654e 100644
  // after the resource set is installed and verified. The trusted shell renders it
  // via WebUI.create({ loadScreen = true }); only the layer/z-order is the shell's,
  // while the content stays sandboxed to the server pack dir like any downloaded
-@@ -791,12 +796,60 @@ struct GameBackend
+@@ -791,12 +804,81 @@ struct GameBackend
      /// Upsert a server-owned prop by its server id. Returns false with a reason
      /// on rejection; an unchanged prop is a successful no-op.
      std::function<bool(uint64_t, PropOptions, std::string&)> projectProp;
@@ -51,6 +62,19 @@ index 6707ef5c..c169654e 100644
 +        float up[3]{0.0F, 0.0F, 1.0F};
 +        float width{1.2F};
 +        float height{0.68F};
++        /// Which way the display faces, as a direction in the prop's own local
++        /// frame -- `{0, 1, 0}` for a television whose picture is on its +Y
++        /// face. A zero vector, the default, means the record does not say, and
++        /// the screen is then drawn from both sides exactly as it was before
++        /// this existed.
++        ///
++        /// A rectangle has two sides and nothing in a projection says which is
++        /// the front, so a screen stood in front of was equally a screen seen
++        /// from behind -- with its video playing on the back of the cabinet.
++        /// Only the asset knows, so it is data, authored next to the rest of the
++        /// rectangle (`resources/system/open77_media/shared/records.lua`), and
++        /// left zero wherever the asset genuinely cannot say.
++        float faces[3]{0.0F, 0.0F, 0.0F};
 +    };
 +    struct MediaScreenDefinition
 +    {
@@ -69,6 +93,14 @@ index 6707ef5c..c169654e 100644
 +        bool drawn{};
 +        std::string reason;
 +        float distance{};
++        /// The facing test's outcome on the last tick: whether the record
++        /// declared a front at all, and, when it did, whether the eye was behind
++        /// it. A blank screen whose `reason` is `behind_panel` is a screen being
++        /// looked at from behind on purpose; `known = false` says the asset never
++        /// said which side was the picture, which is why that screen still shows
++        /// from both.
++        bool facingKnown{};
++        bool facingAway{};
 +    };
 +    std::function<bool(std::string_view, MediaScreenDefinition, uint64_t&, std::string&)>
 +        bindMediaScreen;

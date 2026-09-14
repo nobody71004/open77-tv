@@ -104,9 +104,35 @@ play every page fast and sharp.
   positioning (falloff with distance from the TV) is a separate, later milestone: it
   needs the PCM in the game process, not just the host's.
 
+### The H.264 gap, applied to a real site
+
+"Watch free movies" sites are the common case for a pasted link, and they are all the
+same shape: a JS shell that loads a player page which points at **HLS or MP4 with
+H.264 + AAC**. That is precisely the pair this build cannot decode, so the site is not
+the problem and no amount of page-side work fixes it. Measured against
+`freeonlinek.top/hdtoday/`: the shell loads and renders (it is just HTML), and any
+attempt to play from it lands on the same `DEMUXER_ERROR_NO_SUPPORTED_STREAMS` as a
+local `.mp4`. It is the general case, not one bad site.
+
+Two ways to close it, both real and both already costed here:
+
+1. **Transcode in front of the page.** Resolve the page to its stream and serve the
+   screen a VP9/Opus rendering of it (`ffmpeg` will take an HLS/MP4 source and emit
+   WebM, or an HLS playlist whose segments are VP9, which this build plays). No host
+   change at all — it is a process beside the game and a URL on the television. Costs
+   CPU and adds a step between "paste link" and "picture".
+2. **A CEF build with `proprietary_codecs`.** The decoders are absent from this
+   Chromium build, not from the platform. Enabling them plays H.264/AAC directly and
+   makes the *page* capable instead of making each *source* compatible — a bigger
+   change (the runtime is vendored and staged by the host's CMake) and the one that
+   removes the relay.
+
+Neither route touches DRM, and nothing will: the key is never handed to the client, so
+Netflix-level services stay impossible for a process under EAC.
+
 ## What this note does not cover
 
-The in-world half — a spawnable TV prop with a screen the surface is drawn onto, its
-spawn controls and the TV record catalogue in the freeroam menu — is not built here.
-This pass is the browser half only: what the runtime can play, and the audio path that
-makes it audible.
+The *world* half — a spawnable TV prop with a screen the surface is drawn onto, its
+spawn controls, the record catalogue and the menu tab — is not a browser question and
+is documented in `docs/integration.md`. This note is the browser half only: what the
+runtime can play, and the audio path that makes it audible.

@@ -1,0 +1,21 @@
+# TV-relevant hunks only, extracted from a working tree by
+# tools/extract-tv-patches.py. Apply by hand: this is not a patch
+# series, and the surrounding file has other unreleased work in it.
+diff --git a/webui/CMakeLists.txt b/webui/CMakeLists.txt
+index 22861c34..ad60dd29 100644
+--- a/webui/CMakeLists.txt
++++ b/webui/CMakeLists.txt
+@@ -9,12 +9,13 @@ target_sources(
+         src/NamedPipe.cpp
+     PUBLIC
+         FILE_SET HEADERS
+         BASE_DIRS include
+         FILES
+             include/op77/WebUI/Protocol.hpp
++            include/op77/WebUI/PagePolicy.hpp
+             include/op77/WebUI/Messages.hpp
+             include/op77/WebUI/GpuRing.hpp
+             include/op77/WebUI/DrawBounds.hpp
+             include/op77/WebUI/SurfaceSizing.hpp
+             include/op77/WebUI/SharedFrameBuffer.hpp
+             include/op77/WebUI/NamedPipe.hpp

@@ -2,7 +2,7 @@
 # tools/extract-tv-patches.py. Apply by hand: this is not a patch
 # series, and the surrounding file has other unreleased work in it.
 diff --git a/client/src/scripting/ClientResourceHost.cpp b/client/src/scripting/ClientResourceHost.cpp
-index 8d714639..d620ff85 100644
+index 8d714639..e137f002 100644
 --- a/client/src/scripting/ClientResourceHost.cpp
 +++ b/client/src/scripting/ClientResourceHost.cpp
 @@ -18,12 +19,13 @@
@@ -19,7 +19,7 @@ index 8d714639..d620ff85 100644
  #include "api/Screen.hpp"
  #include "api/VehicleDriving.hpp"
  #include "api/PlayerTravel.hpp"
-@@ -1550,12 +1552,13 @@ std::unique_ptr<Scripting::ResourceHost> CreateHost(
+@@ -1550,12 +1552,16 @@ std::unique_ptr<Scripting::ResourceHost> CreateHost(
                      .layer = static_cast<WebUI::SurfaceLayer>(request.layer),
                      .zIndex = request.zIndex,
                      .transparent = request.transparent,
@@ -27,13 +27,16 @@ index 8d714639..d620ff85 100644
                      .presentationAllowed =
                          aLayer == HostLayer::System || ServerUiPresentationReady(),
 +                    .hudSuppressed = request.hudSuppressed,
++                    // Already validated where the Lua options were read, so this
++                    // is a widening of the same number and not a decision.
++                    .pagePolicy = WebUI::PolicyFromWire(request.pagePolicy),
                      .drawBounds = request.drawBounds,
                  }, error);
                  if (surface != 0)
                  {
                      s_webSurfaceOwners[surface] = aLayer;
                      if (aLayer == HostLayer::System && request.resource == "open77_blips")
-@@ -2526,12 +2529,86 @@ std::unique_ptr<Scripting::ResourceHost> CreateHost(
+@@ -2526,12 +2532,95 @@ std::unique_ptr<Scripting::ResourceHost> CreateHost(
              .unprojectProp = [](const uint64_t serverId, std::string& error) {
                  const auto status = Api::Props::Unproject(serverId);
                  if (status == Api::Props::Status::Ok) return true;
@@ -53,6 +56,8 @@ index 8d714639..d620ff85 100644
 +                          native.quad.right);
 +                std::copy(std::begin(definition.quad.up), std::end(definition.quad.up),
 +                          native.quad.up);
++                std::copy(std::begin(definition.quad.faces), std::end(definition.quad.faces),
++                          native.quad.faces);
 +                native.quad.width = definition.quad.width;
 +                native.quad.height = definition.quad.height;
 +                const auto status = Api::MediaScreens::Bind(owner, native, id);
@@ -72,6 +77,8 @@ index 8d714639..d620ff85 100644
 +                          native.quad.right);
 +                std::copy(std::begin(definition.quad.up), std::end(definition.quad.up),
 +                          native.quad.up);
++                std::copy(std::begin(definition.quad.faces), std::end(definition.quad.faces),
++                          native.quad.faces);
 +                native.quad.width = definition.quad.width;
 +                native.quad.height = definition.quad.height;
 +                const auto status = Api::MediaScreens::Update(owner, id, native);
@@ -105,11 +112,16 @@ index 8d714639..d620ff85 100644
 +                    std::copy(std::begin(screen.definition.quad.up),
 +                              std::end(screen.definition.quad.up),
 +                              copied.definition.quad.up);
++                    std::copy(std::begin(screen.definition.quad.faces),
++                              std::end(screen.definition.quad.faces),
++                              copied.definition.quad.faces);
 +                    copied.definition.quad.width = screen.definition.quad.width;
 +                    copied.definition.quad.height = screen.definition.quad.height;
 +                    copied.drawn = screen.drawn;
 +                    copied.reason = screen.reason;
 +                    copied.distance = screen.distance;
++                    copied.facingKnown = screen.facingKnown;
++                    copied.facingAway = screen.facingAway;
 +                    out.push_back(std::move(copied));
 +                }
 +                return out;

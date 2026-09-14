@@ -1,0 +1,40 @@
+# TV-relevant hunks only, extracted from a working tree by
+# tools/extract-tv-patches.py. Apply by hand: this is not a patch
+# series, and the surrounding file has other unreleased work in it.
+diff --git a/webui/include/op77/WebUI/Messages.hpp b/webui/include/op77/WebUI/Messages.hpp
+index 1eb3a4fe..9e784c3b 100644
+--- a/webui/include/op77/WebUI/Messages.hpp
++++ b/webui/include/op77/WebUI/Messages.hpp
+@@ -1,12 +1,13 @@
+ #pragma once
+ 
+ #include <cstdint>
+ #include <string>
+ #include <vector>
+ 
++#include <op77/WebUI/PagePolicy.hpp>
+ #include <op77/WebUI/Protocol.hpp>
+ 
+ namespace op77::WebUI
+ {
+ using SurfaceId = uint64_t;
+ 
+@@ -112,12 +113,18 @@ struct CreateSurfacePayload
+     float deviceScaleFactor{1.0F};
+     uint16_t framesPerSecond{60};
+     SurfaceLayer layer{SurfaceLayer::Hud};
+     int32_t zIndex{};
+     bool transparent{true};
+     bool visible{true};
++    // Which of the client-owned page policies this page is served under. Carried
++    // on the wire because the *host* writes the Content-Security-Policy header,
++    // and the surface's own definition is the only thing that knows a media page
++    // from a menu. See `PagePolicy.hpp` for the directives and for why a resource
++    // may name a policy but never write one.
++    WebPagePolicy pagePolicy{WebPagePolicy::Strict};
+ };
+ 
+ struct SurfaceStatePayload
+ {
+     SurfaceId surface{};
+     uint64_t generation{};

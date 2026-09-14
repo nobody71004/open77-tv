@@ -1,0 +1,76 @@
+# TV-relevant hunks only, extracted from a working tree by
+# tools/extract-tv-patches.py. Apply by hand: this is not a patch
+# series, and the surrounding file has other unreleased work in it.
+diff --git a/webhost/src/Main.cpp b/webhost/src/Main.cpp
+index 40ecca21..72d9cd25 100644
+--- a/webhost/src/Main.cpp
++++ b/webhost/src/Main.cpp
+@@ -3,17 +3,20 @@
+ #include "InteropSelfTest.hpp"
+ #include "WebHostApp.hpp"
+ 
+ #include <Windows.h>
+ 
+ #include <chrono>
++#include <cstdlib>
+ #include <filesystem>
+ #include <memory>
+ #include <string>
+ 
+ #include "include/cef_app.h"
++#include "AudioSink.hpp"
++
+ #include "include/cef_command_line.h"
+ #include "include/cef_sandbox_win.h"
+ #include "include/cef_version_info.h"
+ 
+ namespace
+ {
+@@ -70,26 +73,42 @@ int RunMain(HINSTANCE aInstance, void* aSandboxInfo)
+     // starts Chromium, so it runs and returns before any CEF process is spawned.
+     if (!SwitchValue("open77-self-test-interop").empty())
+     {
+         return op77::WebHost::RunInteropSelfTest();
+     }
+ 
++    // A CEF-free proof of the audio path: the same sink the surfaces use, fed a
++    // tone at the cadence a browser feeds it. Browser audio is the half of this
++    // host that cannot be verified from a page's own report -- the page plays
++    // and the machine stays silent -- so it gets a mode of its own that needs
++    // neither the game nor Chromium.
++    const auto audioSeconds = NarrowAscii(SwitchValue("open77-self-test-audio"));
++    if (!audioSeconds.empty())
++    {
++        return op77::WebHost::AudioSink::SelfTest(std::atof(audioSeconds.c_str()));
++    }
++
+     CefMainArgs arguments(aInstance);
+-    // Two self-test flavours share one app: the CPU OSR path (OnPaint) and the
++    // Three self-test flavours share one app: the CPU OSR path (OnPaint), the
+     // shared-texture path (OnAcceleratedPaint opened through a local D3D11
+-    // device). Each writes one BMP and exits.
++    // device), and the media probe, which loads a page and writes what this
++    // libcef build can play and decrypt into a file. The first two each write
++    // one BMP and exit; the third writes the page's own JSON report.
+     const auto cpuOutput = std::filesystem::path(SwitchValue("open77-self-test"));
+     const auto gpuOutput = std::filesystem::path(SwitchValue("open77-self-test-gpu"));
+-    const bool selfTest = !cpuOutput.empty() || !gpuOutput.empty();
++    const auto probeOutput = std::filesystem::path(SwitchValue("open77-self-test-probe"));
+     const bool selfTestGpu = !gpuOutput.empty();
+-    const auto output = selfTestGpu ? gpuOutput : cpuOutput;
++    const bool selfTestProbe = !probeOutput.empty();
++    const bool selfTest = !cpuOutput.empty() || selfTestGpu || selfTestProbe;
++    const auto output = selfTestProbe ? probeOutput : (selfTestGpu ? gpuOutput : cpuOutput);
+     std::shared_ptr<op77::WebHost::HostRuntime> runtime;
+     CefRefPtr<CefApp> app;
+     if (selfTest)
+     {
+-        app = new op77::WebHost::SelfTestApp(output, selfTestGpu);
++        app = new op77::WebHost::SelfTestApp(output, selfTestGpu, selfTestProbe,
++                                             NarrowAscii(SwitchValue("open77-self-test-url")));
+     }
+     else
+     {
+         op77::WebHost::HostOptions options{
+             .pipeName = SwitchValue("open77-pipe"),
+             .token = NarrowAscii(SwitchValue("open77-token")),

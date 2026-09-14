@@ -2,6 +2,19 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
+  <!--
+    An embedded player decides whether to run by what it can learn about the
+    page around it: a page that presents no referrer it finds acceptable is
+    refused (YouTube's error 153). The host serves this page from the plugin's
+    own `https://` origin, where the browser's default policy already sends one,
+    so this is not a repair -- it is the referrer made the page's own decision
+    instead of the browser's, because `tv.js` reports that refusal verbatim and a
+    variable would make the report ambiguous.
+
+    Nothing here depends on the referrer being withheld: it is a game page whose
+    address is a synthetic origin, not a private URL.
+  -->
+  <meta name="referrer" content="unsafe-url" />
   <title>Open77 television</title>
   <link rel="stylesheet" href="tv.css" />
 </head>
@@ -46,9 +59,14 @@
     <!-- Anything else: an embedded player. A YouTube embed is driven through
          postMessage (see tv.js), which needs no external script. Anything that
          refuses to be framed cannot be framed, and says so. -->
-    <iframe id="embed" class="media embed"
-            allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
-            referrerpolicy="no-referrer"></iframe>
+    <!-- A container rather than an iframe, because there are two ways to put a
+         player in it and only one of them can be driven directly: YouTube's own
+         IFrame API replaces the element it is handed with its own frame, and
+         that frame records the player's state (which is how a television can
+         report *why* a link is not playing instead of showing a black
+         rectangle and saying nothing). The plain-iframe path remains as the
+         fallback when the API script cannot be fetched, and tv.js owns both. -->
+    <div id="embed" class="media embed"></div>
 
     <div id="notice" class="notice" hidden></div>
 
@@ -63,9 +81,14 @@
       </div>
       <div class="audio">
         <button id="mute" class="button" type="button" title="Mute (m)">&#128266;</button>
-        <input id="volume" class="volume" type="range" min="0" max="100" value="100" step="1"
+        <!-- 75, matching `DEFAULT_VOLUME` in server/main.lua and the page's own
+             initial state. The slider is only re-set by `applyVolume`, which runs
+             once something is playing -- so on a television that has no URL yet
+             this attribute is what a person reads, and it should be the volume
+             they will actually get. -->
+        <input id="volume" class="volume" type="range" min="0" max="100" value="75" step="1"
                title="Volume" />
-        <span id="volume-text" class="volume-text">100</span>
+        <span id="volume-text" class="volume-text">75</span>
       </div>
       <div class="source">
         <input id="url" class="url" type="text" spellcheck="false"

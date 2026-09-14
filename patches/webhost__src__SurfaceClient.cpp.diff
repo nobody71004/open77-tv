@@ -1,0 +1,186 @@
+# TV-relevant hunks only, extracted from a working tree by
+# tools/extract-tv-patches.py. Apply by hand: this is not a patch
+# series, and the surrounding file has other unreleased work in it.
+diff --git a/webhost/src/SurfaceClient.cpp b/webhost/src/SurfaceClient.cpp
+index d75b7b15..0d8dd1e8 100644
+--- a/webhost/src/SurfaceClient.cpp
++++ b/webhost/src/SurfaceClient.cpp
+@@ -94,12 +94,111 @@ SurfaceClient::SurfaceClient(std::weak_ptr<HostRuntime> aRuntime, CreateSurfaceP
+     config.js_query_function = "open77Query";
+     config.js_cancel_function = "open77QueryCancel";
+     m_router = CefMessageRouterBrowserSide::Create(config);
+     m_router->AddHandler(this, true);
+ }
+ 
++bool SurfaceClient::EnsureAudio()
++{
++    if (m_audio != nullptr) return true;
++    if (m_audioFormat.channels == 0 || m_audioFormat.sampleRate == 0) return false;
++    auto sink = std::make_unique<AudioSink>();
++    std::string error;
++    if (!sink->Open(error))
++    {
++        if (!m_audioReported.exchange(true))
++        {
++            if (const auto runtime = m_runtime.lock())
++                runtime->Trace("surface_audio_open_failed:" + std::to_string(m_definition.surface) + ":" + error);
++        }
++        return false;
++    }
++    m_audio = std::move(sink);
++    if (!m_audioReported.exchange(true))
++    {
++        if (const auto runtime = m_runtime.lock())
++            runtime->Trace("surface_audio:" + std::to_string(m_definition.surface) + ":" + m_audio->Describe());
++    }
++    return true;
++}
++
++bool SurfaceClient::GetAudioParameters(CefRefPtr<CefBrowser>, CefAudioParameters& aParams)
++{
++    // Probe the device once and remember it. This runs on the UI thread before
++    // a stream exists, which is the only moment the format can still be chosen.
++    if (!m_audioFormatKnown.load())
++    {
++        AudioSink::Format format;
++        std::string error;
++        if (AudioSink::ProbeDeviceFormat(format, error))
++        {
++            m_audioFormat = format;
++            m_audioFormatKnown.store(true);
++        }
++        else
++        {
++            // No device: refuse the stream rather than decoding audio nobody
++            // can hear, and say so once. A machine with no output device is a
++            // legitimate state (a headless server running the host).
++            if (!m_audioFormatFailed.exchange(true))
++            {
++                if (const auto runtime = m_runtime.lock())
++                    runtime->Trace("surface_audio_unavailable:" + std::to_string(m_definition.surface) + ":" + error);
++            }
++            return false;
++        }
++    }
++    aParams.sample_rate = static_cast<int>(m_audioFormat.sampleRate);
++    // CEF only offers mono and stereo layouts here, and the device mix format is
++    // almost always stereo; a mono device gets both channels summed by CEF.
++    aParams.channel_layout = m_audioFormat.channels <= 1 ? CEF_CHANNEL_LAYOUT_MONO : CEF_CHANNEL_LAYOUT_STEREO;
++    return true;
++}
++
++void SurfaceClient::OnAudioStreamStarted(CefRefPtr<CefBrowser>, const CefAudioParameters&, const int aChannels)
++{
++    if (!EnsureAudio()) return;
++    m_audio->SetGain(1.0F);
++    if (const auto runtime = m_runtime.lock())
++    {
++        runtime->Trace("surface_audio_stream_started:" + std::to_string(m_definition.surface) + ":channels=" +
++                       std::to_string(aChannels));
++    }
++}
++
++void SurfaceClient::OnAudioStreamPacket(CefRefPtr<CefBrowser>, const float** aData, const int aFrames, const int64_t)
++{
++    // The hot path: no tracing, no locking beyond the sink's own ring, and no
++    // allocation. A page that plays audio calls this ~43 times a second.
++    if (m_audio == nullptr && !EnsureAudio()) return;
++    m_audio->Push(aData, aFrames, m_audioFormat.channels);
++}
++
++void SurfaceClient::OnAudioStreamStopped(CefRefPtr<CefBrowser>)
++{
++    if (const auto runtime = m_runtime.lock())
++    {
++        const std::string detail = m_audio ? m_audio->Describe() : std::string("no_sink");
++        runtime->Trace("surface_audio_stream_stopped:" + std::to_string(m_definition.surface) + ":" + detail);
++    }
++}
++
++void SurfaceClient::OnAudioStreamError(CefRefPtr<CefBrowser>, const CefString& aMessage)
++{
++    // Closing the browser tears its audio socket down, and CEF reports that as
++    // "Socket closed unexpectedly". It is the expected end of a stream that this
++    // surface asked for, so logging it would put a scary line in every session
++    // that ever played a sound.
++    if (m_closing) return;
++    if (const auto runtime = m_runtime.lock())
++    {
++        runtime->Trace("surface_audio_stream_error:" + std::to_string(m_definition.surface) + ":" +
++                       aMessage.ToString());
++    }
++}
++
+ bool SurfaceClient::Initialize(std::string& aError)
+ {
+     if (m_definition.width == 0 || m_definition.height == 0 ||
+         m_definition.pixelWidth == 0 || m_definition.pixelHeight == 0 ||
+         m_definition.width > kMaximumSurfaceDimension ||
+         m_definition.height > kMaximumSurfaceDimension ||
+@@ -1289,26 +1398,39 @@ bool SurfaceClient::OnBeforeBrowse(CefRefPtr<CefBrowser> aBrowser, CefRefPtr<Cef
+         runtime->Trace("browser_before_browse:same=" + std::string(sameOrigin ? "yes:" : "no:") + url);
+     if (sameOrigin)
+     {
+         m_router->OnBeforeBrowse(aBrowser, aFrame);
+         return false;
+     }
+-    return true;
++    // A navigation off the page's own origin, refused -- except for a surface whose
++    // policy is the one that exists to play somebody else's page. That policy is
++    // what makes the browser embed reachable at all: this is the request gate, and
++    // without it `frame-src https://www.youtube.com` in the header below describes
++    // a privilege the host never grants. See `AllowsRemoteContent` in
++    // `webui/include/op77/WebUI/PagePolicy.hpp` -- the header and this gate are two
++    // halves of one decision and are deliberately read from the same policy.
++    return !op77::WebUI::AllowsRemoteContent(m_definition.pagePolicy);
+ }
+ 
+ bool SurfaceClient::OnOpenURLFromTab(CefRefPtr<CefBrowser>, CefRefPtr<CefFrame>, const CefString&,
+                                      cef_window_open_disposition_t, bool)
+ {
+     return true;
+ }
+ 
+ CefRefPtr<CefResourceRequestHandler> SurfaceClient::GetResourceRequestHandler(
+     CefRefPtr<CefBrowser>, CefRefPtr<CefFrame>, CefRefPtr<CefRequest>, bool, bool,
+     const CefString&, bool& aDisableDefaultHandling)
+ {
+-    aDisableDefaultHandling = true;
++    // Every request a page makes is handled here rather than by CEF's own network
++    // stack -- which means a request the host does not serve itself (anything not
++    // under the page's own origin) simply fails, whatever the page was told it may
++    // load. A media surface keeps the default handler for the requests it does not
++    // serve, so the two names in `PagePolicy.hpp` mean the same thing on this side
++    // of the process as they do in the header.
++    aDisableDefaultHandling = !op77::WebUI::AllowsRemoteContent(m_definition.pagePolicy);
+     return this;
+ }
+ 
+ void SurfaceClient::OnRenderProcessTerminated(CefRefPtr<CefBrowser> aBrowser, TerminationStatus,
+                                                const int aErrorCode, const CefString& aErrorString)
+ {
+@@ -1323,15 +1445,22 @@ CefRefPtr<CefResourceHandler> SurfaceClient::GetResourceHandler(CefRefPtr<CefBro
+ {
+     std::filesystem::path path;
+     if (!ResolveFile(aRequest->GetURL(), path)) return nullptr;
+     auto stream = CefStreamReader::CreateForFile(path.wstring());
+     if (!stream) return nullptr;
+     CefResponse::HeaderMap headers;
++    // The directives come from `WebUI::PagePolicy` and are chosen by the
++    // surface's own definition, never by the resource that ships the page: a
++    // media surface is served the media policy because it asked for it by name
++    // at creation, and every other page keeps the strict one. See
++    // `PagePolicy.hpp` -- `script-src 'self'` and `frame-src 'none'` in the
++    // strict policy are what refused YouTube's player script and then its embed,
++    // which is why a television showed its own idle colour bars and never
++    // played a link.
+     headers.emplace("Content-Security-Policy",
+-        "default-src 'self'; img-src 'self' data:; media-src 'self'; style-src 'self' 'unsafe-inline'; "
+-        "script-src 'self' 'unsafe-inline'; connect-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'");
++        op77::WebUI::ContentSecurityPolicy(m_definition.pagePolicy));
+     headers.emplace("X-Content-Type-Options", "nosniff");
+     headers.emplace("Cross-Origin-Opener-Policy", "same-origin");
+     headers.emplace("Cross-Origin-Resource-Policy", "same-origin");
+     return new CefStreamResourceHandler(200, "OK", MimeType(path), std::move(headers), stream);
+ }
+ 

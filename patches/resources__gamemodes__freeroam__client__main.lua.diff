@@ -2,7 +2,7 @@
 # tools/extract-tv-patches.py. Apply by hand: this is not a patch
 # series, and the surrounding file has other unreleased work in it.
 diff --git a/resources/gamemodes/freeroam/client/main.lua b/resources/gamemodes/freeroam/client/main.lua
-index aed95abc..5c594235 100644
+index aed95abc..710e80c6 100644
 --- a/resources/gamemodes/freeroam/client/main.lua
 +++ b/resources/gamemodes/freeroam/client/main.lua
 @@ -496,12 +552,36 @@ CreateThread(function()
@@ -42,7 +42,7 @@ index aed95abc..5c594235 100644
      local errorMessage
      menu, errorMessage = WebUI.create({
          entry = "web/index.html",
-@@ -544,12 +624,72 @@ AddEventHandler("onClientResourceStart", function(name)
+@@ -544,12 +624,85 @@ AddEventHandler("onClientResourceStart", function(name)
              -- open so several models can be tried in a row.
              if payload.type == "goto" or payload.type == "tpc" or payload.type == "spawn"
                  or payload.type == "suicide" then
@@ -104,6 +104,19 @@ index aed95abc..5c594235 100644
 +            elseif action == "paused" then
 +                TriggerServerEvent("open77:media:control", "paused",
 +                    { id = tonumber(payload.id), value = payload.value == true })
++            elseif action == "move" then
++                -- A nudge along the set's own axes. The direction is forwarded as
++                -- written and validated on the server, which owns the axis
++                -- convention (`shared/placement.lua` in the media resource): a
++                -- client that invents a direction gets `unknown_direction` back
++                -- rather than moving a set the wrong way.
++                TriggerServerEvent("open77:media:control", "move",
++                    { id = tonumber(payload.id), direction = tostring(payload.direction or ""),
++                        metres = tonumber(payload.metres) })
++            elseif action == "rotate" then
++                TriggerServerEvent("open77:media:control", "rotate",
++                    { id = tonumber(payload.id), direction = tostring(payload.direction or ""),
++                        degrees = tonumber(payload.degrees) })
 +            elseif action == "remove" then
 +                TriggerServerEvent("open77:media:control", "remove",
 +                    { id = tonumber(payload.id) })

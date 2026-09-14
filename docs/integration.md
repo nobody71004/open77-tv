@@ -11,9 +11,11 @@ patch series** — apply them by hand, reading each one.
 
 ---
 
-## 1. The one new module
+## 1. The new modules
 
-**`client/src/api/MediaScreens.hpp` / `.cpp`** (copied whole into `native/`)
+Five files, all copied whole into `native/`:
+
+**`client/src/api/MediaScreens.hpp` / `.cpp`**
 
 Binds a WebUI surface to a world prop, projects that prop's screen quad every
 tick, publishes one `WorldOverlay` item per visible screen, and decides
@@ -22,7 +24,31 @@ the binding is `{"this surface, on that prop's screen"}` and it is dropped when
 the prop is not projected. That is what lets a screen be bound before its prop
 has streamed in, and lets the prop move without the screen caring.
 
-`client/CMakeLists.txt` adds it to `Open77.Client`:
+**`client/src/api/ScreenQuad.hpp`** — the quad arithmetic, and the facing gate.
+A record may declare which side its picture is on; without that a screen is drawn
+from whichever side you stand on, which in game is "the television is playing on
+both sides". The gate also has to answer for a record that declares *nothing*, and
+it says so in the snapshot (`facing.known`) rather than guessing.
+
+**`client/src/webui/ScreenMotion.hpp`** — the picture is anchored to the frame
+that is presented, not to the tick that projected it. Corners are produced once
+per game tick (24–69 Hz in the log this came from, and jittery); the overlay
+draws per presented frame, which under frame generation includes frames that sit
+*between* two ticks. Holding a corner set for up to 42 ms and then stepping reads
+as the image sliding around on its own cabinet. The module blends the two most
+recent samples, interpolates only (a fraction of 1 reproduces the producer's
+numbers bit for bit), and refuses to blend across a sample older than 250 ms — a
+screen switched back on draws where it is, not sweeping in from where it was.
+
+**`client/Plugin.cpp`** is the lifecycle: `MediaScreens::Initialize` at plugin
+load, `OnRunningEnter` / `OnRunningUpdate` / `OnRunningExit` on the game
+application, `ReleaseAll` on shutdown. `OnRunningUpdate` runs *after* the
+resource host and after `Props`, so a screen bound or re-aimed this frame is
+projected against this frame's camera and a prop spawned this tick is already
+visible to the lookup. `OnRunningExit` is load-bearing for a different reason —
+see "a page no longer outlives its world" below.
+
+`client/CMakeLists.txt` adds the new sources to `Open77.Client`:
 
 ```cmake
 src/api/MediaScreens.cpp
@@ -96,20 +122,95 @@ capabilities: `network.events` and `world.props`.
 ## 6. The menu tab
 
 **`resources/gamemodes/freeroam/`** — `web/index.html` (the TV tab),
-`web/app.js` (catalogue, spawn, live-screen list), `client/main.lua` (the
-client half: applies the state snapshot, binds surfaces).
+`web/app.js` (catalogue, spawn, live-screen list, the nudge and turn controls),
+`client/main.lua` (the client half: applies the state snapshot, binds surfaces,
+forwards a control to the server).
+
+Two things about the list are worth stating, because both were bugs first:
+
+* It is **nearest-first**, with every row saying which set it is — `ON SCREEN ·
+  1.4 m away` versus `DRIVING A SET ELSEWHERE · 3120.5 m away`. The list carries
+  *every* set on the server, and a row three kilometres away used to look
+  identical to the one in front of you, which is how a volume change read as
+  "the slider does nothing" while it was in fact changing a television in
+  another district.
+* It shows the sets this client is actually rendering separately from the rest,
+  because only the first group has a picture here to look at.
 
 This is the second gotcha below: the tab **is not in `open77_media`**.
 
-## 7. The suite, in both harnesses
+## 6a. The page policy, and the host's other gate
 
-* `tools/lua-test/run.lua` — registers `open77_media / records`, preloading
-  `open77_admin/shared/config.lua` **before** `shared/records.lua`. The order
-  matters: the suite cross-checks records against the admin prop-model aliases.
-* `server/tests/Open77.Server.Tests/Resources/MediaRecordsTests.cs` — the same
-  suite through the C# test host.
+**`webui/include/op77/WebUI/PagePolicy.hpp`** (copied whole into `native/`),
+**`webhost/src/SurfaceClient.{hpp,cpp}`**, **`webhost/src/Main.cpp`**
 
-`tools/run-suite.py` in this repository does the same thing with no monorepo.
+A page that shows a third-party player needs two things, and having one without
+the other is the failure this seam was written in response to:
+
+* a **policy** — the CSP directives that permit a remote frame and script for the
+  one page whose job is to play a pasted link, and refuse them everywhere else;
+* a **request handler that does not cancel the requests anyway**. The host (this
+  predates the feature) sets `aDisableDefaultHandling = true` on its resource
+  request handler and cancels any navigation off the page's own origin, so every
+  request the host does not serve itself simply fails — and `frame-src
+  https://www.youtube.com` in a header described a privilege that was never
+  granted. The symptom was a player script reporting that it had been refused,
+  which reads as "the embed is blocked" and sends you looking at the header.
+
+Both halves now come from the same file, and `webui/tests/WebCoreTests.cpp` pins
+the directives. Nothing in the resource can name a policy; it can only ask for
+one.
+
+## 6b. Audio
+
+**`webhost/src/AudioSink.{hpp,cpp}`** (copied whole into `native/`)
+
+Browser audio into the game's mixer: the host stream-copies or resamples the
+interleaved audio it receives into the device, and reports the peak it saw, which
+is how "the page is playing" is told apart from "the page is playing *silently*"
+in the self-test. `webhost/src/WebHostApp.cpp`, `SelfTestApp.{hpp,cpp}` and
+`webhost/CMakeLists.txt` carry the rest of the wiring, including the media
+capability probe that answers "what can this build actually play" with
+measurements rather than assumptions.
+
+## 7. The suites
+
+Three Lua suites, and the order matters:
+
+* `open77_media / records` — the catalogue. `tools/lua-test/run.lua` preloads
+  `open77_admin/shared/config.lua` **before** `shared/records.lua`: the suite
+  cross-checks every record against the admin prop-model aliases.
+* `open77_media / placement` — where "left" points on a set that is not
+  axis-aligned. In game a wrong answer is a cabinet that slides the wrong way
+  while the operator holds the button, with no log line anywhere, on a set that
+  may be kilometres away.
+* `open77_media / client` — which screens a client materialises and what it
+  releases when the session ends. Runs **last**, deliberately: it installs
+  process-wide `Open77`, `CreateThread` and `Wait` stubs so the resource can be
+  loaded outside the game, and a suite that ran after it would see those instead
+  of nothing.
+
+And two C# ones:
+
+* `tests/MediaRecordsTests.cs` — the catalogue suite inside the C# test host,
+  plus the check that every `Open77.…` name the resource uses is published by the
+  runtime that file actually runs in. That check **derives** both surfaces from
+  the registration sites (`scripting/src/ResourceHost.cpp` and the server's Lua
+  prelude) rather than carrying a hand-written list, and it is per-runtime — the
+  two surfaces differ, and the bug it was written for was a name used on the side
+  that does not have it.
+* `tests/MediaPlacementIntegrationTests.cs` — the placement path through
+  `ServerResourceHost` and a real `PropAuthorityService`: spawn, nudge, turn,
+  then assert on the registry the replication layer reads *and* on the resource's
+  own report of where the set is. The refusal cases are the control (an invented
+  direction and a negative distance must leave the prop exactly where it was),
+  and two sets are used so that "the one that moved" is never assumed.
+
+`tools/run-suite.py` in this repository runs all three Lua suites with no
+monorepo: it preloads the vendored alias snapshot (or a live checkout with
+`--from`), stages the resource in a temp directory for the client suite's
+`OPEN77_REPO_ROOT`, and fails if any suite reports zero assertions as well as if
+one fails.
 
 ---
 
@@ -130,7 +231,7 @@ prints on load:
 
 ```
 [resource:open77_media] discovered
-[resource:open77_media] open77_media ready -- 8 television records
+[resource:open77_media] open77_media ready -- 36 television records
 [resource:open77_media] started generation=1
 ```
 
@@ -181,4 +282,18 @@ it is worth knowing before you go looking for the missing file.
 
 The in-game render is the one step that needs a launch: spawn a set from the TV
 tab and look for `MediaScreens: bound screen … prop=… surface=…` in the client
-log.
+log, then `player_state (playing at Ns)` from the page.
+
+### The failure that is not a failure
+
+Two states look identical in a log and are worth separating before you spend an
+afternoon on either:
+
+* **`not drawing -- occluded`** with `facing: undeclared`. The record does not say
+  which side its picture is on, so the screen is drawn from both — which is what
+  "the television is playing on both sides" actually is.
+* **`not drawing -- occluded`** with `facing: behind`. You are standing behind
+  the cabinet. That is the gate working.
+
+The client logs the reason whenever it changes, so the first line that differs
+from the previous one is the answer.

@@ -2,7 +2,7 @@
 # tools/extract-tv-patches.py. Apply by hand: this is not a patch
 # series, and the surrounding file has other unreleased work in it.
 diff --git a/resources/gamemodes/freeroam/web/app.js b/resources/gamemodes/freeroam/web/app.js
-index 3236e47f..6bec5da9 100644
+index 3236e47f..67d79f79 100644
 --- a/resources/gamemodes/freeroam/web/app.js
 +++ b/resources/gamemodes/freeroam/web/app.js
 @@ -46,12 +59,14 @@
@@ -20,7 +20,7 @@ index 3236e47f..6bec5da9 100644
  
    // Catalog rendering ----------------------------------------------------
  
-@@ -294,27 +445,176 @@
+@@ -294,27 +445,251 @@
        return showToast(false, "invalid coordinates");
      send("tpc", { x, y, z, heading });
    });
@@ -90,20 +90,41 @@ index 3236e47f..6bec5da9 100644
 +  function renderTvLocal() {
 +    const list = document.getElementById("tv-screens");
 +    list.innerHTML = "";
-+    document.getElementById("tv-local-count").textContent = tvLocal.length === 0
++    // Nearest first, and the count stops claiming "in range".
++    //
++    // `open77:media:local` carries every television this client knows about --
++    // the server's whole set, up to its own ceiling -- and it arrives in id
++    // order. So the row for the set standing in front of the player sat wherever
++    // its id happened to fall, and an operator changing "the volume" was usually
++    // changing a television kilometres away while the picture in front of them
++    // did not move. Nothing was broken in the control: it was aimed at the wrong
++    // set, and the list gave no way to tell. The ones this client is actually
++    // rendering come first, then by distance, and each row says which it is.
++    const ordered = tvLocal.slice().sort((a, b) => {
++      if (Boolean(a.materialised) !== Boolean(b.materialised)) return a.materialised ? -1 : 1;
++      const left = Number(a.distance), right = Number(b.distance);
++      if (isFinite(left) && isFinite(right) && left !== right) return left - right;
++      return (Number(a.id) || 0) - (Number(b.id) || 0);
++    });
++    const rendered = ordered.filter(screen => screen.materialised === true).length;
++    document.getElementById("tv-local-count").textContent = ordered.length === 0
 +      ? "NO SETS IN RANGE"
-+      : `${tvLocal.length} SET${tvLocal.length === 1 ? "" : "S"} IN RANGE`;
++      : `${ordered.length} SET${ordered.length === 1 ? "" : "S"} — ${rendered} ON THIS CLIENT`;
 +
-+    for (const screen of tvLocal) {
++    for (const screen of ordered) {
 +      const row = document.createElement("div");
 +      row.className = "catalog-card";
 +
 +      const head = document.createElement("strong");
 +      head.textContent = `#${screen.id}  ${screen.label || "television"}`;
 +      const where = document.createElement("small");
-+      where.textContent = screen.distance === null || screen.distance === undefined
++      const distance = screen.distance === null || screen.distance === undefined
 +        ? "distance unknown"
 +        : `${Number(screen.distance).toFixed(1)} m away`;
++      // Which television this row is. A set this client is rendering is the one
++      // on its screen; everything else is somewhere else on the map, and its
++      // volume is not the volume of the picture in front of the player.
++      where.textContent = `${screen.materialised === true ? "ON SCREEN" : "DRIVING A SET ELSEWHERE"} · ${distance}`;
 +
 +      const urlRow = document.createElement("div");
 +      urlRow.className = "row";
@@ -148,7 +169,61 @@ index 3236e47f..6bec5da9 100644
 +      remove.addEventListener("click", () => tvSend("remove", { id: screen.id }));
 +      controls.append(volume, sounds, play, remove);
 +
-+      row.append(head, where, urlRow, controls);
++      // Placement: where the cabinet stands and which way it points.
++      //
++      // A spawned set lands about a metre in front of you facing you, which is
++      // the right default and rarely the right answer -- hovering over a crate,
++      // half inside a shelf, or a hand's width from flush. Before this row, the
++      // only way to fix that was REMOVE and spawn again, which threw away the
++      // URL and the volume, and there was no way at all to turn a set that had
++      // come out facing the wrong way.
++      //
++      // The nudge is relative to the SET, not to the player or the world axis:
++      // LEFT moves the television along the cabinet's own left, so a set turned
++      // to face a room still moves the way the button says. The arithmetic lives
++      // in the media resource (`shared/placement.lua`) and is pinned by its own
++      // test, because a "left" that moves a set right is exactly the kind of
++      // wrong that no log line can report.
++      const placement = document.createElement("div");
++      placement.className = "row";
++      const step = document.createElement("select");
++      step.className = "search";
++      step.title = "How far one press moves the set";
++      for (const metres of [0.05, 0.25, 1, 5]) {
++        const option = document.createElement("option");
++        option.value = String(metres);
++        option.textContent = `${metres} m`;
++        if (metres === 0.25) option.selected = true;
++        step.appendChild(option);
++      }
++      placement.appendChild(step);
++      const nudges = [
++        ["▲ UP", "up"], ["▼ DOWN", "down"],
++        ["◀ LEFT", "left"], ["▶ RIGHT", "right"],
++        ["FORWARD", "forward"], ["BACK", "back"],
++      ];
++      for (const [label, direction] of nudges) {
++        const button = document.createElement("button");
++        button.className = "btn";
++        button.type = "button";
++        button.textContent = label;
++        button.title = `Move the set ${direction} by the step`;
++        button.addEventListener("click", () =>
++          tvSend("move", { id: screen.id, direction, metres: Number(step.value) }));
++        placement.appendChild(button);
++      }
++      for (const [label, direction] of [["↺ TURN", "left"], ["↻ TURN", "right"]]) {
++        const button = document.createElement("button");
++        button.className = "btn";
++        button.type = "button";
++        button.textContent = label;
++        button.title = `Turn the set 15° to its ${direction}`;
++        button.addEventListener("click", () =>
++          tvSend("rotate", { id: screen.id, direction, degrees: 15 }));
++        placement.appendChild(button);
++      }
++
++      row.append(head, where, urlRow, controls, placement);
 +      list.appendChild(row);
 +    }
 +  }
@@ -197,7 +272,7 @@ index 3236e47f..6bec5da9 100644
      renderLoadout();
    });
    Open77.on("freeroam:garage", payload => {
-@@ -327,10 +627,32 @@
+@@ -327,10 +702,32 @@
    });
    Open77.on("freeroam:open", () => body.classList.add("open"));
    Open77.on("freeroam:closed", () => body.classList.remove("open"));

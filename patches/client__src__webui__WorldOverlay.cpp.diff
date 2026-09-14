@@ -2,10 +2,55 @@
 # tools/extract-tv-patches.py. Apply by hand: this is not a patch
 # series, and the surrounding file has other unreleased work in it.
 diff --git a/client/src/webui/WorldOverlay.cpp b/client/src/webui/WorldOverlay.cpp
-index 7cf8a76e..f6bcda43 100644
+index 7cf8a76e..6eb4318b 100644
 --- a/client/src/webui/WorldOverlay.cpp
 +++ b/client/src/webui/WorldOverlay.cpp
-@@ -331,12 +336,45 @@ void DrawCard(ImDrawList* const aDraw, const Item& aItem, const ImVec2 aAnchor,
+@@ -1,8 +1,10 @@
+ #include "WorldOverlay.hpp"
+ 
++#include "ScreenMotion.hpp"
++
+ #include <Windows.h>
+ 
+ #include <algorithm>
+ #include <array>
+ #include <atomic>
+ #include <cfloat>
+@@ -104,12 +111,33 @@ bool s_dirty = false;
+ /// Render-thread copy. `Draw` runs every presented frame while producers publish
+ /// on the game tick, so the last published frame has to survive the frames that
+ /// bring nothing new -- otherwise the overlay strobes at the difference of the
+ /// two rates.
+ std::vector<Item> s_visible;
+ 
++/// The previous and current corner set for each screen surface, with the time
++/// each game tick published it.
++///
++/// This is the render thread's answer to a producer that runs at 24-69 Hz while
++/// the frame it is drawn into is presented considerably faster: the two samples
++/// bracket the presented frame, and the quad is drawn at the fraction between
++/// them that the frame actually sits at, instead of holding the older of the two
++/// until the newer arrives. See `ScreenMotion.hpp` for the measurement and for
++/// why the blend is clamped interpolation rather than extrapolation.
++///
++/// Render-thread only, like `s_visible`: written in the copy under `s_mutex` and
++/// read during the draw after it, never published back.
++struct HeldSample
++{
++    std::array<float, 8> from{};
++    std::array<float, 8> to{};
++    Clock::time_point fromAt{};
++    Clock::time_point toAt{};
++};
++std::unordered_map<uint64_t, HeldSample> s_screenMotion;
++
+ ImFont* s_font = nullptr;
+ 
+ /// Warnings only. Nothing here is chatty by design: every message this emits
+ /// describes an overlay that has stopped working, and it is emitted once per
+ /// episode rather than once per frame.
+ void Log(const std::string& aMessage)
+@@ -331,12 +359,52 @@ void DrawCard(ImDrawList* const aDraw, const Item& aItem, const ImVec2 aAnchor,
              aDraw->AddRectFilled(trackMinimum, {trackMinimum.x + filled, trackMaximum.y},
                                   Fade(aItem.accent, aAlpha), track * 0.5F);
          }
@@ -26,19 +71,26 @@ index 7cf8a76e..f6bcda43 100644
 +/// frame and appears when the page has something to show. A page that never
 +/// paints is diagnosed through `webui.status`, which reports exactly which of
 +/// those predicates failed -- not by inventing an error here.
-+void DrawScreen(ImDrawList* const aDraw, const Item& aItem, const float aWidth, const float aHeight,
++/// Draws one screen's surface into its quad.
++///
++/// `aCorners` arrives already placed for the frame being presented rather than
++/// read from the item, because the item carries the corners the last game tick
++/// produced and the drawer advances them across the interval the present sits in
++/// -- see `s_screenMotion` and `ScreenMotion.hpp`.
++void DrawScreen(ImDrawList* const aDraw, const Item& aItem,
++                const std::array<float, 8>& aCorners, const float aWidth, const float aHeight,
 +                const float aAlpha)
 +{
 +    static_cast<void>(aDraw);
-+    if (aItem.surface == 0 || aItem.corners.size() != 8)
++    if (aItem.surface == 0)
 +    {
 +        return;
 +    }
 +    float corners[8]{};
 +    for (size_t index = 0; index < 8; index += 2)
 +    {
-+        corners[index] = aItem.corners[index] * aWidth;
-+        corners[index + 1] = aItem.corners[index + 1] * aHeight;
++        corners[index] = aCorners[index] * aWidth;
++        corners[index + 1] = aCorners[index + 1] * aHeight;
 +    }
 +    const auto alpha = static_cast<uint8_t>(
 +        std::clamp(aAlpha * 255.0F, 0.0F, 255.0F));
@@ -51,7 +103,7 @@ index 7cf8a76e..f6bcda43 100644
      // Attenuated with distance so the stroke reads as paint on the ground
      // rather than a HUD line laid over it -- see `kRingReferenceMetres`. The
      // old behaviour was a flat pixel width, defended on the grounds that a
-@@ -440,12 +478,13 @@ const char* Describe(const Style aStyle)
+@@ -440,12 +508,13 @@ const char* Describe(const Style aStyle)
      switch (aStyle)
      {
      case Style::Plate: return "plate";
@@ -65,7 +117,100 @@ index 7cf8a76e..f6bcda43 100644
  
  uint32_t PackColor(const uint8_t aRed, const uint8_t aGreen, const uint8_t aBlue,
                     const uint8_t aAlpha)
-@@ -713,12 +752,23 @@ void Draw(const float aViewportWidth, const float aViewportHeight)
+@@ -672,15 +741,60 @@ void Draw(const float aViewportWidth, const float aViewportHeight)
+                 for (const auto& item : frame.items)
+                 {
+                     if (s_visible.size() >= kMaximumItems)
+                     {
+                         break;
+                     }
++                    // A screen's quad is the one item whose age is visible as
++                    // movement rather than as staleness: it is a rectangle on a
++                    // prop, so holding its corners between game ticks slides the
++                    // picture against the prop while the world keeps moving. The
++                    // corners are therefore remembered per surface, with the time
++                    // the tick published them, and placed at draw time.
++                    if (item.style == Style::Screen && item.surface != 0 &&
++                        item.corners.size() == 8)
++                    {
++                        auto& held = s_screenMotion[item.surface];
++                        const auto age = std::chrono::duration_cast<std::chrono::milliseconds>(
++                            frame.published - held.toAt);
++                        const bool usable = held.toAt != Clock::time_point{} &&
++                            ScreenMotion::UsableAsPrevious(
++                                static_cast<double>(age.count()));
++                        // Not `usable` for a surface seen for the first time, or
++                        // one that was off screen longer than a held sample is
++                        // trusted: blending from where it used to be would sweep
++                        // the picture across the world once.
++                        held.from = usable ? held.to : std::array<float, 8>{};
++                        for (size_t index = 0; index < 8; ++index)
++                        {
++                            if (!usable)
++                            {
++                                held.from[index] = item.corners[index];
++                            }
++                        }
++                        held.fromAt = usable ? held.toAt : frame.published;
++                        for (size_t index = 0; index < 8; ++index)
++                        {
++                            held.to[index] = item.corners[index];
++                        }
++                        held.toAt = frame.published;
++                    }
+                     s_visible.push_back(item);
+                 }
+             }
++            // A screen that stopped being published keeps its held corners only
++            // long enough to be blended from once more. Left alone, a long
++            // session would accumulate one entry per surface the player ever
++            // saw, and a surface id reused later would be blended from wherever
++            // the previous picture stood.
++            std::erase_if(s_screenMotion, [&now](const auto& entry) {
++                const auto age = std::chrono::duration_cast<std::chrono::milliseconds>(
++                    now - entry.second.toAt);
++                return static_cast<double>(age.count()) >
++                    (ScreenMotion::kMaximumHoldMilliseconds * 4.0);
++            });
+             // Far to near, so the nearer of two overlapping labels wins. Stable
+             // so items at equal distance keep the order their producer chose.
+             std::ranges::stable_sort(s_visible, [](const Item& left, const Item& right) {
+                 return left.distance > right.distance;
+             });
+         }
+@@ -688,18 +802,28 @@ void Draw(const float aViewportWidth, const float aViewportHeight)
+     if (s_visible.empty())
+     {
+         return;
+     }
+ 
+     const float unit = aViewportHeight / kReferenceHeight;
+-    // The background list, and after `WebUiService::Draw` has queued its surface
+-    // blits into the same list: native items therefore land above the CEF pages
+-    // rather than beneath them, which is what an anchored label wants.
++    // The background list, shared with the CEF pages. Which of the two is on top
++    // is therefore decided by which was queued first, and the caller decides that
++    // by choosing the layer -- see `Layer` in the header. Everything in this loop
++    // is unchanged except for the filter below; a ring, a label and a screen all
++    // draw exactly as they did.
+     auto* const draw = ImGui::GetBackgroundDrawList();
++    const bool screens = aLayer == Layer::Screens;
+     for (const auto& item : s_visible)
+     {
++        // The layer filter, before every other gate: an item of the other layer
++        // must not be culled, faded or counted here, and a rectangle that exists
++        // in the world must not be drawn on top of a menu.
++        if ((item.style == Style::Screen) != screens)
++        {
++            continue;
++        }
+         const float alpha = FadeFor(item);
+         if (alpha <= 0.01F)
+         {
+             continue;
+         }
+         if (item.style == Style::Ring)
+@@ -713,12 +837,41 @@ void Draw(const float aViewportWidth, const float aViewportHeight)
              continue;
          }
          if (item.depth <= kMinimumDepth)
@@ -80,7 +225,25 @@ index 7cf8a76e..f6bcda43 100644
 +            // precisely when a player is looking around one. `depth` still
 +            // applies, because a quad whose centre is behind the camera has no
 +            // drawable winding.
-+            DrawScreen(draw, item, aViewportWidth, aViewportHeight, alpha);
++            std::array<float, 8> placed{};
++            placed.fill(0.0F);
++            for (size_t index = 0; index < 8; ++index)
++            {
++                placed[index] = item.corners[index];
++            }
++            if (const auto held = s_screenMotion.find(item.surface);
++                held != s_screenMotion.end())
++            {
++                const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
++                    Clock::now() - held->second.fromAt);
++                const auto span = std::chrono::duration_cast<std::chrono::milliseconds>(
++                    held->second.toAt - held->second.fromAt);
++                placed = ScreenMotion::Blend(
++                    held->second.from, held->second.to,
++                    ScreenMotion::Fraction(static_cast<double>(elapsed.count()),
++                                           static_cast<double>(span.count())));
++            }
++            DrawScreen(draw, item, placed, aViewportWidth, aViewportHeight, alpha);
 +            continue;
 +        }
          const float scale = std::clamp(item.scale, 0.25F, 4.0F) * unit;
@@ -89,7 +252,7 @@ index 7cf8a76e..f6bcda43 100644
          // past the edge still has half its body on screen.
          if (item.x < -0.25F || item.x > 1.25F || item.y < -0.25F || item.y > 1.25F)
          {
-@@ -727,10 +777,14 @@ void Draw(const float aViewportWidth, const float aViewportHeight)
+@@ -727,10 +880,14 @@ void Draw(const float aViewportWidth, const float aViewportHeight)
          switch (item.style)
          {
          case Style::Plate: DrawPlate(draw, item, anchor, scale, alpha); break;

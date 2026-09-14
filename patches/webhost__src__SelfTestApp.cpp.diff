@@ -1,0 +1,75 @@
+# TV-relevant hunks only, extracted from a working tree by
+# tools/extract-tv-patches.py. Apply by hand: this is not a patch
+# series, and the surrounding file has other unreleased work in it.
+diff --git a/webhost/src/SelfTestApp.cpp b/webhost/src/SelfTestApp.cpp
+index e00d0f45..954a4142 100644
+--- a/webhost/src/SelfTestApp.cpp
++++ b/webhost/src/SelfTestApp.cpp
+@@ -221,49 +372,60 @@ bool SelfTestClient::WriteBitmap(const void* const aBuffer, const int aWidth, co
+         stream.write(reinterpret_cast<const char*>(rows + static_cast<size_t>(row) * aRowPitch),
+                      static_cast<std::streamsize>(rowBytes));
+     }
+     return static_cast<bool>(stream);
+ }
+ 
+-SelfTestApp::SelfTestApp(std::filesystem::path aOutput, const bool aGpu)
++SelfTestApp::SelfTestApp(std::filesystem::path aOutput, const bool aGpu, const bool aProbe,
++                         std::string aUrl)
+     : m_output(std::move(aOutput))
+     , m_gpu(aGpu)
++    , m_probe(aProbe)
++    , m_url(std::move(aUrl))
+ {
+ }
+ 
+ void SelfTestApp::OnBeforeCommandLineProcessing(const CefString&, CefRefPtr<CefCommandLine> aCommandLine)
+ {
+     // Same GPU switches as the production host, minus the adapter pin: the
+     // test proves the path on whatever adapter Chromium picks by itself.
+     aCommandLine->AppendSwitch("disable-extensions");
+     aCommandLine->AppendSwitch("disable-component-update");
+     aCommandLine->AppendSwitch("disable-background-networking");
+     aCommandLine->AppendSwitch("disable-direct-composition");
++    if (m_probe)
++    {
++        // A media probe that cannot autoplay measures the browser's gesture
++        // policy, not its codecs. Sound is the point here: muted autoplay would
++        // report a healthy decode and no audio at all.
++        aCommandLine->AppendSwitchWithValue("autoplay-policy", "no-user-gesture-required");
++    }
+     if (m_gpu)
+     {
+         aCommandLine->AppendSwitchWithValue("use-angle", "d3d11");
+         aCommandLine->AppendSwitch("ignore-gpu-blocklist");
+     }
+ }
+ 
+ void SelfTestApp::OnContextInitialized()
+ {
+     CEF_REQUIRE_UI_THREAD();
+-    m_client = new SelfTestClient(m_output, m_gpu);
++    m_client = new SelfTestClient(m_output, m_gpu, m_probe);
+     CefWindowInfo window;
+     window.SetAsWindowless(nullptr);
+     window.runtime_style = CEF_RUNTIME_STYLE_ALLOY;
+     window.shared_texture_enabled = m_gpu;
+     window.external_begin_frame_enabled = false;
+     CefBrowserSettings settings;
+     settings.windowless_frame_rate = 30;
+-    const std::string page =
+-        "data:text/html,<html><style>html,body{margin:0;width:100%;height:100%;overflow:hidden;"
+-        "background:%2307111f;color:%236fffea;font:28px sans-serif;display:flex;align-items:center;"
+-        "justify-content:center}div{padding:32px;border:2px solid %236fffea}</style>"
+-        "<body><div>Open77 CEF OSR operational</div></body></html>";
++    const std::string page = m_probe && !m_url.empty()
++        ? m_url
++        : "data:text/html,<html><style>html,body{margin:0;width:100%;height:100%;overflow:hidden;"
++          "background:%2307111f;color:%236fffea;font:28px sans-serif;display:flex;align-items:center;"
++          "justify-content:center}div{padding:32px;border:2px solid %236fffea}</style>"
++          "<body><div>Open77 CEF OSR operational</div></body></html>";
+     if (!CefBrowserHost::CreateBrowser(window, m_client, page, settings, nullptr, nullptr))
+     {
+         CefQuitMessageLoop();
+     }
+ }
+ } // namespace op77::WebHost

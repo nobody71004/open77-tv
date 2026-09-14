@@ -2,7 +2,7 @@
 # tools/extract-tv-patches.py. Apply by hand: this is not a patch
 # series, and the surrounding file has other unreleased work in it.
 diff --git a/resources/gamemodes/freeroam/web/index.html b/resources/gamemodes/freeroam/web/index.html
-index d521dd33..4a20e20e 100644
+index d521dd33..80f74380 100644
 --- a/resources/gamemodes/freeroam/web/index.html
 +++ b/resources/gamemodes/freeroam/web/index.html
 @@ -28,12 +28,14 @@
@@ -20,7 +20,7 @@ index d521dd33..4a20e20e 100644
        <button class="tab activity-tab" id="open-race" data-tab="race">RACE</button>
        <button class="tab activity-tab" id="open-pvp" data-tab="pvp">PVP</button>
      </nav>
-@@ -181,20 +183,79 @@
+@@ -181,20 +183,80 @@
          </div>
          <div class="stat-strip" id="player-status">PLAYER STATE UNAVAILABLE</div>
          <div class="stack">
@@ -70,7 +70,7 @@ index d521dd33..4a20e20e 100644
 +      <section class="page" id="page-tv">
 +        <div class="section-head">
 +          <h2>TELEVISIONS</h2>
-+          <p class="hint">A screen in the world with a web page on it. Spawning places a television where you stand, facing you; the screen itself is a browser surface, so it is visible to everyone nearby and shows the same thing to all of them.</p>
++          <p class="hint">A screen in the world with a web page on it. Spawning sets the television down about a metre in front of you, facing you, so you are standing in front of the picture rather than inside the cabinet; the screen itself is a browser surface, so it is visible to everyone nearby and shows the same thing to all of them.</p>
 +        </div>
 +        <div class="stat-strip" id="tv-status">READING TELEVISIONS…</div>
 +
@@ -84,9 +84,10 @@ index d521dd33..4a20e20e 100644
 +        <p class="hint" id="tv-note"></p>
 +
 +        <div class="section-head compact">
-+          <h2>YOUR NEARBY SETS</h2>
-+          <p class="hint">The televisions this client is currently rendering. A client only renders the nearest few &mdash; each screen is a browser surface and there is a hard limit &mdash; so a set further away appears here as you walk towards it. Settings you change here apply to every player watching that set.</p>
++          <h2>SETS ON THIS SERVER</h2>
++          <p class="hint">Every television the server holds, nearest first. A client only renders the nearest few &mdash; each screen is a browser surface and there is a hard limit &mdash; so the rows marked ON SCREEN are the ones in front of you and the rest are elsewhere on the map. Settings you change here apply to every player watching that set, which is why the marker matters: changing a set three kilometres away does nothing to the picture you are standing at.</p>
 +        </div>
++        <p class="hint">The placement buttons move a set along its own axes &mdash; LEFT is the cabinet's left, FORWARD is the way the picture faces &mdash; so they still do what they say on a set that has been turned. Pick a step size first, then press. The set slides rather than respawning, so its URL, volume and mute survive, and everyone nearby sees it move. TURN rotates it 15&deg; on the spot.</p>
 +        <div class="stat-strip" id="tv-local-count">NO SETS IN RANGE</div>
 +        <div class="catalogue-grid" id="tv-screens"></div>
 +        <div class="action-grid">

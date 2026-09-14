@@ -2,10 +2,10 @@
 # tools/extract-tv-patches.py. Apply by hand: this is not a patch
 # series, and the surrounding file has other unreleased work in it.
 diff --git a/tools/lua-test/run.lua b/tools/lua-test/run.lua
-index 7d7123f0..e3dd1ac9 100644
+index 7d7123f0..4aabe819 100644
 --- a/tools/lua-test/run.lua
 +++ b/tools/lua-test/run.lua
-@@ -22,13 +22,29 @@ local resources = root .. "/resources"
+@@ -22,13 +22,39 @@ local resources = root .. "/resources"
  
  -- `DIRECTOR_PATH` is the one global director_test.lua expects before it loads the
  -- production director; the path is passed rather than hardcoded so the runner
@@ -29,9 +29,90 @@ index 7d7123f0..e3dd1ac9 100644
 +        file = resources .. "/system/open77_media/tests/records_test.lua",
 +        entry = nil,
 +    },
++    {
++        name = "open77_media / placement",
++        -- Where a set stands and which way it points. Pure arithmetic, and the
++        -- suite is the only instrument that can catch a "left" that moves a set
++        -- right: in game that is a cabinet sliding the wrong way, with no log
++        -- line anywhere, on a set that may be kilometres from the operator.
++        preload = { resources .. "/system/open77_media/shared/placement.lua" },
++        file = resources .. "/system/open77_media/tests/placement_test.lua",
++        entry = nil,
++    },
      {
          name = "open77_cynosure / phases",
          preload = { resources .. "/open77_cynosure/server/phases.lua" },
          file = resources .. "/open77_cynosure/tests/phases_test.lua",
          entry = "RunPhasesTests",
      },
+@@ -52,16 +78,70 @@ local suites = {
+     {
+         name = "open77_sandevistan / episode",
+         preload = { resources .. "/system/open77_sandevistan/server/episode.lua" },
+         file = resources .. "/system/open77_sandevistan/tests/episode_test.lua",
+         entry = nil,
+     },
++    {
++        name = "freeroam / cyberware",
++        -- The generated implant catalogue is part of what this suite tests (the
++        -- serving policy is checked against a fabricated catalogue, but the
++        -- real one's consistency is checked too), so it is loaded here in
++        -- manifest order, before the module that reads it.
++        preload = {
++            resources .. "/gamemodes/freeroam/shared/cyberware-catalog.lua",
++            resources .. "/gamemodes/freeroam/shared/cyberware-catalog-ids.lua",
++            resources .. "/gamemodes/freeroam/shared/cyberware-catalog-shape.lua",
++            resources .. "/gamemodes/freeroam/shared/cyberware-catalog-slots.lua",
++            resources .. "/gamemodes/freeroam/shared/cyberware-catalog-appearance.lua",
++            resources .. "/gamemodes/freeroam/shared/cyberware-catalog-suffixes.lua",
++            resources .. "/gamemodes/freeroam/shared/cyberware-catalog-tags.lua",
++            resources .. "/gamemodes/freeroam/shared/cyberware-catalog-quality.lua",
++            resources .. "/gamemodes/freeroam/shared/cyberware-catalog-loc.lua",
++            resources .. "/gamemodes/freeroam/shared/cyberware-catalog-deprecated.lua",
++            resources .. "/gamemodes/freeroam/shared/cyberware-catalog-index-1.lua",
++            resources .. "/gamemodes/freeroam/shared/cyberware-catalog-index-2.lua",
++            resources .. "/gamemodes/freeroam/shared/cyberware.lua",
++        },
++        file = resources .. "/gamemodes/freeroam/tests/cyberware_test.lua",
++        entry = nil,
++    },
++    {
++        name = "freeroam / progression",
++        preload = { resources .. "/gamemodes/freeroam/shared/progression.lua" },
++        file = resources .. "/gamemodes/freeroam/tests/progression_test.lua",
++        entry = nil,
++    },
++    {
++        name = "open77_media / client",
++        -- The client half, loaded against a stub of the native surface whose
++        -- `character.position` returns the native's real shape (three numbers).
++        -- The failing case this suite is named after -- a set that spawned,
++        -- bound nothing and drew nothing -- existed only in the client's reading
++        -- of that shape, so it has to be pinned here rather than in the
++        -- catalogue suite.
++        --
++        -- Last, deliberately: it installs process-wide `Open77`, `WebUI`,
++        -- `CreateThread` and `Wait` stubs so the resource can be loaded outside
++        -- the game, and a suite that ran after it would see those instead of
++        -- nothing.
++        preload = { resources .. "/system/open77_media/shared/records.lua" },
++        file = resources .. "/system/open77_media/tests/client_test.lua",
++        entry = nil,
++        -- This one loads the file under test itself (`client/main.lua`), so it
++        -- needs the root. Passed in rather than read from the working directory,
++        -- the same way `DIRECTOR_PATH` is passed to the director suite.
++        globals = { OPEN77_REPO_ROOT = root },
++    },
+ }
+ 
+ local failed = 0
+ for _, suite in ipairs(suites) do
++    for name, value in pairs(suite.globals or {}) do
++        _G[name] = value
++    end
+     for _, path in ipairs(suite.preload or {}) do
+         local chunk = assert(loadfile(path), path .. ": not found")
+         chunk()
+     end
+ 
+     local chunk = assert(loadfile(suite.file), suite.file .. ": not found")

@@ -28,25 +28,69 @@ FEATURE = re.compile(
     r"media|Media|television|Television|\btv\b|\bTV\b"
     r"|hudSuppressed|SurfaceTexture|screenQuad|screenSurface"
     r"|web_ui_page|WebUiPage|webUiPage"
-    r"|Style::Screen|kMaximumWebSurfaces|MediaScreen",
+    r"|Style::Screen|kMaximumWebSurfaces|MediaScreen"
+    # The placement controls, the per-frame quad blending and the page policy.
+    r"|placement|Placement|ScreenMotion|Nudge|MediaPlacement"
+    r"|PagePolicy|AllowsRemoteContent|pagePolicy"
+    r"|AudioSink|allowsRemoteContent"
+    # A world screen's teardown: the session ending, the native registry no
+    # longer holding a screen, and the reason a page is released.
+    r"|materialised|destroyPage|session:ended",
 )
 
+# The seam files. Three kinds are in here and each is treated differently:
+#
+#   * files that exist ONLY for this feature (MediaScreens, ScreenQuad,
+#     ScreenMotion, PagePolicy, AudioSink) are copied verbatim into native/ or
+#     tests/ by the extraction, so `git diff` on a fresh tree reports "no
+#     changes" for the untracked ones and there is nothing to keep here.
+#   * files this feature MODIFIED are what the keyword filter below is for.
+#   * files that merely carry a TV hunk and a lot of unrelated work
+#     (freeroam's menu, the Lua test runner, the admin prop-model list) are the
+#     reason a plain `git diff` cannot be shipped as-is.
 SEAMS = [
     "client/src/api/MediaScreens.hpp",
     "client/src/api/MediaScreens.cpp",
+    "client/src/api/ScreenQuad.hpp",
+    "client/src/webui/ScreenMotion.hpp",
     "client/src/webui/WorldOverlay.hpp",
     "client/src/webui/WorldOverlay.cpp",
     "client/src/webui/WebUiService.hpp",
     "client/src/webui/WebUiService.cpp",
     "client/src/scripting/ClientResourceHost.cpp",
+    "client/src/Plugin.cpp",
     "scripting/src/ResourceHost.cpp",
     "scripting/include/op77/Scripting/ResourceHost.hpp",
     "client/CMakeLists.txt",
+    # The page policy and the host's own request gate are one decision in two
+    # files: a directive in the header is a privilege the host has to grant.
+    "webui/include/op77/WebUI/PagePolicy.hpp",
+    "webui/include/op77/WebUI/Messages.hpp",
+    "webui/include/op77/WebUI/Protocol.hpp",
+    "webui/src/Messages.cpp",
+    "webui/CMakeLists.txt",
+    "webui/tests/WebCoreTests.cpp",
+    # Audio out of a browser page into the game's mixer, and the remote-content
+    # gate in front of it.
+    "webhost/src/AudioSink.hpp",
+    "webhost/src/AudioSink.cpp",
+    "webhost/src/SurfaceClient.hpp",
+    "webhost/src/SurfaceClient.cpp",
+    "webhost/src/WebHostApp.cpp",
+    "webhost/src/SelfTestApp.hpp",
+    "webhost/src/SelfTestApp.cpp",
+    "webhost/src/Main.cpp",
+    "webhost/CMakeLists.txt",
+    # The menu tab, the placement controls, and the catalogue cross-check's
+    # source of truth.
     "resources/gamemodes/freeroam/web/index.html",
     "resources/gamemodes/freeroam/web/app.js",
+    "resources/gamemodes/freeroam/web/app.css",
     "resources/gamemodes/freeroam/client/main.lua",
+    "resources/system/open77_admin/shared/config.lua",
     "tools/lua-test/run.lua",
     "server/tests/Open77.Server.Tests/Resources/MediaRecordsTests.cs",
+    "server/tests/Open77.Server.Tests/Resources/MediaPlacementIntegrationTests.cs",
 ]
 
 

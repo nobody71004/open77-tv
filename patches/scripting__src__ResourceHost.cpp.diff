@@ -2,10 +2,10 @@
 # tools/extract-tv-patches.py. Apply by hand: this is not a patch
 # series, and the surrounding file has other unreleased work in it.
 diff --git a/scripting/src/ResourceHost.cpp b/scripting/src/ResourceHost.cpp
-index 7707d62f..0c0b58a2 100644
+index 7707d62f..4bef2f5e 100644
 --- a/scripting/src/ResourceHost.cpp
 +++ b/scripting/src/ResourceHost.cpp
-@@ -7847,12 +7847,273 @@ public:
+@@ -7847,12 +7847,297 @@ public:
          if (context->host->config.game.unprojectAllProps)
              context->host->config.game.unprojectAllProps();
          lua_pushboolean(aState, 1);
@@ -49,6 +49,11 @@ index 7707d62f..0c0b58a2 100644
 +        if (!readVector("offset", aOut.offset)) { aError = "invalid_offset"; return false; }
 +        if (!readVector("right", aOut.right)) { aError = "invalid_right"; return false; }
 +        if (!readVector("up", aOut.up)) { aError = "invalid_up"; return false; }
++        // Which side of the panel carries the picture, when the record says.
++        // Absent leaves it at zero, which the native side reads as "not
++        // declared" and draws from both sides -- the behaviour every screen had
++        // before this field existed, so not declaring one cannot blank a screen.
++        if (!readVector("faces", aOut.faces)) { aError = "invalid_faces"; return false; }
 +
 +        const auto readNumber = [&](const char* const aName, float& aTarget) {
 +            lua_getfield(aState, aIndex, aName);
@@ -167,6 +172,25 @@ index 7707d62f..0c0b58a2 100644
 +        lua_pushlstring(aState, aScreen.reason.data(), aScreen.reason.size());
 +        lua_setfield(aState, -2, "reason");
 +        lua_pushnumber(aState, aScreen.distance); lua_setfield(aState, -2, "distance");
++        // The facing test, so "why is that screen blank" and "which side is that
++        // set's picture on" are both answerable without a screenshot.
++        lua_createtable(aState, 0, 5);
++        lua_pushboolean(aState, aScreen.facingKnown ? 1 : 0);
++        lua_setfield(aState, -2, "known");
++        lua_pushboolean(aState, aScreen.facingAway ? 1 : 0);
++        lua_setfield(aState, -2, "away");
++        lua_pushlstring(aState, aScreen.facingKnown ? "declared" : "undeclared",
++                        aScreen.facingKnown ? 8 : 10);
++        lua_setfield(aState, -2, "source");
++        const auto& faces = aScreen.definition.quad.faces;
++        lua_createtable(aState, 3, 0);
++        for (int index = 0; index < 3; ++index)
++        {
++            lua_pushnumber(aState, faces[index]);
++            lua_rawseti(aState, -2, index + 1);
++        }
++        lua_setfield(aState, -2, "faces");
++        lua_setfield(aState, -2, "facing");
 +        lua_createtable(aState, 0, 3);
 +        lua_pushnumber(aState, aScreen.definition.quad.width); lua_setfield(aState, -2, "width");
 +        lua_pushnumber(aState, aScreen.definition.quad.height); lua_setfield(aState, -2, "height");
@@ -279,7 +303,52 @@ index 7707d62f..0c0b58a2 100644
      // anchor grants is exactly the capability `Open77.camera.project` already
      // grants ungated -- turning a world point into a screen point -- with the
      // sampling moved off the Lua tick. What an anchor *can* touch is bounded by
-@@ -10884,12 +11182,13 @@ public:
+@@ -10857,12 +11179,30 @@ public:
+         if (layer == "system") return 3;
+         if (layer == "debug") return 4;
+         luaL_error(aState, "invalid WebUI layer");
+         return 0;
+     }
+ 
++    /// The page's network privileges, by name. Two names, and the literal
++    /// directives behind each live on the client (`WebUI::PagePolicy`) rather
++    /// than in a resource that could ask for anything: a page may choose from a
++    /// closed set, never write the policy itself. An unrecognised name is an
++    /// error rather than a silent downgrade -- a page that asked for the media
++    /// policy and got the strict one would fail in exactly the way a header it
++    /// cannot read always fails.
++    static uint8_t ReadWebPolicy(lua_State* const aState, const int aTable)
++    {
++        lua_getfield(aState, aTable, "policy");
++        const std::string policy = lua_isnil(aState, -1) ? "strict" : luaL_checkstring(aState, -1);
++        lua_pop(aState, 1);
++        if (policy == "strict") return 0;
++        if (policy == "media") return 1;
++        luaL_error(aState, "invalid WebUI policy");
++        return 0;
++    }
++
+     static int LuaWebUiCreate(lua_State* const aState)
+     {
+         auto* const context = GetContext(aState);
+         auto& instance = *context->instance;
+         const bool options = lua_istable(aState, 1);
+         WebUiCreateRequest request;
+@@ -10870,12 +11210,13 @@ public:
+         if (options)
+         {
+             lua_getfield(aState, 1, "entry");
+             if (!lua_isnil(aState, -1)) request.entry = luaL_checkstring(aState, -1);
+             lua_pop(aState, 1);
+             request.layer = ReadWebLayer(aState, 1);
++            request.pagePolicy = ReadWebPolicy(aState, 1);
+             lua_getfield(aState, 1, "width"); request.width = static_cast<uint32_t>(luaL_optinteger(aState, -1, 1280)); lua_pop(aState, 1);
+             lua_getfield(aState, 1, "height"); request.height = static_cast<uint32_t>(luaL_optinteger(aState, -1, 720)); lua_pop(aState, 1);
+             lua_getfield(aState, 1, "fps");
+             const auto fps = luaL_optinteger(aState, -1, 30);
+             lua_pop(aState, 1);
+             if (fps <= 0)
+@@ -10884,12 +11225,13 @@ public:
              }
              request.framesPerSecond = static_cast<uint16_t>(std::min<lua_Integer>(fps, 60));
              lua_getfield(aState, 1, "zIndex"); request.zIndex = static_cast<int32_t>(luaL_optinteger(aState, -1, 0)); lua_pop(aState, 1);
@@ -293,7 +362,7 @@ index 7707d62f..0c0b58a2 100644
                  bool validBounds = lua_istable(aState, -1);
                  std::array<float, 4> bounds{};
                  constexpr std::array<const char*, 4> names{"x", "y", "width", "height"};
-@@ -12607,12 +12911,20 @@ public:
+@@ -12607,12 +12954,20 @@ public:
          SetFunction(state, "nearest", &LuaPropNearest);
          SetFunction(state, "project", &LuaPropProject);
          SetFunction(state, "unproject", &LuaPropUnproject);
@@ -314,7 +383,7 @@ index 7707d62f..0c0b58a2 100644
          SetFunction(state, "remove", &LuaAnchorRemove);
          SetFunction(state, "clear", &LuaAnchorClear);
          SetFunction(state, "list", &LuaAnchorList);
-@@ -12993,12 +13305,19 @@ public:
+@@ -12993,12 +13348,19 @@ public:
          // generation, and the only thing that ever collected the strays was
          // `Api::Props::ReleaseAll` at DLL unload. Stopping a resource must undo
          // everything that resource made; the six neighbours here are what that

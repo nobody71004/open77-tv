@@ -1,0 +1,95 @@
+# TV-relevant hunks only, extracted from a working tree by
+# tools/extract-tv-patches.py. Apply by hand: this is not a patch
+# series, and the surrounding file has other unreleased work in it.
+diff --git a/client/src/Plugin.cpp b/client/src/Plugin.cpp
+index 3472c587..e573787a 100644
+--- a/client/src/Plugin.cpp
++++ b/client/src/Plugin.cpp
+@@ -25,12 +25,13 @@
+ #include "api/Doors.hpp"
+ #include "api/Elevators.hpp"
+ #include "api/Loot.hpp"
+ #include "api/Markers.hpp"
+ #include "api/Props.hpp"
+ #include "api/WorldAnchors.hpp"
++#include "api/MediaScreens.hpp"
+ #include "api/Nameplates.hpp"
+ #include "api/DilationAuthorisation.hpp"
+ #include "api/Effects.hpp"
+ #include "debug/ControlledSpawnProbe.hpp"
+ #include "debug/CrashProbe.hpp"
+ #include "debug/DebugBridge.hpp"
+@@ -101,12 +102,13 @@ bool RunningOnEnter(RED4ext::CGameApplication*)
+     op77::GameThreadQueue::OnRunningEnter();
+     op77::EntityService::OnRunningEnter();
+     op77::DynamicEntityService::OnRunningEnter();
+     op77::Api::Markers::OnRunningEnter();
+     op77::Api::Props::OnRunningEnter();
+     op77::Api::WorldAnchors::OnRunningEnter();
++    op77::Api::MediaScreens::OnRunningEnter();
+     op77::Api::Effects::OnRunningEnter();
+     // Clears any dilation authorisation lease so a grant cannot survive the world
+     // it was issued in. The policy script refuses every scripted dilation while a
+     // session is armed; a leftover lease would be the one thing that reopened it.
+     op77::Api::DilationAuthorisation::OnRunningEnter();
+     op77::Api::Interactions::OnRunningEnter();
+@@ -294,12 +296,17 @@ bool RunningOnUpdate(RED4ext::CGameApplication*)
+     // this frame is then projected with this frame's camera instead of waiting
+     // one more. That single frame is the whole point of the service.
+     op77::Api::WorldAnchors::OnRunningUpdate();
+     // Same reason, same place: the nameplate projection was always native, only
+     // its delivery went through a Lua timer.
+     op77::Api::Nameplates::OnRunningUpdate();
++    // After the resource host, for the same reason the anchors are: a screen a
++    // resource bound or re-aimed this frame is projected against this frame's
++    // camera rather than next frame's. It sits after `Props` too, so a prop
++    // projected this tick is already visible to the lookup.
++    op77::Api::MediaScreens::OnRunningUpdate();
+     op77::PreGameBridge::OnRunningUpdate();
+     op77::DynamicEntityProbe::OnRunningUpdate();
+     op77::ControlledSpawnProbe::OnRunningUpdate();
+     op77::SpawnerEventObserver::OnRunningUpdate();
+     op77::TweakDbProbe::OnRunningUpdate();
+     op77::WorldProbe::OnRunningUpdate();
+@@ -467,12 +474,13 @@ bool RunningOnExit(RED4ext::CGameApplication*)
+     op77::Api::Camera::OnRunningExit();
+     op77::Api::Population::OnRunningExit();
+     op77::Api::Notifications::OnRunningExit();
+     op77::Api::Loot::OnRunningExit();
+     op77::Api::WorldAnchors::OnRunningExit();
+     op77::Api::Nameplates::OnRunningExit();
++    op77::Api::MediaScreens::OnRunningExit();
+     op77::Api::Markers::OnRunningExit();
+     op77::Api::Props::OnRunningExit();
+     op77::Api::Effects::OnRunningExit();
+     op77::Api::DilationAuthorisation::OnRunningExit();
+     op77::Api::Blips::OnRunningExit();
+     op77::Api::Interactions::OnRunningExit();
+@@ -726,12 +734,13 @@ RED4EXT_C_EXPORT bool RED4EXT_CALL Main(
+         op77::Api::Doors::Initialize(aHandle, aSdk);
+         op77::Api::Elevators::Initialize(aHandle, aSdk);
+         op77::Api::Loot::Initialize(aHandle, aSdk);
+         op77::CombatReplication::Initialize(aHandle, aSdk);
+         op77::Api::Markers::Initialize(aHandle, aSdk);
+         op77::Api::Props::Initialize(aHandle, aSdk);
++        op77::Api::MediaScreens::Initialize(aHandle, aSdk);
+         op77::PlayerReplication::Initialize(aHandle, aSdk);
+         op77::LifeReplication::Initialize(aHandle, aSdk);
+ 
+         if (!op77::DebugBridge::Start())
+         {
+             s_sdk->logger->Error(s_pluginHandle, "Open77 could not start its local debug bridge.");
+@@ -817,12 +826,13 @@ RED4EXT_C_EXPORT bool RED4EXT_CALL Main(
+         op77::Api::Loot::Shutdown();
+         op77::CombatReplication::Shutdown();
+         op77::Api::Effects::ReleaseAll();
+         op77::Api::Screen::Shutdown();
+         op77::Api::Markers::ReleaseAll();
+         op77::Api::Props::ReleaseAll();
++        op77::Api::MediaScreens::ReleaseAll();
+         op77::Api::WorldAnchors::ReleaseAll();
+         op77::Api::Blips::Shutdown();
+         op77::Api::Inspector::Shutdown();
+         op77::Api::ScriptBridge::Shutdown();
+         op77::Api::PhotoMode::Shutdown();
+         op77::Api::Session::Shutdown();
