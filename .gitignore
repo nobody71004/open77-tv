@@ -3,3 +3,7 @@
 *~
 .DS_Store
 __pycache__/
+
+# tools/suite-runner is a real .NET project; its build output is not source.
+bin/
+obj/

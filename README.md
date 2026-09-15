@@ -65,7 +65,9 @@ tests/
                                 probe, pinned across the three languages it spans
   fixtures/                     a snapshot of open77_admin's prop-model aliases
 tools/
-  run-suite.py           run the four Lua suites with no monorepo
+  suite-runner/          run the four Lua suites with no Lua interpreter (KeraLua)
+  run-suite.py           the same four suites through a real lua5.4, and the
+                         snapshot refresh
   extract-tv-patches.py  regenerate patches/ from a checkout
 ```
 
@@ -355,16 +357,30 @@ existing code rather than a new system.
 ## Running the suite
 
 ```bash
-python tools/run-suite.py --from /path/to/open77-base   # live prop-model list
-python tools/run-suite.py                               # vendored snapshot only
+dotnet run --project tools/suite-runner                       # vendored snapshot
+dotnet run --project tools/suite-runner -- --from /path/to/open77-base
 ```
 
-Lua 5.4 required (pass `--lua /path/to/lua` if it is not on `PATH`). The suite
-cross-checks every record's `model` against the prop-model aliases that
-`open77_admin` publishes, which is why it needs one of the two sources above; the
-vendored snapshot lets it run with no checkout, but only the `--from` form cannot
-drift. Refresh the snapshot with
-`--refresh-fixture --from <checkout>`.
+No Lua interpreter is needed: `tools/suite-runner` carries Lua 5.4 through
+KeraLua, the binding the monorepo's `Open77.Server.Tests` already uses, so the
+four suites run anywhere `dotnet` does — and CI runs them on Linux and Windows
+(`.github/workflows/ci.yml`), which is the first time these suites have been a
+gate rather than something somebody remembers to run.
+
+`tools/run-suite.py` runs the same four files through a real `lua5.4` (pass
+`--lua /path/to/lua` if it is not on `PATH`). It is also where
+`--refresh-fixture --from <checkout>` lives, so keep it for rewriting
+`tests/fixtures/open77_admin-props-models.lua` from a live checkout.
+
+The suite cross-checks every record's `model` against the prop-model aliases that
+`open77_admin` publishes — the list the prop-host build above emits — which is why
+it needs one of the two sources. The vendored snapshot lets it run with no
+checkout, but only the `--from` form cannot drift, and that difference is real:
+pointed at a checkout that predates this work, the records suite fails, because
+38 records name 36 `electronics.*` aliases (9 `tv`, 14 `monitor`, 7 `screen`,
+6 `frame`) that such a checkout does not publish. The snapshot is the list the
+catalogue was written against; `--from` is how you find out whether a given
+server can spawn these sets at all.
 
 ## Installing it into a server
 

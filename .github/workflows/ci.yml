@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  lua-suites:
+    name: Lua suites (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+
+    # Both, deliberately. The repository's other tooling is Windows-only
+    # (WolvenKit, PowerShell, the game itself), but these four suites are pure
+    # Lua and pure data, so a Linux cell is where a path separator, a case-only
+    # filename or a CRLF assumption shows up as a failure instead of as someone's
+    # afternoon. `fail-fast: false` keeps the second cell's answer when the first
+    # one is red -- the two cells failing for different reasons is information.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      # No Lua interpreter is installed on either runner, and nothing here installs
+      # one: `tools/suite-runner` carries Lua 5.4 through KeraLua, the same binding
+      # and the same pinned version the monorepo's own tests use. The suites run
+      # against the vendored `tests/fixtures` snapshot, since CI has no open77-base
+      # checkout to take the live prop-model list from.
+      - name: Run the four open77_media suites
+        run: dotnet run --project tools/suite-runner --configuration Release

@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <AssemblyName>open77-tv-suite-runner</AssemblyName>
+    <RootNamespace>Open77.Tv.SuiteRunner</RootNamespace>
+    <Description>Runs the four open77_media Lua suites with no Lua interpreter.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The same engine and the same pinned version the monorepo's tests use
+         (`server/Directory.Packages.props`), so a suite that passes here passes
+         for the same reason it passes there. -->
+    <PackageReference Include="KeraLua" Version="1.4.9" />
+  </ItemGroup>
+
+</Project>

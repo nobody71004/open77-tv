@@ -361,11 +361,14 @@ And two C# ones:
   way: if the page stops asking, every shell-shaped site goes back to showing
   nothing, with no error anywhere.
 
-`tools/run-suite.py` in this repository runs all four Lua suites with no
-monorepo: it preloads the vendored alias snapshot (or a live checkout with
-`--from`), stages the resource in a temp directory for the client suite's
-`OPEN77_REPO_ROOT`, and fails if any suite reports zero assertions as well as if
-one fails.
+`tools/suite-runner` in this repository runs all four Lua suites with no Lua
+interpreter and no monorepo: it carries Lua 5.4 through KeraLua, preloads the
+vendored alias snapshot (or a live checkout with `--from`), stages the resource
+in a temp directory for the client suite's `OPEN77_REPO_ROOT`, and fails if any
+suite reports zero assertions as well as if one fails. `tools/run-suite.py` does
+the same through a real `lua5.4` and is where the snapshot refresh lives; CI
+(`.github/workflows/ci.yml`) runs the .NET one on Linux and Windows, since that
+is the only one of the two a stock runner can execute.
 
 Four C++ suites live here too, and each one exists because its subject fails
 silently in game: `tests/ScreenQuadTests.cpp` (the quad arithmetic and the
