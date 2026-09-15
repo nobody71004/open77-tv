@@ -2,7 +2,7 @@
 # tools/extract-tv-patches.py. Apply by hand: this is not a patch
 # series, and the surrounding file has other unreleased work in it.
 diff --git a/webui/include/op77/WebUI/Messages.hpp b/webui/include/op77/WebUI/Messages.hpp
-index 1eb3a4fe..9e784c3b 100644
+index 1eb3a4fe..3ee70c73 100644
 --- a/webui/include/op77/WebUI/Messages.hpp
 +++ b/webui/include/op77/WebUI/Messages.hpp
 @@ -1,12 +1,13 @@
@@ -38,3 +38,72 @@ index 1eb3a4fe..9e784c3b 100644
  {
      SurfaceId surface{};
      uint64_t generation{};
+@@ -248,12 +255,56 @@ struct CharacterPayload
+ {
+     SurfaceId surface{};
+     uint32_t codepoint{};
+     uint32_t modifiers{};
+ };
+ 
++// v7. Game -> host: the OPERATOR layer of the ad blocklist.
++//
++// The television's policy lives in the host process, and the host has no way to
++// ask the server anything -- it does not have a socket, a session or an
++// identity. So the list a server's operator maintains is carried here, from the
++// client that is in that session to the process that enforces it.
++//
++// The rules are RAW: they are validated by `WebUI::Ads::NormaliseRule` in the
++// host, not by whoever sent them, so a malformed entry is refused with a reason
++// the operator can act on rather than quietly matching nothing. The layer is
++// additive -- the compiled list is not affected by anything in this message --
++// and a resent policy REPLACES the previous one, which is what makes an operator
++// removing a rule possible without a rebuild.
++struct AdBlockPolicyPayload
++{
++    /// The server's own counter for this list, so a receipt can name which
++    /// revision a client is enforcing. Zero means "unversioned"; the host does
++    /// not require monotonicity, it only reports what it was told.
++    uint64_t revision{};
++    /// Where the list came from, for the trace line: the resource name and the
++    /// server address, as the client understood them.
++    std::string source;
++    std::vector<std::string> hosts;
++    std::vector<std::string> tokens;
++};
++
++// v7. Host -> game: the policy the host is now enforcing, and whether it came
++// from a push or from the build alone.
++//
++// This is the receipt half, and it exists because "we sent it" and "it is in
++// effect" are different facts. A server that never sees one -- a client whose
++// host predates this message, a page running on a host that refused to start --
++// should be able to say so, instead of an operator concluding their network is
++// blocked when nothing ever read the list.
++struct AdBlockStatePayload
++{
++    uint64_t revision{};
++    uint32_t compiledRules{};
++    uint32_t hostRules{};
++    uint32_t tokenRules{};
++    /// `rule:reason`, one per entry the host would not honour, bounded.
++    std::vector<std::string> refused;
++};
++
+ #define OP77_WEBUI_PAYLOAD(Type) \
+     [[nodiscard]] bool EncodePayload(const Type& aPayload, std::vector<uint8_t>& aOut); \
+     [[nodiscard]] bool DecodePayload(const Message& aMessage, Type& aOut)
+ 
+ OP77_WEBUI_PAYLOAD(HostHelloPayload);
+ OP77_WEBUI_PAYLOAD(ClientHelloPayload);
+@@ -273,9 +324,11 @@ OP77_WEBUI_PAYLOAD(SurfaceTransportPayload);
+ OP77_WEBUI_PAYLOAD(WebEventPayload);
+ OP77_WEBUI_PAYLOAD(MouseMovePayload);
+ OP77_WEBUI_PAYLOAD(MouseButtonPayload);
+ OP77_WEBUI_PAYLOAD(MouseWheelPayload);
+ OP77_WEBUI_PAYLOAD(KeyPayload);
+ OP77_WEBUI_PAYLOAD(CharacterPayload);
++OP77_WEBUI_PAYLOAD(AdBlockPolicyPayload);
++OP77_WEBUI_PAYLOAD(AdBlockStatePayload);
+ 
+ #undef OP77_WEBUI_PAYLOAD
+ } // namespace op77::WebUI

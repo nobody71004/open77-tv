@@ -2,7 +2,7 @@
 # tools/extract-tv-patches.py. Apply by hand: this is not a patch
 # series, and the surrounding file has other unreleased work in it.
 diff --git a/webui/include/op77/WebUI/Protocol.hpp b/webui/include/op77/WebUI/Protocol.hpp
-index 61edd898..bc4a256f 100644
+index 61edd898..a0c1175d 100644
 --- a/webui/include/op77/WebUI/Protocol.hpp
 +++ b/webui/include/op77/WebUI/Protocol.hpp
 @@ -16,13 +16,20 @@ constexpr uint32_t kProtocolMagic = 0x574D5943U; // "CYMW" in little-endian memo
@@ -27,3 +27,30 @@ index 61edd898..bc4a256f 100644
  constexpr uint16_t kHostExternalBeginFrames = 1U << 1U;
  constexpr uint16_t kHostDeferredFrameCommit = 1U << 2U;
  [[nodiscard]] constexpr bool HostNeedsBeginFrames(const uint16_t aFlags)
+@@ -84,12 +91,26 @@ enum class MessageType : uint16_t
+     LuaToJsEvent = 50,
+     JsToLuaEvent = 51,
+     JsInvoke = 52,
+     InvokeResult = 53,
+     RendererCrashed = 54,
+     Metrics = 55,
++
++    // v7. Game -> host: the operator's ad-blocklist layer, pushed by the server
++    // the client is in a session with. Version 7 is additive and does NOT bump
++    // `kProtocolVersion` above: the version constant exists to catch a payload
++    // that gained or lost a FIELD (where an old peer would refuse every surface
++    // rather than the one message it cannot read), while a pair of new message
++    // types is exactly the case a peer is allowed to ignore -- an older host
++    // falls through its dispatch default, keeps the compiled list, and the
++    // client reports the missing receipt instead of pretending the rules are in
++    // force. See `AdBlockPolicyPayload` for why the layer only ever adds.
++    AdBlockPolicy = 56,
++    // v7. Host -> game: the receipt -- which rules the host now enforces, and
++    // which entries it refused with the reason.
++    AdBlockState = 57,
+ };
+ 
+ struct Message
+ {
+     MessageType type{};
+     uint16_t flags{};

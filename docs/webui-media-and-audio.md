@@ -335,6 +335,50 @@ end of a large lot sees nothing.
 \* `loc_sq031_drive_in_cinema` is also the wrong lever even if it were reachable: the
 board is scenery, and the film on it is Ink.
 
+### A paused set is not a black set (2026-09-15)
+
+Report: *"100ft cinema screen isnt working showing black."* The session log names it, and
+the screen was not the fault:
+
+```
+television 2 (cinema.100ft): drawing              <- the quad IS drawn
+OK media=2 ... url=https://youtu.be/Qv1... volume=63 muted=false paused=true
+television 2: player_state (unstarted at 0.0s)   <- eleven times, never `playing`
+television 2: youtube_error ...                  <- none
+television 3 (cinema.150ft) ... paused=false
+ television 3: player_state (playing at ...)     <- the same link, on the 150 ft set
+ television 3: player_state (ended at 334.8s)
+```
+
+Two screens, one link, one black and one playing; the only state that differs is
+`paused`. Three things made that state permanent, and all three are ours:
+
+* `startApiPlayer` built the player with `autoplay: 1` and then `applyPaused` immediately
+  sent `pauseVideo` -- a player paused before it has ever started never leaves
+  `unstarted`, and an unstarted YouTube player paints nothing at all.
+* The page's own recovery refuses to touch a paused set: `watchYouTube` nudges only
+  `while (!state.paused)`.
+* Setting a link did not clear the pause, so re-pasting the link -- the one thing a watcher
+  in front of a 30 m panel can do from the menu -- could not start it either.
+
+Fixed in the two owners of the rule: `web/tv.js` now builds the player with
+`autoplay: state.paused ? 0 : 1` and cues it (`cueVideoById`) when paused, so a paused set
+shows the video's poster rather than a black rectangle, and `server/main.lua`'s `url` action
+clears `paused`, because pasting a link is a play request. Pinned by
+`APausedTelevisionShowsAPictureRatherThanNothing` in `WebUiAssetTests`, with a mutation
+control (removing the server line fails it).
+
+Two follow-ons the same session surfaced. The ad-block receipt handler read `os.time()` in a
+sandbox that withholds `os` (`LuaResourceRuntime` removes `io`, `os`, `debug`, `package`), so
+the server logged `script error: open77_media/server/main.lua:399: attempt to index a nil
+value (global 'os')` and dropped the receipt on every player -- the clock is now the
+runtime's own `GetGameTimer()`, and `MediaServerScriptsNameNoWithheldLibrary` fails if the
+resource names a withheld library again. And `TelevisionResourceUsesRealHostApiNames` -- the
+per-resource API check -- is what caught the first attempt at that fix, because the *server*
+prelude publishes `GetGameTimer`, not the client's `Open77.time.monotonic`; several other
+resources' `server/main.lua` files still call the client spelling, which is the same class of
+name that fails silently at runtime.
+
 ## A link that is a shell, and the advertising around it (2026-09-15)
 
 The report was two sentences about one site -- *"make this website compatible so i can play
@@ -437,13 +481,17 @@ The blocklist is the second half, and it is enforced twice more where a window r
 reach: `OnBeforeResourceLoad` cancels a blocked host's *requests* (a script that never loads
 cannot ask for anything), and `OnBeforeBrowse` refuses a *navigation* to one -- the case with
 no window and no click, where a framed site redirects the frame itself and the page behind
-the advertisement is simply gone. The list is 44 host suffixes plus 12 host tokens
+the advertisement is simply gone. The list is 48 host suffixes plus 12 host tokens
 (`popads`, `popunder`, `adservice`, …), spelled out so every entry can be argued with, and it
 is deliberately not EasyList: it is paired with the behavioural rule precisely because a
 hand-maintained list is always incomplete. One entry matters more than the rest --
 `googlevideo.com` is **not** blocked even though `googlesyndication.com` is, and that
 asymmetry is pinned by a test, because blocking YouTube's media to block its advertising
 would be the worst possible trade.
+
+That list is compiled in, which is the right default and the wrong ceiling -- a popup network
+that registers a domain on Tuesday must not have to wait for a build. So it has a second
+layer, and that layer is the next section.
 
 ### Verification
 
@@ -486,6 +534,278 @@ there instead of on somebody's television.
 * **The blocklist is a list.** A campaign that rotates through fresh domains is not caught by
   a host rule -- but its *windows* are, by the gesture rule, which is why the two are shipped
   together.
+
+## The operator's layer: rules a server can add (2026-09-15)
+
+Everything above describes what the *build* refuses. This describes what a **server** can add,
+which is the property that makes the blocklist usable: a popup network is a domain registered
+on Tuesday and seen in the log on Tuesday evening, and a television that can only be protected
+by shipping a build, a signed integrity catalog and every client updating is a television that
+shows advertising for a fortnight.
+
+### One list, one owner, and it only ever adds
+
+```
+  server/config.lua          server/adblock.lua                (the grammar)
+        │  seed                     │
+        ▼                          ▼
+  data/adblock.json  ──►  server/main.lua  ──► open77:media:adblock ──► client/main.lua
+  (the live list)                                                            │
+                                                       Open77.webui.blocklist│(hosts, tokens, revision)
+                                                                             ▼
+                                                              client plugin (WebUiService)
+                                                                             │  AdBlockPolicy  (v7, new)
+                                                                             ▼
+                                                       browser host (HostRuntime::SetAdBlockPolicy)
+                                                                             │
+                                  Ads::Blocklist = compiled 48 + operator N │  validated HERE
+                                                                             ▼
+                                  OnBeforePopup · OnBeforeBrowse · OnBeforeResourceLoad · FrameResolver
+```
+
+Four decisions in that picture are the feature:
+
+* **The layer ADDS.** An operator rule joins the compiled list; nothing a server sends can
+  remove one. A client that accepted a list which could unblock `doubleclick.net` would be a
+  client whose policy is controlled by whatever it connected to, so the direction is enforced
+  in the host and not asked for by the protocol. `Ads::Blocklist::IsBlocked` consults the
+  compiled list *first* and `ClearOperatorRules` can only clear the operator's half.
+* **The rules are validated where they are matched.** `Ads::NormaliseRule` runs in the browser
+  host, on the way in -- a client must not trust a list that arrived over a network. The same
+  grammar is written a second time in Lua (`server/adblock.lua`) so an operator hears about a
+  typo at the console *while they are looking at it*; the receipt is what catches the two
+  disagreeing. A rule of `com` or `co.uk` is refused by name in both, because one typo
+  meaning "any subdomain of my own site" must not blank every `.com` or a whole country.
+* **The server owns the list; each client owns delivery.** The server validates what an
+  operator types, keeps it under the resource's own `data/` directory, and pushes it whole to
+  every client whenever it changes (and on join, with the screen snapshot). The client hands it
+  to the host and reports back -- so "we sent it" and "it is in force" are different facts that
+  the server can tell apart.
+* **The push is a replacement, not a delta.** The list is small (bounded at 256 hosts + 256
+  tokens on the wire, 512 in the encoder), a client applies it in one call, and a delta stream
+  is one more place for a late joiner to end up enforcing something the server stopped
+  believing hours ago.
+
+### The seam, and why it is a new message rather than a file
+
+The browser host is a separate process with no socket, no session and no identity: it cannot
+ask a server anything. The one thing that *can* reach it is the client plugin, which already
+owner of the pipe -- so the policy travels as protocol v7's `AdBlockPolicy` (game → host) and
+`AdBlockState` (host → game), and **not** as a resource file the host might read. A file would
+have meant two things deciding what the list is (the resource on disk and the host's own
+parsing), no reply to report, and a policy that silently reverts if a directory is cleaned.
+
+The protocol version constant deliberately does **not** move for this: v6 exists because
+`CreateSurfacePayload` gained a *field*, which an old peer would answer by refusing every
+surface, whereas a pair of new *message types* is exactly the case a peer is allowed to ignore
+-- an older host falls through its dispatch default, keeps the compiled list, and the client
+reports the missing receipt instead of pretending the rules are in force.
+
+### What an operator types, and what they are told
+
+```
+> media.adblock
+adblock revision 3 -- 2 host(s) + 1 token(s) from data/adblock.json
+  host  newads.test
+  host  tracker.bad.test
+  token newads
+> media.adblock.add co.uk
+refused "co.uk": public_suffix
+> media.adblock.add token popads
+adblock revision 4: token popads (2 host(s) + 2 token(s)) from data/adblock.json
+> media.adblock.status
+adblock revision 4, 2 host(s) + 2 token(s)
+  player 1: revision 4 enforced -- 2 hosts + 2 tokens (+60 compiled), 0 refused
+```
+
+`.reload` re-reads the *store* (so a hand-edited `data/adblock.json` is picked up) and never
+the config file, which is why the two never argue: `server/config.lua` is the seed a server
+that has never been told anything reads, and `data/adblock.json` -- written by every command
+-- is the live list. One owner at a time, never both.
+
+### Verification
+
+Three layers, each pinning something the layer above cannot see.
+
+**Pure, in `Open77.WebCore.Tests`**: normalisation against the shapes a person actually pastes
+(a whole URL, a leading `*.`, a trailing dot, mixed case, a port) and every refusal *by name*
+(`needs_a_domain` for `com`, `public_suffix` for `co.uk`, `empty_label` for `a..b.com`,
+`invalid_hyphen`, `token_is_a_host`, `registry_label`), the subdomain-vs-substring asymmetry
+(`notnewads.test` is not covered by `newads.test`), and the two invariants that make the layer
+safe: clearing the operator's rules does not clear the compiled list, and a payload refusing
+to encode at 513 rules or a 300-byte rule is what keeps a server from stalling a client.
+
+**The grammar and the store, in the server suite** (`TelevisionAdBlockSuitePasses`, running
+`server/adblock.lua` + `tests/adblock_test.lua` through KeraLua): 352 assertions over the
+grammar, the add/remove/clear verbs, the wire bounds, the payload's refusals, and the store's
+tolerance for a hand-edited file. The client half of the same grammar is deliberately *not*
+pinned there -- two implementations are the point, and the receipt is what reconciles them.
+The client's half of the *delivery* is pinned in `TelevisionClientSuitePasses`, against a stub
+of the native surface: that a host which cannot take the rules is reported as
+`webui_blocklist_unavailable`, that nothing is reported before the host answers, that a
+receipt for the pushed revision is reported with its counts and its refusals, and that a host
+which never answers is reported as unconfirmed at the deadline -- with the older revision it
+*does* hold attached, so "not yet told" and "never answered" stay different sentences.
+
+**End to end, in `Open77.WebHost.IPC`** -- one rule pushed to a real host, then the real
+browser refusing the real origin, with the same page as its own control:
+
+```
+stage=frame_grant      media_framed=1 strict_refused=1        ← the control run, before the push
+stage=adblock_receipt  revision=1 hosts=1 tokens=0 compiled=60 refused=0
+stage=adblock_frame    blocked=1 json={"violation":"","load":false,"frames":0,"note":"timeout"}
+stage=adblock_resolve  json={"ok":true,"frameable":false,"violation":"blocked","best":"",…}
+```
+
+The rule names `example.com`, which the compiled list does **not** refuse (asserted in the
+test, so the stage cannot quietly turn into a measurement of the build). The first media
+surface framed that origin and reported `load:true`; the third -- the same page, same policy,
+one pushed rule -- never loaded it, and the host's own trace says why, which is the part a
+screenshot cannot: `adblock_policy:1:1 hosts + 0 tokens + 60 compiled` followed by
+`adblock:navigation https://example.com/`. The fourth surface asks the *resolver* about the
+same origin and gets `"violation":"blocked"` -- the verdict the television page uses to
+decide, before it frames anything, that there is nothing to frame.
+
+### Limits, named rather than discovered
+
+* The compiled list cannot be *narrowed* by a server, which is deliberate (above) and does mean
+  that a false positive in the build needs a new build. The operator's layer is the mitigation
+  for the other direction only.
+* Rules are hosts and host-substrings, not paths or regexes: `Ads::IsBlocked` reads the
+  authority and nothing else, and the payload cannot express more than that. A campaign
+  addressed by path is out of reach of this layer, not hidden by it.
+* The list is pushed on join and on change. A client that joins a second *before* an operator's
+  change gets it at the next push, and a client whose plugin predates the message reports
+  `no_blocklist_receipt` -- which `media.adblock.status` shows per player, so "nobody confirmed
+  it" cannot be mistaken for "it is live".
+
+## A television's own cookie jar (2026-09-15)
+
+A television could not stay signed in to anything, and the reason was structural rather than a
+page defect: every surface was created with a `CefRequestContext` and an **empty**
+`cache_path`.
+
+`cache_path` is how CEF selects a storage partition, and an empty one selects the **global**
+partition -- the host's own profile directory, the `root_cache_path` that `Main.cpp` points at
+the same `--open77-data` tree the host uses for everything else. Three consequences, all of
+them wrong for a player:
+
+* every television in the world shared one jar, so signing in on the screen in your apartment
+  signed you in on the one in the bar, and two players signing in to two accounts of the same
+  site overwrote each other;
+* the cookies landed in the host's profile, beside the host's own data, rather than in a place
+  owned by the television that earned them;
+* `persist_session_cookies = false` was already set, which keeps *session* cookies in memory,
+  but does nothing about the global partition's persistent cookies reaching the disk.
+
+### What a jar is now
+
+`CookieJar.hpp` (`op77/WebUI`, header-only and CEF-free so a game-free test can pin it) decides
+the policy; `SurfaceClient::CreateBrowser` applies it:
+
+* **per television** -- the path is `cookies/<resource>-<surface>`, so the pair (resource,
+  surface id) *is* the identity. A generation change keeps the jar; a different television
+  never sees it.
+* **beside the profile, not inside it** -- under the host's data root, in a directory the host
+  never reads and only ever hands to CEF as a path. The location also matters for a second
+  reason: the client passes `--open77-data` as `<plugin>/cache/web/instances/<pid>`, under a
+  `cache/` tree the EAC integrity catalog already excludes, so a jar cannot become an
+  integrity failure at launch.
+* **session-scoped** -- `persist_session_cookies` stays off, so the cookies a sign-in relies on
+  are never written at all, and `HostRuntime::Start` sweeps the whole `cookies/` directory
+  before the first surface exists. Nothing signed in during a previous run of the host reaches
+  into this one.
+* **dropped with its surface** -- `OnBeforeClose` releases the context and removes the jar, so a
+  despawned television leaves no signed-in cookie store for the next surface to reuse the id.
+
+The resource name is *input* -- it arrives inside a `CreateSurface` payload -- so it is reduced
+to a single path-safe component before it becomes a directory name (`..`, `/` and `\` become
+`_`, leading dots are dropped, the length is capped). Without that, a resource named `../..`
+would have put a swept-and-deleted directory outside the directory meant to hold jars.
+
+### Verifying it
+
+* `Open77.WebCore.Tests` -- the naming, the traversal reduction, the two-directories property,
+  and `Sweep`/`Remove` against the real filesystem: one television's jar is removed while its
+  neighbour's survives, and the sweep does not reach outside `cookies/`.
+* `Open77.WebHost.IPC` -- against the real host and real CEF, the line
+  `stage=cookie_jars one=open77_webhost_test-1 two=open77_webhost_test-2`, and the assertions
+  behind it: both surfaces were given a jar, the two are different directories, and their
+  parent is the cookies root rather than the host's profile.
+
+### Limits, named rather than discovered
+
+* The jar is the host's half of the property. That CEF then keeps each surface's cookies in the
+  partition its `cache_path` names is CEF's contract for that field; the test proves the paths,
+  not the cookie exchange inside them.
+* A jar is per surface, so a *respawned* television -- a new surface id -- starts signed out.
+  That matches "stay signed in while it is on screen"; making a sign-in survive a respawn means
+  keying the jar by resource instead, a one-line change in `NameFor`.
+* Nothing here makes a site that refuses a non-standard user agent, or that decides to trust
+  the browser on more than cookies, work. This removes one reason a sign-in could not last; it
+  does not vouch for any particular site.
+
+## The `sandbox` attribute that stopped the players (2026-09-15)
+
+Report, from a session: *"not being able to play videos on the website hdtoday or 123movie
+because of sandbox issues — it says it cant play in sandbox."*
+
+The message is the player's own, and the gate behind it is small enough to quote. The player
+these sites ship (`vidsrc.buzz/embed/...`, reached from `123movie-tv.it.com` by way of
+`v3.freemovies.lol`, and from `hdtoday` by way of `moviestv.my`) decides whether it is allowed
+to play like this:
+
+```js
+function opaqueOrigin(){
+  ...
+  try{ window.localStorage.getItem('_sb'); }catch(e){ return true; }
+  try{ var d=document.domain; document.domain=d; }catch(e){ return true; }
+  return false;
+}
+function sandboxVerdict(){
+  if(opaqueOrigin())return 'sandboxed';
+  ...
+}
+var SB = sandboxVerdict();
+if(SB==='sandboxed'){ sandboxDeny(); return; }   // stopMsg('Sandbox is not allowed', ...)
+```
+
+`document.domain = document.domain` is a no-op on an ordinary page, and **Chromium refuses it
+inside any sandboxed frame** — including one whose sandbox grants `allow-scripts
+allow-same-origin`, which is what this page's frame carried for every framed site. The site's
+own verdict was therefore `sandboxed`, and it replaced the film with "Sandbox is not allowed /
+Remove the sandbox attribute from the iframe to play the video."
+
+### Measured, both settings, through this host
+
+A page served from one local origin framed a second one whose document evaluates those two
+functions verbatim (they use nothing site-specific), and the host's media probe
+(`--open77-self-test-probe`) wrote back the verdict it computed:
+
+| frame | `document.domain` | `localStorage` | site's verdict |
+|---|---|---|---|
+| `sandbox="allow-scripts allow-same-origin allow-forms allow-popups …"` (what `tv.js` set) | `throw:SecurityError` | ok | **`sandboxed`** → refuse |
+| no `sandbox` attribute | `ok` | ok | `unknown` → play |
+
+`frameElement` is `null` in both rows — which is what a cross-origin parent always gives, so
+the ancestor walk cannot be the verdict either way — and the attribute's *only* effect was the
+`document.domain` refusal. The player's second gate, a popup probe on the first trusted click,
+is disabled on these sites by their own state (`"pp":false` in the page's serialised state),
+so it is never reached; the host refusing popups (measured: `window.open('about:blank')`
+returns `null`) does not therefore matter here.
+
+To reproduce: serve any two-origin pair of pages, frame the second from the first with and
+without the attribute, have the inner page evaluate `opaqueOrigin()`/`sandboxVerdict()` and
+report on the console channel, and run
+`Open77.WebHost.exe --open77-self-test-probe=<out>.json --open77-self-test-url=<outer>`.
+
+### The fix, and what actually bounds the frame
+
+`buildEmbedFrame` in `resources/system/open77_media/web/tv.js` sets no `sandbox` now, and the
+three host-test fixture pages that framed a site the same way were brought in line. What bounds
+a framed site is the surface's page policy, the request blocklist and the popup policy — none
+of which needed to change — plus the origin itself, which is what the attribute was never what
+enforced anyway. `AdBlock.hpp`'s claim that the sandbox was the boundary is corrected there.
 
 ## What this note does not cover
 

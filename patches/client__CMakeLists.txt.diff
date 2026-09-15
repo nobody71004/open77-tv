@@ -2,7 +2,7 @@
 # tools/extract-tv-patches.py. Apply by hand: this is not a patch
 # series, and the surrounding file has other unreleased work in it.
 diff --git a/client/CMakeLists.txt b/client/CMakeLists.txt
-index 9fae800f..705389be 100644
+index 9fae800f..454983d1 100644
 --- a/client/CMakeLists.txt
 +++ b/client/CMakeLists.txt
 @@ -51,12 +53,14 @@ target_sources(
@@ -20,7 +20,7 @@ index 9fae800f..705389be 100644
          src/api/NativeMap.hpp
          src/api/Screen.cpp
          src/api/Screen.hpp
-@@ -276,12 +280,28 @@ if(BUILD_TESTING)
+@@ -276,12 +282,28 @@ if(BUILD_TESTING)
      add_executable(Open77.DilationAuthorisation.Tests
          tests/DilationAuthorisationTests.cpp src/api/DilationAuthorisation.cpp)
      target_include_directories(Open77.DilationAuthorisation.Tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")

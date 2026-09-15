@@ -2,10 +2,10 @@
 # tools/extract-tv-patches.py. Apply by hand: this is not a patch
 # series, and the surrounding file has other unreleased work in it.
 diff --git a/client/src/scripting/ClientResourceHost.cpp b/client/src/scripting/ClientResourceHost.cpp
-index 8d714639..e137f002 100644
+index 8d714639..366baa5f 100644
 --- a/client/src/scripting/ClientResourceHost.cpp
 +++ b/client/src/scripting/ClientResourceHost.cpp
-@@ -18,12 +19,13 @@
+@@ -18,22 +19,24 @@
  #include "api/Environment.hpp"
  #include "api/DilationAuthorisation.hpp"
  #include "api/Session.hpp"
@@ -19,7 +19,18 @@ index 8d714639..e137f002 100644
  #include "api/Screen.hpp"
  #include "api/VehicleDriving.hpp"
  #include "api/PlayerTravel.hpp"
-@@ -1550,12 +1552,16 @@ std::unique_ptr<Scripting::ResourceHost> CreateHost(
+ #include "api/PerspectiveArbiter.hpp"
+ #include "api/PhotoMode.hpp"
+ #include "api/Vehicles.hpp"
+ #include "api/VehicleWeapons.hpp"
++#include "api/ViewBody.hpp"
+ #include "api/Weapons.hpp"
+ #include "api/WorldAnchors.hpp"
+ #include "api/Inspector.hpp"
+ #include "api/Life.hpp"
+ #include "debug/bridge/Command.hpp"
+ #include "api/ScriptBridge.hpp"
+@@ -1550,12 +1553,16 @@ std::unique_ptr<Scripting::ResourceHost> CreateHost(
                      .layer = static_cast<WebUI::SurfaceLayer>(request.layer),
                      .zIndex = request.zIndex,
                      .transparent = request.transparent,
@@ -36,7 +47,39 @@ index 8d714639..e137f002 100644
                  {
                      s_webSurfaceOwners[surface] = aLayer;
                      if (aLayer == HostLayer::System && request.resource == "open77_blips")
-@@ -2526,12 +2532,95 @@ std::unique_ptr<Scripting::ResourceHost> CreateHost(
+@@ -1575,12 +1582,31 @@ std::unique_ptr<Scripting::ResourceHost> CreateHost(
+             .drainEvents = [aLayer] { return DrainWebUiEvents(aLayer); },
+             // The connected server's declared loading screen (resolved on the game
+             // thread by RefreshLoadScreen). Only a webui.system holder -- the
+             // built-in shell -- can actually mount it; the provider itself is
+             // harmless to expose to every host.
+             .loadScreen = [] { return s_loadScreen; },
++            // The operator's ad-blocklist layer, on its way to the process that
++            // enforces it. The rules cross this boundary unvalidated: the host
++            // normalises them against the same compiled list it is adding them
++            // to, so there is one validator and it sits where the matching is.
++            .applyBlocklist = [](std::vector<std::string> hosts, std::vector<std::string> tokens,
++                                 const uint64_t revision, std::string source, std::string& error) {
++                return WebUiService::ApplyBlocklist(std::move(hosts), std::move(tokens), revision,
++                                                    std::move(source), error);
++            },
++            .blocklistState = [](Scripting::WebUiBlocklistState& state, std::string& error) {
++                WebUI::AdBlockStatePayload receipt;
++                if (!WebUiService::BlocklistState(receipt, error)) return false;
++                state.revision = receipt.revision;
++                state.compiledRules = receipt.compiledRules;
++                state.hostRules = receipt.hostRules;
++                state.tokenRules = receipt.tokenRules;
++                state.refused = std::move(receipt.refused);
++                return true;
++            },
+         },
+         .game = {
+             // Resources run on the game thread inside the host's Tick, so these
+             // reach the engine directly rather than queueing.
+             .playAnimation = [](const uint64_t entity, const std::string_view animation,
+                                 std::string& error) {
+@@ -2526,12 +2552,95 @@ std::unique_ptr<Scripting::ResourceHost> CreateHost(
              .unprojectProp = [](const uint64_t serverId, std::string& error) {
                  const auto status = Api::Props::Unproject(serverId);
                  if (status == Api::Props::Status::Ok) return true;

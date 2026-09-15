@@ -314,7 +314,7 @@ service, and nothing can: the key is never handed over.
 
 ## 7. The suites
 
-Three Lua suites, and the order matters:
+Four Lua suites, and the order matters:
 
 * `open77_media / records` — the catalogue. `tools/lua-test/run.lua` preloads
   `open77_admin/shared/config.lua` **before** `shared/records.lua`: the suite
@@ -323,6 +323,14 @@ Three Lua suites, and the order matters:
   axis-aligned. In game a wrong answer is a cabinet that slides the wrong way
   while the operator holds the button, with no log line anywhere, on a set that
   may be kilometres away.
+* `open77_media / adblock` — the operator's ad-blocklist policy: the rule
+  grammar, the refusals (`com` and `co.uk` are the two that matter), the payload
+  and the store format. Loads `server/config.lua` and `server/adblock.lua`, since
+  it is the grammar of those two files. Its failure modes are all silent from the
+  server's chair — a dropped rule reads exactly like a network that kept serving
+  advertising — which is why the grammar is pinned here and the *client's* half of
+  it deliberately is not: the browser host validates every incoming rule again and
+  the receipt is what catches the two implementations disagreeing.
 * `open77_media / client` — which screens a client materialises and what it
   releases when the session ends. Runs **last**, deliberately: it installs
   process-wide `Open77`, `CreateThread` and `Wait` stubs so the resource can be
@@ -353,7 +361,7 @@ And two C# ones:
   way: if the page stops asking, every shell-shaped site goes back to showing
   nothing, with no error anywhere.
 
-`tools/run-suite.py` in this repository runs all three Lua suites with no
+`tools/run-suite.py` in this repository runs all four Lua suites with no
 monorepo: it preloads the vendored alias snapshot (or a live checkout with
 `--from`), stages the resource in a temp directory for the client suite's
 `OPEN77_REPO_ROOT`, and fails if any suite reports zero assertions as well as if

@@ -18,6 +18,13 @@
 //                              re-encode such a link into WebM on the fly
 //                              (see /op77/media/probe and /op77/media/stream,
 //                              served by the web host itself)
+//   HLS (.m3u8)                not demuxed by this build either, and it is what
+//                              the streaming sites serve -- so a pasted site's
+//                              own player ALWAYS ends in an error, whichever of
+//                              its servers a viewer picks. Its player still
+//                              fetches the film, and that request crosses the
+//                              game host: /op77/media/found hands it back, and
+//                              it goes to the decoder like any other link.
 //   Widevine / PlayReady       no CDM in libcef, so DRM video cannot play
 //
 // So a link is no longer judged by its file extension. The page ASKS the host:
@@ -65,6 +72,11 @@
     volumeText: document.getElementById("volume-text"),
     url: document.getElementById("url"),
     go: document.getElementById("go"),
+    frame: document.getElementById("frame"),
+    curtain: document.getElementById("curtain"),
+    curtainCountdown: document.getElementById("curtain-countdown"),
+    curtainToggle: document.getElementById("curtain-toggle"),
+    reveal: document.getElementById("reveal"),
   };
 
   // The server's last word. Never mutated locally except by a `media:state`.
@@ -72,7 +84,10 @@
   // The volume starts at the same 75 the server creates a television at
   // (`DEFAULT_VOLUME` in server/main.lua), so the slider and the mixer agree from
   // the first frame instead of the page holding 100 until the state round-trips.
-  let state = { url: "", volume: 75, muted: false, paused: false, label: "" };
+  let state = {
+    url: "", volume: 75, muted: false, paused: false, label: "",
+    border: "", curtain: "open",
+  };
   // What is currently on screen: { kind, src, videoId }.
   let showing = { kind: "none" };
 
@@ -123,6 +138,159 @@
     elements.idle.classList.toggle("on", kind === "idle");
     elements.media.classList.toggle("on", kind === "media");
     elements.embed.classList.toggle("on", kind === "embed");
+  }
+
+  // ---------------------------------------------------------------------------
+  // The panel's frame
+  // ---------------------------------------------------------------------------
+  // A record may declare a `border` (see `shared/records.lua`: the two cinema
+  // records carry `#c8102e`), and this draws it. The colour is set as the
+  // `--frame` custom property rather than as a bare `border-color`, because the
+  // glow belongs to the same edge: `tv.css` reads the property for both, so an
+  // edited record moves the whole frame instead of leaving a stale halo.
+
+  function applyBorder(color) {
+    const wanted = typeof color === "string" ? color.trim() : "";
+    // Set even when there is no colour, so the property never outlives the
+    // record that chose it: a stale `--frame` is a colour waiting to be drawn by
+    // whichever rule reads it next.
+    elements.frame.style.setProperty("--frame", wanted);
+    elements.frame.classList.toggle("on", wanted !== "");
+  }
+
+  // ---------------------------------------------------------------------------
+  // The curtain and the reveal
+  // ---------------------------------------------------------------------------
+  // The server holds one of three modes (`curtain` in the state, written by
+  // `media.curtain` or the menu), and this draws whichever it holds. The page
+  // owns the CLOCK, because the beats have to line up with what is on the glass
+  // in front of the player: it counts 3-2-1 on the velvet, parts the panels on
+  // `LINK START`, and reports each beat. The client's Lua half hears those
+  // reports and plays the race resource's own effects on the same beat (see
+  // `playRevealCue` in client/main.lua).
+  //
+  // The timings are one object so the CSS cannot disagree with the JS about how
+  // long the panels take: `part` must match the `transition` in `tv.css`.
+  const REVEAL = {
+    leadIn: 900,      // the shut curtain on its own, before the first number
+    tick: 1000,       // one second per number, as a start light counts
+    ticks: ["3", "2", "1"],
+    part: 2400,       // the panels' travel -- tv.css `transition`, same figure
+  };
+
+  const CURTAIN_OPEN = "open";
+  const CURTAIN_CLOSED = "closed";
+  const CURTAIN_REVEAL = "reveal";
+
+  // What the glass is currently showing, and the timeline playing under it. The
+  // run is cancelled by identity rather than by "is it still the same mode": a
+  // reveal that is restarted while it plays must not be finished by the timers
+  // of the run it replaced.
+  let appliedCurtain = null;
+  let curtainRun = null;
+
+  function stopCurtainRun() {
+    if (!curtainRun) return;
+    curtainRun.cancelled = true;
+    curtainRun.timers.forEach(function (timer) { clearTimeout(timer); });
+    curtainRun = null;
+  }
+
+  function startCurtainRun(steps) {
+    stopCurtainRun();
+    const run = { cancelled: false, timers: [] };
+    curtainRun = run;
+    steps.forEach(function (step) {
+      run.timers.push(setTimeout(function () {
+        if (!run.cancelled) step.run();
+      }, step.at));
+    });
+  }
+
+  function setCountdown(text) {
+    elements.curtainCountdown.textContent = text || "";
+    // Restart the punch-in, so two consecutive numbers are two beats rather
+    // than one text swap. Reading `offsetWidth` is what forces the reflow that
+    // makes the animation replay.
+    elements.curtainCountdown.classList.remove("tick");
+    if (!text) return;
+    void elements.curtainCountdown.offsetWidth;
+    elements.curtainCountdown.classList.add("tick");
+  }
+
+  function showCurtainShut() {
+    elements.curtain.hidden = false;
+    elements.curtain.classList.remove("parting", "flare");
+  }
+
+  function revealSteps() {
+    const steps = [];
+    REVEAL.ticks.forEach(function (tick, index) {
+      steps.push({
+        at: REVEAL.leadIn + index * REVEAL.tick,
+        run: function () {
+          setCountdown(tick);
+          report("reveal_tick", tick);
+        },
+      });
+    });
+
+    const start = REVEAL.leadIn + REVEAL.ticks.length * REVEAL.tick;
+    steps.push({
+      at: start,
+      run: function () {
+        setCountdown("LINK START");
+        elements.curtain.classList.add("flare");
+        elements.curtain.classList.add("parting");
+        report("reveal_start", "the panels part");
+      },
+    });
+    steps.push({
+      at: start + REVEAL.part,
+      run: function () {
+        elements.curtain.hidden = true;
+        elements.curtain.classList.remove("parting", "flare");
+        setCountdown("");
+        report("reveal_done", "");
+      },
+    });
+    return steps;
+  }
+
+  /// Puts the glass into one of the three modes the server can hold.
+  ///
+  /// Called on a change of mode, and by the two buttons on the strip -- a
+  /// button is how a reveal is REPLAYED, which a state transition cannot do
+  /// while the server already holds `reveal`.
+  function presentCurtain(mode) {
+    appliedCurtain = mode;
+    stopCurtainRun();
+    elements.curtain.classList.remove("parting", "flare");
+    setCountdown("");
+
+    if (mode === CURTAIN_REVEAL) {
+      showCurtainShut();
+      startCurtainRun(revealSteps());
+      return;
+    }
+
+    if (mode === CURTAIN_CLOSED) {
+      showCurtainShut();
+      return;
+    }
+
+    // Open. A curtain that is already out of the way stays where it is; one
+    // that is drawn parts on the same travel the reveal uses, rather than
+    // blinking out, so `media.curtain 1 open` looks like a curtain opening.
+    if (elements.curtain.hidden) return;
+    elements.curtain.classList.add("parting");
+    startCurtainRun([{
+      at: REVEAL.part,
+      run: function () {
+        elements.curtain.hidden = true;
+        elements.curtain.classList.remove("parting");
+      },
+    }]);
   }
 
   // ---------------------------------------------------------------------------
@@ -272,7 +440,7 @@
       // bar handles by disabling itself rather than lying.
       const streamUrl = "/op77/media/stream?u=" + encodeURIComponent(url) +
         "&ss=" + encodeURIComponent(String(answer.startSeconds || 0));
-      showing = { kind: "media", src: streamUrl, transcoded: true };
+      showing = { kind: "media", src: streamUrl, transcoded: true, source: url };
       elements.media.src = streamUrl;
       elements.media.load();
       showOnly("media");
@@ -410,7 +578,10 @@
   /// element keeps its element identity (no recreation, no volume re-apply
   /// hiccup); the swap of src is what restarts the decoder at the offset.
   function seekTranscoded(seconds) {
-    const url = showing && showing.transcoded && state.url;
+    // The source the element is decoding: the link the viewer set, or -- when
+    // the film came out of somebody else's page -- the stream that page asked
+    // for. Seeking must re-decode from the same place the picture came from.
+    const url = showing && showing.transcoded && (showing.source || state.url);
     if (!url) return;
     const streamUrl = "/op77/media/stream?u=" + encodeURIComponent(url) +
       "&ss=" + encodeURIComponent(String(Math.max(0, Math.floor(seconds))));
@@ -481,6 +652,15 @@
       return;
     }
 
+    // The film this page found inside that site is already on screen. A state
+    // update -- another player moving the volume -- must not tear it down and
+    // re-frame the site it came from.
+    if (showing.fromSite === decided.src) {
+      applyVolume();
+      applyPaused();
+      return;
+    }
+
     showSite(decided.src, decided.videoId);
   }
 
@@ -490,14 +670,135 @@
   /// Split out of `render()` because there are now two ways a page arrives here:
   /// classified as a site from the start (a YouTube or Vimeo link, or a URL the
   /// page recognises as one), and the probe's `nothing` verdict on a link that
-  /// names no media container. Both end in the same frame, the same sandbox and
-  /// the same two log lines -- and the second path is the one that used to end in
-  /// "this link is not a playable stream" instead.
+  /// names no media container. Both end in the same frame, the same `allow` list
+  /// and the same two log lines -- and the second path is the one that used to end
+  /// in "this link is not a playable stream" instead.
   /// Which handoff a late answer belongs to. The host is asked about a link over
   /// the network, and the link under the player can change while the question is
   /// in flight; a stale answer that framed itself would put the previous link's
   /// shell on the screen with the current link still in the state.
   let siteToken = 0;
+
+  // ---------------------------------------------------------------------------
+  // The film inside somebody else's page
+  // ---------------------------------------------------------------------------
+  // A streaming site is unplayable here out of the box, and it is worth being
+  // exact about why, because the symptom looks like the site being broken: this
+  // runtime has no H.264/AAC decoder and no HLS demuxer (measured --
+  // `docs/research/webui-media-and-audio.md`), and every one of those sites'
+  // providers serves H.264, usually as HLS. Measured on a real film, in the
+  // shipping runtime: a `<video>` pointed at an H.264 `.m3u8` reports
+  // `MEDIA_ERR_SRC_NOT_SUPPORTED`. So whichever server a viewer picks, the
+  // site's own player ends in the same error -- that is the "no server works"
+  // report, and it is not a fault in the page or the network.
+  //
+  // What makes it work is that the player still TELLS the host where the film
+  // is: it fetches the manifest, and that request crosses the game host, which
+  // records the best one it has seen (`webui/include/op77/WebUI/MediaSniff.hpp`)
+  // and answers `/op77/media/found` with it. The page then plays that stream
+  // through the host's own decoder -- the same `/op77/media/stream` route a
+  // transcoded link uses -- and the film appears while the site it came from
+  // stays framed behind it.
+  //
+  // Bounded on purpose: twenty ticks at 1.5 s, then it stops and says so. A page
+  // that watched forever would poll a television for as long as it is on, and a
+  // log that never says "no stream appeared" cannot tell a site with no stream
+  // from a page that never looked.
+  let siteWatchTimer = null;
+  const SITE_WATCH_TICKS = 20;
+
+  function stopSiteWatch(forget) {
+    if (siteWatchTimer !== null) {
+      clearInterval(siteWatchTimer);
+      siteWatchTimer = null;
+    }
+    if (forget) {
+      // The link changed, so whatever the host recorded belonged to the previous
+      // viewer's film. Whoever asks next must not be answered with it.
+      fetch("/op77/media/found?forget=1", { cache: "no-store" })
+        .catch(function () {});
+    }
+  }
+
+  function playFoundStream(site, stream, kind) {
+    stopSiteWatch(false);
+    const streamUrl = "/op77/media/stream?u=" + encodeURIComponent(stream) + "&ss=0";
+    showing = { kind: "media", src: streamUrl, transcoded: true, source: stream, fromSite: site };
+    elements.media.src = streamUrl;
+    elements.media.load();
+    showOnly("media");
+    report("site_stream_found", (kind || "stream") + " " + stream);
+    notice("This site's own player cannot run in the game's browser (no H.264/HLS " +
+      "decoder in this build), so the game host is decoding the stream that player " +
+      "asked for -- first picture in a few seconds.");
+    applyVolume();
+    applyPaused();
+  }
+
+  function watchForSiteStream(site) {
+    stopSiteWatch(true);
+    // The start is reported as well as the end: without it, a watch that never
+    // ran and a watch whose report never arrived are the same absence.
+    report("site_watch_started", site);
+    let attempts = 0;
+    siteWatchTimer = setInterval(function () {
+      // A watch is identified by its own timer, not by the link: the frame that
+      // gets built can be the shell's inner application rather than the link
+      // that was pasted, so the pasted URL is not something this could compare
+      // against. Replaced watches clear their timer, which is the whole guard.
+      const mine = siteWatchTimer;
+      const abandoned = function () { return siteWatchTimer !== mine; };
+      attempts += 1;
+      if (showing.kind !== "embed") {
+        stopSiteWatch(false);
+        // Every way out of the watch says so, and this is the one that used to
+        // leave a gap: a watch that stopped because the page was no longer
+        // showing an embed looked from outside exactly like a watch that never
+        // started, and neither is "this site has no stream".
+        report("site_watch_stopped", "left the embed:" + showing.kind);
+        return;
+      }
+      if (attempts > SITE_WATCH_TICKS) {
+        stopSiteWatch(false);
+        report("site_stream_none", site);
+        return;
+      }
+      // Read the answer as TEXT and parse it here rather than asking the
+      // response for JSON. `response.json()` throws for the whole chain on a
+      // malformed body, which this page used to fold into "no host to ask" --
+      // so an answer the host sent but this page could not read was
+      // indistinguishable from having no host at all, and the stream the host
+      // had found was never played. Reading the bytes first costs one line and
+      // lets a bad answer name its own contents.
+      fetch("/op77/media/found", { cache: "no-store" })
+        .then(function (response) { return response.text(); })
+        .then(function (text) {
+          if (abandoned()) return;
+          let answer = null;
+          try {
+            answer = JSON.parse(text);
+          } catch (parseError) {
+            stopSiteWatch(false);
+            report("site_watch_stopped", "unreadable answer: " + String(text).slice(0, 220));
+            return;
+          }
+          if (!answer || answer.ok !== true || !answer.stream) return;
+          playFoundStream(site, answer.stream, answer.kind);
+        })
+        .catch(function (error) {
+          // No host to ask -- the page is open in a development browser -- so
+          // there is nothing to find and no reason to keep asking. The reason is
+          // carried because "the fetch failed" and "the host refused" are
+          // different faults and the message is the only thing that tells them
+          // apart.
+          if (!abandoned()) {
+            stopSiteWatch(false);
+            report("site_watch_stopped", "no host to ask: " +
+              (error && error.message ? error.message : String(error)));
+          }
+        });
+    }, 1500);
+  }
 
   /// Builds the frame for a page, and says what is being shown.
   ///
@@ -510,21 +811,26 @@
     frame.setAttribute("allow",
       "autoplay; fullscreen; encrypted-media; picture-in-picture");
     frame.setAttribute("referrerpolicy", "no-referrer");
-    // A framed third-party page is the one thing on this screen that is not
-    // ours, so it runs with the few capabilities a player needs and without
-    // the ones that are only useful to something hostile. `allow-scripts` and
-    // `allow-same-origin` are what let a site's own player run at all;
-    // `allow-top-navigation-by-user-activation` keeps a click able to take the
-    // screen to the site's own player URL (some sites play that way, and the
-    // surface's policy permits the navigation) while refusing the silent
-    // redirect that would otherwise hijack the screen and remove the player's
-    // own controls with no click and no way back. Popups are granted here and
-    // refused by the host, which is the only side that can tell a window a click
-    // asked for from the five an advertising script opens on load.
-    frame.setAttribute("sandbox",
-      "allow-scripts allow-same-origin allow-forms allow-popups " +
-      "allow-popups-to-escape-sandbox allow-top-navigation-by-user-activation " +
-      "allow-presentation");
+    // Deliberately NO `sandbox` attribute -- and that is a measurement, not an
+    // omission. The permissive pairing this frame used to carry (`allow-scripts
+    // allow-same-origin ...`) is still refused by the players these sites
+    // actually ship. `vidsrc.buzz`'s own `sandboxVerdict()` decides whether the
+    // frame it sits in is opaque by copying `document.domain` and reading
+    // `localStorage`, and Chromium refuses the first of those inside ANY
+    // sandboxed frame -- so the verdict comes back `sandboxed` and the player
+    // shows "Sandbox is not allowed / Remove the sandbox attribute from the
+    // iframe to play the video." in place of a film. Measured through this
+    // host, on both settings of the attribute, in
+    // `docs/research/webui-media-and-audio.md`: with it, `document.domain`
+    // throws and the site's verdict is `sandboxed`; without it the same page
+    // reports `unknown` and plays.
+    //
+    // What bounds a framed site is then the host rather than this attribute: the
+    // surface's page policy, the request blocklist, and the popup policy that
+    // tells a window a click asked for from the five an ad script opens on load.
+    // The origin boundary is the real one -- a page from another origin cannot
+    // reach this one whatever sandbox tokens it is framed with -- and the `allow`
+    // list above is what a player needs to run at all.
     frame.src = src;
     // The one thing this page CAN observe about somebody else's document, and
     // worth a line because it is the difference between two failures that look
@@ -536,6 +842,9 @@
     frame.addEventListener("load", () => report("embed_framed", src));
     elements.embed.appendChild(frame);
     youTubeFrame = frame;
+    // The site is up. Its player will now reach for the film, and the host is
+    // watching for that request -- see `watchForSiteStream`.
+    watchForSiteStream(src);
     notice(note || "Embedded site. Its own player cannot be controlled from here, and some sites refuse to be framed -- if nothing appears, this link cannot be shown on a television.");
     // `loading`, not `playing`: whether a framed site shows anything is not this
     // page's decision and cannot be observed from here.
@@ -761,7 +1070,17 @@
     youTubePlayer = new YT.Player(elements.embed, {
       videoId: videoId,
       playerVars: {
-        autoplay: 1,
+        // Autoplay only when this television is not paused -- and a paused one
+        // gets the player's own poster rather than a black rectangle.
+        //
+        // This is the other half of a measured failure: a player built with
+        // `autoplay: 1` and then paused before it had ever started stays in
+        // `unstarted` and paints nothing at all, which is exactly what a 100 ft
+        // cinema screen showed while the same link played on the unpaused set
+        // beside it (`unstarted at 0.0s`, eleven samples, no `playing`).
+        // `applyPaused` below still sends the pause; it is the autoplay that must
+        // not happen first.
+        autoplay: state.paused ? 0 : 1,
         controls: 0,
         disablekb: 1,
         playsinline: 1,
@@ -772,6 +1091,13 @@
       events: {
         onReady: function (event) {
           report("player_ready", videoId);
+          if (state.paused && event.target
+              && typeof event.target.cueVideoById === "function") {
+            // The documented way to leave a player on its poster frame; safe on a
+            // player that already cued the same id, which is why it is sent
+            // unconditionally when the set is paused rather than tracked.
+            event.target.cueVideoById(videoId);
+          }
           applyVolume();
           applyPaused();
           watchYouTube(event.target);
@@ -903,10 +1229,46 @@
       muted: payload.muted === true,
       paused: payload.paused === true,
       label: typeof payload.label === "string" ? payload.label : "",
+      border: typeof payload.border === "string" ? payload.border : state.border,
+      curtain: typeof payload.curtain === "string" ? payload.curtain : state.curtain,
     };
     elements.url.value = state.url === previousUrl ? elements.url.value : state.url;
+    applyBorder(state.border);
+    // Only a CHANGE of mode moves the curtain. The server re-states all of its
+    // state on every control -- another player nudging the volume re-sends
+    // `curtain: "reveal"` -- and a glass that restarted its countdown on each of
+    // those would never finish one.
+    if (state.curtain !== appliedCurtain) presentCurtain(state.curtain);
     render();
     syncControlsVisibility();
+  });
+
+  // What this television's player is doing, asked for rather than guessed.
+  //
+  // The page already says what it *decided* (`media:report`), and a decision is
+  // not a picture: this host's own history holds a session where every log line
+  // said the screen was playing while the player was painting nothing. So there
+  // is one question an operator or a test can ask -- `media:sample` -- and the
+  // answer is the element's own numbers: `readyState` and `currentTime`, sampled
+  // twice, are the difference between "a video element exists" and "a video is
+  // advancing". Nothing on this page decides anything from this answer; the
+  // state is still the server's.
+  bridge.on("media:sample", function () {
+    const element = elements.media;
+    const finite = function (value) {
+      return typeof value === "number" && isFinite(value) ? Number(value.toFixed(2)) : -1;
+    };
+    report("playback", JSON.stringify({
+      kind: showing.kind,
+      src: showing.src || "",
+      readyState: element ? element.readyState : -1,
+      currentTime: element ? finite(element.currentTime) : -1,
+      duration: element ? finite(element.duration) : -1,
+      paused: element ? element.paused === true : null,
+      muted: element ? element.muted === true : null,
+      volume: element ? Math.round(element.volume * 100) : -1,
+      error: element && element.error ? String(element.error.code) : "",
+    }));
   });
 
   // The menu can ask for the controls explicitly, for a television someone has
@@ -995,6 +1357,22 @@
   elements.go.addEventListener("click", function () {
     bridge.emit("media:url", { url: elements.url.value });
   });
+  // The two presentation buttons. Both go to the server like every other
+  // control -- the curtain every client sees is the one the server holds -- and
+  // the click also moves this glass at once, because a button on the strip is
+  // the one case where the person pressing it is standing in front of the
+  // screen: the reveal they asked for is the reveal they watch. The state the
+  // server broadcasts back carries the same mode, so the next state does not
+  // restart it.
+  elements.curtainToggle.addEventListener("click", function () {
+    const next = appliedCurtain === CURTAIN_CLOSED ? CURTAIN_OPEN : CURTAIN_CLOSED;
+    presentCurtain(next);
+    bridge.emit("media:curtain", { curtain: next });
+  });
+  elements.reveal.addEventListener("click", function () {
+    presentCurtain(CURTAIN_REVEAL);
+    bridge.emit("media:curtain", { curtain: CURTAIN_REVEAL });
+  });
   elements.url.addEventListener("keydown", function (event) {
     if (event.key === "Enter") bridge.emit("media:url", { url: elements.url.value });
   });
@@ -1029,6 +1407,12 @@
   // pattern, which is the honest picture: this page is alive and has nothing to
   // show yet. It is also how the composite chain is proved end to end without
   // depending on any external site.
+  //
+  // The curtain starts where the server's default is (`open`, see
+  // `server/main.lua`), applied rather than assumed: a set whose record did not
+  // carry a border draws no frame, and a set that never hears about a curtain
+  // shows none.
+  presentCurtain(CURTAIN_OPEN);
   render();
   bridge.ready();
   bridge.emit("media:ready", {});

@@ -41,13 +41,38 @@
 //                 so the policy has a name for "this one was legitimate" rather
 //                 than overloading `Follow`.
 //
-// The rule that separates the ad from the player is the **user gesture**, and it
-// is the reason this is a policy and not a filter: a window opened with no click
-// behind it is advertising by definition -- a player that needs a window asks for
-// it when you press play -- while a window opened by a click is what the person
-// in front of the television just asked for. A blocklist alone cannot make that
-// distinction, and a gesture check alone would let a click on a page's own ad
-// inventory through.
+// The rule that separates the ad from the player is **two questions, not one**,
+// and the second of them was measured the hard way:
+//
+//   * WAS THERE A CLICK? A window opened with nothing behind it is advertising by
+//     definition -- a player that needs a window asks for it when you press play
+//     -- while a window opened by a click is what the person in front of the
+//     television just asked for. A blocklist alone cannot make that distinction.
+//
+//   * DID THE WINDOW STAY INSIDE THE SITE THAT ASKED? A gesture check alone cannot
+//     decide it, because these players are embedded in pages whose ad overlays sit
+//     over the player and eat the click themselves: the gesture is real and the
+//     window is still an advertisement. Measured in one live session, four windows
+//     followed and every one of them was advertising:
+//
+//         popup:follow https://sorrowfulpsychology.com/iLmSbj
+//         popup:follow https://ay267.com/?rb=...
+//         popup:follow https://yz.woolderstrolld.qpon/cx/...
+//         popup:follow https://ro.dogfootpalmo.cfd/cx/...
+//
+//     and the frames were not idle about it:
+//
+//         browser_console:chrome-error://chromewebdata/:1:Refused to display
+//             'https://sorrowfulpsychology.com/' in a frame because it set
+//             'X-Frame-Options' to 'deny'.
+//
+//     The frame that asked was the provider's own top document, so following it
+//     replaced the player with an ad landing page that refuses to be framed. That
+//     refusal page -- reading "refused to connect" -- is what the person watching
+//     saw instead of the film, on every server they tried, because every provider's
+//     player sits in the same kind of page. A window that would leave the site that
+//     asked for it is therefore dropped: only a same-site window, or one asked for
+//     by a page this host serves itself, is followed.
 //
 // **A host is a fact.** `IsBlocked` is the blocklist half: named networks whose
 // entire business is the above, refused at the request layer as well as at the
@@ -62,19 +87,25 @@
 // WHY NONE OF THIS IS A SECURITY BOUNDARY
 // ---------------------------------------------------------------------------
 //
-// The security boundary is the iframe's `sandbox` in the page and the surface's
-// page policy in the client -- a framed site cannot reach this process, cannot
-// call the bridge, and cannot navigate the top level without a click. This file
-// is a *quality* decision: it decides whether the thing on screen is the film or
-// the advertising around it. It is allowed to be wrong occasionally, and it is
+// The security boundary is the surface's page policy in the client -- a framed
+// site cannot reach this process, cannot call the bridge, and cannot load what
+// the host does not serve it -- and the origin: the frame is another origin, so
+// it cannot touch the page that framed it either. It is deliberately NOT the
+// iframe's `sandbox` attribute, which the page no longer sets: the players these
+// sites ship refuse to play inside one (their own `sandboxVerdict()` calls it
+// `sandboxed`), which is measured in `docs/research/webui-media-and-audio.md`.
+// This file is a *quality* decision: it decides whether the thing on screen is
+// the film or the advertising around it. It is allowed to be wrong occasionally, and it is
 // kept pure and tested because being wrong in the other direction -- dropping a
 // real player's window -- looks exactly like a broken site.
 
 #include <algorithm>
 #include <cctype>
 #include <cstddef>
+#include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace op77::WebUI::Ads
 {
@@ -249,6 +280,290 @@ inline constexpr std::string_view kBlockedHostTokens[] = {
     return std::size(kBlockedHosts) + std::size(kBlockedHostTokens);
 }
 
+// ---------------------------------------------------------------------------
+// THE OPERATOR LAYER
+// ---------------------------------------------------------------------------
+//
+// The list above is compiled in, which is the right default and the wrong
+// ceiling: a new popup network is a domain registered on Tuesday, and the
+// person who owns the server is the one who sees it in the log that evening.
+// Waiting for a build, a signed catalog and every client updating is how a
+// television ends up showing advertisements for a fortnight.
+//
+// So the list has a second layer, and it is owned by the server: an operator
+// adds a host, the server pushes it to the clients in that session, and each
+// client's host process starts refusing requests to it. The whole path is
+// `docs/research/webui-media-and-audio.md`; what matters here is the shape of
+// the layer itself, and it has three properties worth stating together because
+// each one is a decision:
+//
+//   * IT ONLY ADDS. An operator rule joins the compiled list; nothing the server
+//     sends can remove one. That asymmetry is the security story of the whole
+//     feature: a server -- or anyone who can talk to a client pretending to be
+//     one -- may make a television MORE conservative than the build, never less.
+//     A rule that tried to unblock `doubleclick.net` would need a code change
+//     reviewed by whoever ships the client, which is exactly the friction the
+//     compiled list is for.
+//
+//   * IT IS VALIDATED HERE, NOT TRUSTED. Every incoming rule is normalised and
+//     checked by `NormaliseRule` / `NormaliseToken` below before it is stored or
+//     matched, and the ones refused are reported back to the server with the
+//     reason. This is not politeness: a rule of `com` or `co.uk` would turn one
+//     operator typo into a client that cannot load any page at all, and a rule
+//     of `*` would be a denial of service on the feature the feature exists for.
+//
+//   * IT IS DATA, NOT CODE. A rule is a string; nothing is compiled, evaluated
+//     or pattern-matched. That is why the list is legible and why every entry
+//     can be argued with.
+
+/// A multi-label suffix that is a registry, not a company. Refusing these is
+/// what stops an operator meaning `ads.example.co.uk` from writing `co.uk` and
+/// blocking a country.
+inline constexpr std::string_view kPublicSuffixes[] = {
+    "co.uk", "org.uk", "ac.uk", "gov.uk", "me.uk", "net.uk", "sch.uk",
+    "com.au", "net.au", "org.au", "edu.au", "gov.au", "id.au",
+    "co.nz", "net.nz", "org.nz", "govt.nz",
+    "com.br", "net.br", "org.br", "gov.br",
+    "com.cn", "net.cn", "org.cn", "gov.cn", "edu.cn",
+    "co.jp", "or.jp", "ne.jp", "ac.jp", "go.jp",
+    "co.kr", "or.kr", "ne.kr", "go.kr",
+    "co.in", "net.in", "org.in", "gov.in", "ac.in",
+    "com.mx", "com.ar", "com.co", "com.pe", "com.ve", "com.uy",
+    "co.za", "org.za", "net.za", "gov.za",
+    "com.tr", "com.tw", "com.hk", "com.sg", "com.my", "com.ph", "com.vn",
+    "co.id", "or.id", "ac.id", "go.id", "web.id",
+    "co.il", "org.il", "ac.il", "gov.il",
+    "com.pl", "com.ua", "com.ru", "co.th", "in.th", "go.th",
+    "com.eg", "com.sa", "com.pk", "com.bd", "com.ng", "com.gh", "com.ke",
+    "co.ke", "co.tz", "com.et", "co.ao", "co.mz", "co.zw", "com.na",
+    "com.es", "com.pt", "com.it", "com.de", "com.fr", "co.at", "co.hu",
+};
+
+/// Labels that are a top-level registry rather than a business. A *token* rule
+/// matches anywhere in a host, so a token of `com` would refuse every `.com` on
+/// the internet; a *host* rule needs two labels, which already makes this
+/// impossible there. The token case is why this list exists.
+inline constexpr std::string_view kRegistryLabels[] = {
+    "com", "net", "org", "gov", "edu", "mil", "int", "www", "http", "https",
+    "local", "internal", "arpa", "info", "biz", "name", "mobi", "online", "site",
+};
+
+/// A rule that is already a host: lowercase, no wildcard, at least two labels,
+/// and not a registry. `""` when the entry is not one, with `aReason` set to a
+/// word the operator can act on.
+///
+/// It is deliberately forgiving about the SHAPE a person actually pastes -- a
+/// full URL, a leading `*.`, a trailing slash, a trailing dot, mixed case --
+/// because the alternative is an operator whose blocking rule silently does
+/// nothing, and being strict about the *acceptance* is what keeps the refusal a
+/// thing that is said rather than a thing that happens.
+[[nodiscard]] inline std::string NormaliseRule(const std::string_view aRaw, std::string& aReason)
+{
+    aReason.clear();
+    std::string text(aRaw);
+    const auto notSpace = [](const unsigned char c) { return std::isspace(c) == 0; };
+    text.erase(text.begin(), std::find_if(text.begin(), text.end(), notSpace));
+    text.erase(std::find_if(text.rbegin(), text.rend(), notSpace).base(), text.end());
+    if (text.empty()) { aReason = "empty"; return {}; }
+    if (text.size() > 512) { aReason = "too_long"; return {}; }
+
+    // A whole URL. `LowerHost` reads the authority and nothing else, which is
+    // the only part of a link that is a host.
+    if (text.find("://") != std::string::npos)
+    {
+        std::string host = LowerHost(text);
+        if (host.empty()) { aReason = "unreadable_url"; return {}; }
+        text = std::move(host);
+    }
+    else
+    {
+        // A bare host with a path or a query stuck to it: cut at the first
+        // separator, then lowercase what is left.
+        const auto cut = text.find_first_of("/?#");
+        if (cut != std::string::npos) text.resize(cut);
+        std::transform(text.begin(), text.end(), text.begin(),
+            [](const unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    }
+
+    // A leading wildcard, or a leading dot, both of which people write to mean
+    // "this host and its subdomains" -- which is what a rule already means.
+    while (!text.empty() && (text.front() == '*' || text.front() == '.')) text.erase(text.begin());
+    // A port, which a rule does not express.
+    if (const auto colon = text.rfind(':'); colon != std::string::npos && text.find('[') == std::string::npos)
+        text.resize(colon);
+    // A trailing dot: `example.com.` is the same host, spelled absolutely.
+    while (!text.empty() && text.back() == '.') text.pop_back();
+
+    if (text.empty()) { aReason = "empty"; return {}; }
+    if (text.size() > 253) { aReason = "too_long"; return {}; }
+
+    // Shape: labels of letters, digits and inner hyphens, joined by single dots.
+    // Anything else -- a space, a `*`, a `?`, a slash, a `:` -- is refused rather
+    // than partially interpreted, because a rule that half-matches is a rule the
+    // operator cannot predict.
+    std::size_t labels = 1;
+    bool labelHasChar = false;
+    for (std::size_t i = 0; i < text.size(); ++i)
+    {
+        const char c = text[i];
+        if (c == '.')
+        {
+            if (!labelHasChar) { aReason = "empty_label"; return {}; }
+            ++labels;
+            labelHasChar = false;
+            continue;
+        }
+        const bool ok = std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '-';
+        if (!ok) { aReason = "invalid_character"; return {}; }
+        if (c == '-' && !labelHasChar) { aReason = "invalid_hyphen"; return {}; }
+        if (c == '-' && (i + 1 >= text.size() || text[i + 1] == '.')) { aReason = "invalid_hyphen"; return {}; }
+        labelHasChar = true;
+    }
+    if (!labelHasChar) { aReason = "empty_label"; return {}; }
+    if (labels < 2) { aReason = "needs_a_domain"; return {}; }
+
+    for (const auto suffix : kPublicSuffixes)
+        if (text == suffix) { aReason = "public_suffix"; return {}; }
+
+    return text;
+}
+
+/// A rule that is matched anywhere inside a host. Same forgiving shape, plus one
+/// extra refusal: a token must not be a registry label, because `com` as a
+/// substring is every `.com` there is.
+[[nodiscard]] inline std::string NormaliseToken(const std::string_view aRaw, std::string& aReason)
+{
+    aReason.clear();
+    std::string text(aRaw);
+    const auto notSpace = [](const unsigned char c) { return std::isspace(c) == 0; };
+    text.erase(text.begin(), std::find_if(text.begin(), text.end(), notSpace));
+    text.erase(std::find_if(text.rbegin(), text.rend(), notSpace).base(), text.end());
+    std::transform(text.begin(), text.end(), text.begin(),
+        [](const unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (text.empty()) { aReason = "empty"; return {}; }
+    // Before the length rule, so that `com` is refused for the reason that
+    // matters rather than for being three characters long: the two are both
+    // refusals, but only one of them explains why the entry could never be
+    // honoured at any length.
+    for (const auto label : kRegistryLabels)
+        if (text == label) { aReason = "registry_label"; return {}; }
+    if (text.size() < 4) { aReason = "token_too_short"; return {}; }
+    if (text.size() > 63) { aReason = "token_too_long"; return {}; }
+    if (text.find('.') != std::string::npos) { aReason = "token_is_a_host"; return {}; }
+    for (const char c : text)
+    {
+        const bool ok = std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '-';
+        if (!ok) { aReason = "invalid_character"; return {}; }
+    }
+    return text;
+}
+
+/// The compiled list plus whatever the operator's server has added.
+///
+/// Not thread-safe on its own -- a host hands the whole object to its readers as
+/// one immutable snapshot instead (see `HostRuntime`), so a rule arriving mid-
+/// request can never be seen half-applied.
+class Blocklist
+{
+public:
+    /// One entry that was not accepted, with the reason, so the operator is told
+    /// which of their rules did nothing and why.
+    struct Refusal
+    {
+        std::string rule;
+        std::string reason;
+    };
+
+    Blocklist() = default;
+
+    /// Adds host rules. Returns how many were accepted; every refusal is
+    /// appended to `aRefused`. A duplicate -- of an earlier operator rule or of
+    /// one compiled in -- is accepted and stored once.
+    std::size_t AddHostRules(const std::span<const std::string> aRules,
+                             std::vector<Refusal>& aRefused)
+    {
+        std::size_t accepted = 0;
+        for (const auto& raw : aRules)
+        {
+            std::string reason;
+            const std::string rule = NormaliseRule(raw, reason);
+            if (rule.empty())
+            {
+                if (aRefused.size() < kMaximumRefusals) aRefused.push_back({raw, reason});
+                continue;
+            }
+            if (std::find(m_hosts.begin(), m_hosts.end(), rule) != m_hosts.end()) continue;
+            m_hosts.push_back(rule);
+            ++accepted;
+        }
+        return accepted;
+    }
+
+    std::size_t AddTokenRules(const std::span<const std::string> aRules,
+                              std::vector<Refusal>& aRefused)
+    {
+        std::size_t accepted = 0;
+        for (const auto& raw : aRules)
+        {
+            std::string reason;
+            const std::string token = NormaliseToken(raw, reason);
+            if (token.empty())
+            {
+                if (aRefused.size() < kMaximumRefusals) aRefused.push_back({raw, reason});
+                continue;
+            }
+            if (std::find(m_tokens.begin(), m_tokens.end(), token) != m_tokens.end()) continue;
+            m_tokens.push_back(token);
+            ++accepted;
+        }
+        return accepted;
+    }
+
+    /// Drops every operator rule. The compiled list is untouched, which is what
+    /// makes "clear" a safe verb for an operator command to expose.
+    void ClearOperatorRules()
+    {
+        m_hosts.clear();
+        m_tokens.clear();
+    }
+
+    [[nodiscard]] bool IsBlocked(const std::string_view aUrl) const
+    {
+        const std::string scheme = SchemeOf(aUrl);
+        if (scheme != "http" && scheme != "https") return false;
+        const std::string host = LowerHost(aUrl);
+        if (host.empty()) return false;
+        if (op77::WebUI::Ads::IsBlockedHost(host)) return true;
+        for (const auto& rule : m_hosts)
+            if (HostMatchesRule(host, rule)) return true;
+        for (const auto& token : m_tokens)
+            if (host.find(token) != std::string::npos) return true;
+        return false;
+    }
+
+    [[nodiscard]] const std::vector<std::string>& OperatorHosts() const { return m_hosts; }
+    [[nodiscard]] const std::vector<std::string>& OperatorTokens() const { return m_tokens; }
+    [[nodiscard]] std::size_t OperatorRuleCount() const { return m_hosts.size() + m_tokens.size(); }
+    /// Compiled rules plus operator rules: what `IsBlocked` actually consults.
+    [[nodiscard]] std::size_t Count() const { return RuleCount() + OperatorRuleCount(); }
+
+    /// `193 compiled + 4 operator` -- one string for a trace line and for the
+    /// receipt a server prints back to its operator.
+    [[nodiscard]] std::string Describe() const
+    {
+        return std::to_string(RuleCount()) + " compiled + " +
+            std::to_string(OperatorRuleCount()) + " operator";
+    }
+
+private:
+    /// Enough to report the shape of a mistake without turning a payload into a
+    /// log flood.
+    static constexpr std::size_t kMaximumRefusals = 32;
+
+    std::vector<std::string> m_hosts;
+    std::vector<std::string> m_tokens;
+};
+
 /// What to do with a window a framed page asked to open.
 enum class PopupAction
 {
@@ -262,6 +577,98 @@ enum class PopupAction
     Allow = 2,
 };
 
+/// The site a host belongs to: its last two labels, or its last three when the
+/// final two are a multi-label registry (`co.uk`), because `foo.co.uk` and
+/// `bar.co.uk` are two companies and not one site.
+///
+/// An address is returned whole -- `10.0.0.7` is not `0.7`, and a television may
+/// well be pointed at one -- and a single label (`localhost`) has no site to
+/// speak of and returns nothing, which the caller reads as "cannot be compared".
+[[nodiscard]] inline std::string RegistrableDomain(const std::string_view aLowerHost)
+{
+    if (aLowerHost.empty()) return {};
+    std::vector<std::string_view> labels;
+    for (std::size_t start = 0; start <= aLowerHost.size();)
+    {
+        const auto dot = aLowerHost.find('.', start);
+        const auto end = dot == std::string_view::npos ? aLowerHost.size() : dot;
+        labels.push_back(aLowerHost.substr(start, end - start));
+        if (dot == std::string_view::npos) break;
+        start = dot + 1;
+    }
+    for (const auto& label : labels)
+        if (label.empty()) return {};
+    if (labels.size() < 2) return {};
+    bool allNumeric = true;
+    for (const auto& label : labels)
+    {
+        for (const char c : label)
+            if (std::isdigit(static_cast<unsigned char>(c)) == 0) { allNumeric = false; break; }
+        if (!allNumeric) break;
+    }
+    if (allNumeric) return std::string(aLowerHost);
+    std::size_t take = 2;
+    const std::string_view tail = aLowerHost.substr(
+        aLowerHost.size() - labels[labels.size() - 2].size() - labels.back().size() - 1);
+    for (const auto suffix : kPublicSuffixes)
+        if (tail == suffix && labels.size() >= 3) { take = 3; break; }
+    std::string domain(labels[labels.size() - take]);
+    for (std::size_t i = labels.size() - take + 1; i < labels.size(); ++i)
+    {
+        domain.push_back('.');
+        domain.append(labels[i]);
+    }
+    return domain;
+}
+
+/// Whether two URLs name the same site, by registrable domain. False whenever
+/// either side has no site to compare -- an opaque origin, a custom scheme, an
+/// empty string -- because "cannot be shown to be the same site" is not the same
+/// fact as "is the same site", and only the second one earns a window.
+[[nodiscard]] inline bool SameSite(const std::string_view aUrl, const std::string_view aOther)
+{
+    const std::string mine = RegistrableDomain(LowerHost(aUrl));
+    const std::string theirs = RegistrableDomain(LowerHost(aOther));
+    return !mine.empty() && mine == theirs;
+}
+
+/// A window a framed page has asked for, with everything the policy decides it
+/// by. A struct rather than five positional arguments because three of the five
+/// are booleans, and `DecidePopup(url, asker, false, true, false)` at a call site
+/// is a question nobody can read the answer to.
+struct PopupRequest
+{
+    /// What the window would load.
+    std::string_view url;
+    /// The frame that asked for it, as the browser reports it. Empty when the
+    /// caller has none to offer, which is dropped rather than followed: a window
+    /// whose origin cannot be established has not been shown to stay anywhere.
+    std::string_view asker;
+    /// Whether that frame is a document THIS HOST serves. The host computes it
+    /// (`SameOrigin` against the surface's own origin) because only the host knows
+    /// which origins are its own, and it is the one case where "did the window
+    /// stay inside the site that asked" has no site to mean: the surfaces' own
+    /// documents -- the television page, the companion, the shell -- are served by
+    /// this process and are the pages that may legitimately open a window.
+    bool askerIsHostPage = false;
+    /// Whether the navigation was in response to a click.
+    bool userGesture = false;
+    /// Whether the blocklist already refused the URL, when the caller looked.
+    bool blocked = false;
+};
+
+/// Why a window was dropped, so a trace line says which rule did it rather than
+/// leaving a reader to re-derive the policy from the URL.
+[[nodiscard]] inline const char* RefusalReason(const PopupRequest& aRequest)
+{
+    if (aRequest.url.empty()) return "empty";
+    const std::string scheme = SchemeOf(aRequest.url);
+    if (scheme != "http" && scheme != "https") return "not_a_window";
+    if (aRequest.blocked || IsBlocked(aRequest.url)) return "blocked_host";
+    if (!aRequest.userGesture) return "no_gesture";
+    return "cross_site";
+}
+
 /// The window policy.
 ///
 /// Order matters and is the whole policy:
@@ -274,22 +681,32 @@ enum class PopupAction
 ///   3. No user gesture is dropped. This is the rule that catches the actual
 ///      complaint -- an on-load script opening five windows -- because a window
 ///      with no click behind it is advertising by definition.
-///   4. Anything else follows in place. A player that opens its video on a click
+///   4. A window that would leave the site that asked for it is dropped, which is
+///      the rule the second live session added: the click is real, the ad overlay
+///      ate it, and following the window destroys the player. A page this host
+///      serves itself is exempt, because there is no other site for its window to
+///      leave -- see `PopupRequest::askerIsHostPage`.
+///   5. Anything left follows in place. A player that opens its video on a click
 ///      wants a window it cannot have, and a television's answer is to put that
 ///      URL on the screen rather than nowhere.
-[[nodiscard]] inline PopupAction DecidePopup(const std::string_view aUrl, const bool aUserGesture, const bool aBlocked)
+[[nodiscard]] inline PopupAction DecidePopup(const PopupRequest& aRequest)
 {
-    const std::string scheme = SchemeOf(aUrl);
-    if (aUrl.empty() || (scheme != "http" && scheme != "https")) return PopupAction::Drop;
-    if (aBlocked || IsBlocked(aUrl)) return PopupAction::Drop;
-    if (!aUserGesture) return PopupAction::Drop;
-    return PopupAction::Follow;
+    const std::string scheme = SchemeOf(aRequest.url);
+    if (aRequest.url.empty() || (scheme != "http" && scheme != "https")) return PopupAction::Drop;
+    if (aRequest.blocked || IsBlocked(aRequest.url)) return PopupAction::Drop;
+    if (!aRequest.userGesture) return PopupAction::Drop;
+    if (aRequest.askerIsHostPage) return PopupAction::Follow;
+    if (SameSite(aRequest.url, aRequest.asker)) return PopupAction::Follow;
+    return PopupAction::Drop;
 }
 
-/// Overload for callers holding only the URL and the gesture.
-[[nodiscard]] inline PopupAction DecidePopup(const std::string_view aUrl, const bool aUserGesture)
+/// The same policy against the compiled list AND the operator's additions -- the
+/// overload every host call site uses, because the operator's layer is the one
+/// that exists to be current.
+[[nodiscard]] inline PopupAction DecidePopup(PopupRequest aRequest, const Blocklist& aBlocklist)
 {
-    return DecidePopup(aUrl, aUserGesture, false);
+    aRequest.blocked = aRequest.blocked || aBlocklist.IsBlocked(aRequest.url);
+    return DecidePopup(aRequest);
 }
 
 /// The policy's name, for the trace line every drop and follow writes.

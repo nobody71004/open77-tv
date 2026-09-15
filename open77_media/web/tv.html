@@ -79,6 +79,32 @@
 
     <div id="notice" class="notice" hidden></div>
 
+    <!-- The curtain, and the reveal behind it.
+         A cinema in front of a film: a pelmet with the house name, two panels
+         with real folds, a gold trim and tie-backs, and the countdown drawn on
+         the curtain while it is still closed. `tv.js` owns the timeline -- the
+         panels part on `LINK START` -- and reports each beat so the client can
+         play the game's own race-start sound and colours on the same clock.
+         All of the presentation is in `tv.css`: this markup is only the pieces
+         the timeline moves.
+         The border is set from the record (see `applyBorder` in tv.js): a red
+         edge is what makes a 30 m panel read as a screen in the dark. -->
+    <div id="frame" class="frame"></div>
+    <div id="curtain" class="curtain" hidden>
+      <div class="curtain-pelmet">
+        <div class="curtain-house" id="curtain-house">OPEN77 PICTURES</div>
+      </div>
+      <div class="curtain-panel curtain-left"><div class="curtain-folds"></div><div class="curtain-swag"></div></div>
+      <div class="curtain-panel curtain-right"><div class="curtain-folds"></div><div class="curtain-swag"></div></div>
+      <div class="curtain-countdown" id="curtain-countdown"></div>
+      <!-- The panel's own half of the race start's colour burst, fired on the
+           `LINK START` beat. The world effects are the client's (`race.firework
+           .burst` and two `race.flare.smoke` columns, placed against this very
+           quad), so a client that could not place them still shows the burst on
+           the screen the audience is looking at. -->
+      <div class="curtain-flare" id="curtain-flare"></div>
+    </div>
+
     <div id="controls" class="controls" hidden>
       <div id="transport" class="transport">
         <button id="play" class="button" type="button" title="Play or pause (space)">&#10074;&#10074;</button>
@@ -103,6 +129,13 @@
         <input id="url" class="url" type="text" spellcheck="false"
                placeholder="https://..." />
         <button id="go" class="button go" type="button">Load</button>
+        <!-- Presentation controls, next to the transport because they belong to
+             the same person: whoever is holding the screen's key. Both ask the
+             server, like every other control here. -->
+        <button id="curtain-toggle" class="button" type="button"
+                title="Draw the curtain">Curtain</button>
+        <button id="reveal" class="button" type="button"
+                title="Countdown, colours, then the curtain parts">Reveal</button>
       </div>
     </div>
   </div>

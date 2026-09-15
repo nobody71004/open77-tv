@@ -159,6 +159,15 @@ Open77MediaRecords = {}
 --  120. Only worth setting upwards, and only for something watched from far
 --  enough away that the default would take the prop -- and the picture with it --
 --  out of the world for the people watching.
+---@field border string optional `#RRGGBB` frame drawn around the panel, on the
+--  page. Present on the cinema records and absent everywhere else: a red
+--  borderline is what makes a 30 m panel read as a screen rather than as a hole
+--  in the dark, and on an apartment television it would be a coloured sticker.
+---@field collision boolean optional. True gives the spawned prop a static
+--  collider, so the panel is something to walk around instead of a picture you
+--  can stand inside. Absent means the props default for a screen, which is no
+--  collision at all -- see the note on `spawn` in `server/main.lua` for why that
+--  is the default and why a cinema panel is the exception.
 
 -- -----------------------------------------------------------------------------
 -- Televisions: the set itself, with the page on its own screen
@@ -793,6 +802,12 @@ local records = {
         -- watched from across a lot, and a prop that stops streaming at 120 m
         -- takes the picture with it for everyone past that line.
         streamingRadius = 300.0,
+        -- The two things that make a panel this size a *set* rather than a
+        -- television: a red borderline so its edges are readable in the dark,
+        -- and a collider so the audience stands in front of it instead of
+        -- inside it. Both are declared here and nowhere else in this catalogue.
+        border = "#c8102e",
+        collision = true,
         quad = {
             -- 1.16 m x 26.2758621, and the offset (0, 0.115394, 0.42) by the same
             -- factor -- the panel keeps the origin of the set it came from, and
@@ -812,6 +827,8 @@ local records = {
         blurb = "A 150 ft (45.7 m) 16:9 picture. Half again the 100 ft panel.",
         scale = 39.4137931,
         streamingRadius = 400.0,
+        border = "#c8102e",
+        collision = true,
         quad = {
             offset = { 0.0, 4.548115, 16.553793 },
             right = { 1.0, 0.0, 0.0 },

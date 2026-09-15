@@ -2,7 +2,7 @@
 # tools/extract-tv-patches.py. Apply by hand: this is not a patch
 # series, and the surrounding file has other unreleased work in it.
 diff --git a/client/src/webui/WebUiService.hpp b/client/src/webui/WebUiService.hpp
-index 8c3cdb03..d3a92155 100644
+index 8c3cdb03..dbaf91df 100644
 --- a/client/src/webui/WebUiService.hpp
 +++ b/client/src/webui/WebUiService.hpp
 @@ -34,12 +34,24 @@ struct CreateOptions
@@ -30,7 +30,36 @@ index 8c3cdb03..d3a92155 100644
  struct Event
  {
      WebUI::SurfaceId surface{};
-@@ -80,12 +92,15 @@ struct SurfaceStatus
+@@ -63,12 +75,28 @@ void Shutdown();
+                              std::string_view aJson);
+ [[nodiscard]] bool ResolveInvoke(WebUI::SurfaceId aSurface, uint64_t aRequest,
+                                  bool aSuccess, std::string_view aJson);
+ [[nodiscard]] std::vector<Event> DrainEvents();
+ [[nodiscard]] bool Exists(WebUI::SurfaceId aSurface);
+ 
++/// Hands the browser host the OPERATOR layer of the ad blocklist -- the rules a
++/// server pushed -- and answers whether the message was accepted for delivery.
++///
++/// The rules are unvalidated here on purpose: normalisation and matching live in
++/// `webui/include/op77/WebUI/AdBlock.hpp` and run in the process that enforces
++/// them, so there is one implementation and it is the one on the hot path. The
++/// layer only ever adds to the compiled list, which the host enforces, not this
++/// side.
++[[nodiscard]] bool ApplyBlocklist(std::vector<std::string> aHosts, std::vector<std::string> aTokens,
++                                  uint64_t aRevision, std::string aSource, std::string& aError);
++/// The host's receipt for the last policy it applied: what a server needs to
++/// tell rules that are in force from rules nobody read. `false` with a reason
++/// when no receipt has arrived -- see the note in the implementation for why
++/// "no receipt" and "no policy" are the same answer here.
++[[nodiscard]] bool BlocklistState(WebUI::AdBlockStatePayload& aOut, std::string& aError);
++
+ // One row per live surface, for `webui.status` on the debug bridge.
+ //
+ // Every "my page shows nothing" investigation so far has had to answer the same
+ // six questions by reading WebUiService.cpp: is the surface created, is it
+ // ready, is it visible, does it own a texture, has the WebHost ever published a
+ // frame into its mapping, and has this client ever uploaded one. None of them
+@@ -80,12 +108,15 @@ struct SurfaceStatus
      std::string resource;
      uint64_t generation{};
      uint8_t layer{};
@@ -46,7 +75,7 @@ index 8c3cdb03..d3a92155 100644
      bool closing{};
      bool texture{};
      bool drawn{};
-@@ -206,12 +221,33 @@ void OnGraphicsShutdown();
+@@ -206,12 +237,33 @@ void OnGraphicsShutdown();
  // is the newest one the host produced.
  void AcquireFrames(uint64_t aCompletedFence);
  [[nodiscard]] bool PrepareFrame(ID3D12GraphicsCommandList* aCommands, uint32_t aFrameIndex,

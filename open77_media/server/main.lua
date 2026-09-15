@@ -144,6 +144,18 @@ local function payload(entry)
         volume = entry.volume,
         muted = entry.muted,
         paused = entry.paused,
+        -- The frame the panel carries, and the curtain in front of it. Both are
+        -- the page's to draw and the server's to own: an operator closes a
+        -- curtain from the menu or the console, every client draws the same
+        -- closed curtain, and a join in the middle of a reveal sees the reveal.
+        border = entry.border,
+        curtain = entry.curtain,
+        -- The panel's heading, for the client half of the reveal effect: the
+        -- fireworks are placed in the world, in front of the panel, and the
+        -- quad's own offset is in the prop's local frame -- so a client that
+        -- only knew the position would put them in the wrong place whenever the
+        -- screen is not facing north.
+        yaw = entry.yaw,
         quad = entry.quad,
         -- The television's world position, so a client can decide which screens
         -- are worth materialising without a second lookup. A client can only
@@ -241,6 +253,265 @@ local function broadcast(target)
         TriggerClientEvent("open77:media:snapshot", player, snapshot)
     end
 end
+
+-- =============================================================================
+-- AD BLOCKLIST -- the operator's layer
+-- =============================================================================
+-- The compiled half of the television's ad blocklist lives in the client, in
+-- `webui/include/op77/WebUI/AdBlock.hpp`. This is the other half: the rules an
+-- operator can add without a build, a signed catalog and every client updating.
+--
+-- The split of responsibility is worth stating once, because it is the reason
+-- this file is small:
+--
+--   * THIS RESOURCE owns the list. It validates what an operator types, keeps it
+--     in the resource's own `data/` directory, and pushes it to the clients in
+--     the session whenever it changes.
+--   * EACH CLIENT owns delivery. Its Lua half hands the rules to the process
+--     that enforces them and reports back what that process did with them. A
+--     client that is not running the plugin, or is running one older than the
+--     policy message, is a real state and it answers like one.
+--   * THE RULES ONLY EVER ADD. Nothing here can unblock what the compiled list
+--     refuses -- that direction is enforced in the client's browser host, not
+--     requested from it -- which is why a server is allowed to push a list at
+--     all.
+--
+-- The pure policy (the grammar, the refusals, the payload, the store format) is
+-- `server/adblock.lua`, so it can be exercised with no engine, no socket and no
+-- client. This section only wires it to the world.
+local AdBlock = MediaAdBlock
+
+local blockConfig, blockProblems = AdBlock.buildConfig(MediaServerConfig)
+for _, problem in ipairs(blockProblems) do
+    print("[open77_media] adblock config: " .. tostring(problem))
+end
+
+-- The live list, and where it came from. `blockSource` is reported on every push
+-- and in every banner, because "which list is in force" is the first question
+-- asked of a blocking rule that is not working.
+local blockHosts, blockTokens = {}, {}
+local blockRevision = 0
+local blockSource = "disabled"
+-- playerId -> the last receipt that client reported. Kept so `media.adblock.status`
+-- can answer the question the push alone cannot: whether it is in FORCE.
+local blockReceipts = {}
+
+local function ioAvailable()
+    return type(Open77.io) == "table" and type(Open77.io.readJson) == "function"
+        and type(Open77.io.writeJson) == "function"
+end
+
+local function persistBlocklist()
+    if not ioAvailable() then return false, "filesystem_unavailable" end
+    local ok, reason = Open77.io.writeJson(blockConfig.dataFile,
+        AdBlock.store(blockHosts, blockTokens, blockRevision))
+    if not ok then return false, tostring(reason or "write_failed") end
+    return true
+end
+
+---Reads the live list: the store if there is one, the config seed if there is not.
+---
+---One owner at a time, and never both -- see `server/config.lua`. A store that
+---exists but cannot be read is reported and then treated as the seed, which is
+---the only choice that keeps the feature up rather than taking it down with the
+---file.
+local function loadBlocklist()
+    if not blockConfig.enabled then
+        blockHosts, blockTokens, blockSource = {}, {}, "disabled"
+        return true
+    end
+    if ioAvailable() and type(Open77.io.exists) == "function" then
+        local exists, existenceError = Open77.io.exists(blockConfig.dataFile)
+        if exists then
+            local value, readError = Open77.io.readJson(blockConfig.dataFile)
+            if value ~= nil then
+                blockHosts, blockTokens, blockRevision = AdBlock.loadStore(value)
+                blockSource = "data/" .. blockConfig.dataFile
+                return true
+            end
+            print(string.format("[open77_media] adblock: %s unreadable (%s); using the config seed",
+                blockConfig.dataFile, tostring(readError)))
+        elseif existenceError ~= nil and existenceError ~= "not_found" then
+            print(string.format("[open77_media] adblock: %s unreadable (%s); using the config seed",
+                blockConfig.dataFile, tostring(existenceError)))
+        end
+    end
+    blockHosts = { table.unpack(blockConfig.hosts) }
+    blockTokens = { table.unpack(blockConfig.tokens) }
+    blockSource = "server/config.lua"
+    return true
+end
+
+---Sends the list to one client, or to everyone.
+---
+---Whole list rather than a delta, for the same reason the television snapshot is
+---whole: the list is small, a client applies it in one call, and a delta stream
+---is one more place for a late joiner to end up with a list that exists on the
+---server and not on their machine.
+local function pushBlocklist(target)
+    if not blockConfig.enabled then return end
+    local payload = AdBlock.policy(blockHosts, blockTokens, blockRevision, blockSource)
+    if target ~= nil then
+        TriggerClientEvent("open77:media:adblock", target, payload)
+        return
+    end
+    for _, player in ipairs(connectedPlayers()) do
+        TriggerClientEvent("open77:media:adblock", player, payload)
+    end
+end
+
+---Persists, bumps the revision, pushes, and answers whoever asked.
+---
+---Revision is what makes a receipt meaningful: a client reporting revision 4
+---while the server is on 5 is a client that has not been told yet, and the two
+---states look identical without the number.
+local function commitBlocklist(source, raw, summary)
+    blockRevision = blockRevision + 1
+    local persisted, persistError = persistBlocklist()
+    pushBlocklist(nil)
+    local text = string.format("adblock revision %d: %s (%s) from %s",
+        blockRevision, summary, AdBlock.describe(blockHosts, blockTokens), blockSource)
+    if not persisted then
+        text = text .. "\n  warning: could not be persisted (" .. tostring(persistError) ..
+            "); this list will be lost when the resource restarts"
+    end
+    output(source, raw, true, text)
+end
+
+loadBlocklist()
+print(string.format("[open77_media] adblock %s -- %s from %s",
+    blockConfig.enabled and "ready" or "disabled",
+    AdBlock.describe(blockHosts, blockTokens), blockSource))
+
+-- The receipt. A client reports what its browser host said, and the two facts
+-- this makes visible are the ones nothing else can see: a client whose host
+-- refused specific entries, and a client whose host is too old to answer at all.
+-- Both are logged here and both are shown by `media.adblock.status`.
+RegisterNetEvent("open77:media:adblock:receipt", function(payload)
+    local source = source
+    if source == nil or type(payload) ~= "table" then return end
+    local refused = {}
+    if type(payload.refused) == "table" then
+        for _, entry in ipairs(payload.refused) do refused[#refused + 1] = tostring(entry) end
+    end
+    local receipt = {
+        revision = math.floor(tonumber(payload.revision) or -1),
+        applied = payload.applied == true,
+        hosts = math.floor(tonumber(payload.hosts) or 0),
+        tokens = math.floor(tonumber(payload.tokens) or 0),
+        compiled = math.floor(tonumber(payload.compiled) or 0),
+        refused = refused,
+        detail = tostring(payload.detail or ""),
+        -- The revision the host actually holds, when the client got far enough to
+        -- read one. A client reporting revision 4 while the server is on 5 is a
+        -- client that has not been told yet -- a different state from a client
+        -- whose host never answered, and the two are indistinguishable without
+        -- this number.
+        observed = tonumber(payload.observed),
+        -- The server runtime's own clock, and the only one it publishes: `os` is
+        -- NOT in this sandbox (`LuaResourceRuntime` withholds `io`, `os`, `debug`
+        -- and `package`), so the `os.time` this used to read threw on EVERY
+        -- receipt -- which is what the local server logged as "script error:
+        -- open77_media/server/main.lua:399: attempt to index a nil value (global
+        -- 'os')" while a client was connected, losing the receipt with it.
+        -- `GetGameTimer` is the same unit and meaning as the client's
+        -- `Open77.time.monotonic`, per its own comment in the runtime prelude.
+        at = GetGameTimer(),
+    }
+    blockReceipts[source] = receipt
+    if receipt.applied then
+        print(string.format("[open77_media] adblock enforced on player %d: revision %d, %d hosts + %d tokens (+%d compiled), %d refused",
+            source, receipt.revision, receipt.hosts, receipt.tokens, receipt.compiled, #refused))
+    else
+        print(string.format("[open77_media] adblock NOT enforced on player %d: %s",
+            source, receipt.detail ~= "" and receipt.detail or "no_receipt"))
+    end
+end)
+
+AddEventHandler("onPlayerDisconnected", function(playerIdStr)
+    blockReceipts[tonumber(playerIdStr) or playerIdStr] = nil
+end)
+
+---The operator's console surface. Every mutation goes through one of these, so
+---there is exactly one place a rule can enter the live list and exactly one path
+---that persists it, pushes it and reports it.
+command("media.adblock", "media.adblock", true, function(source, args, raw)
+    if not blockConfig.enabled then return output(source, raw, true, "adblock disabled in server/config.lua") end
+    local lines = {
+        string.format("adblock revision %d -- %s from %s", blockRevision,
+            AdBlock.describe(blockHosts, blockTokens), blockSource),
+    }
+    for _, rule in ipairs(blockHosts) do lines[#lines + 1] = "  host  " .. rule end
+    for _, token in ipairs(blockTokens) do lines[#lines + 1] = "  token " .. token end
+    if #blockHosts + #blockTokens == 0 then
+        lines[#lines + 1] = "  (no operator rules; the compiled client list is unaffected)"
+    end
+    output(source, raw, true, table.concat(lines, "\n"))
+end)
+
+command("media.adblock.add", "media.adblock.add [token] <rule>", true, function(source, args, raw)
+    if not blockConfig.enabled then return output(source, raw, false, "adblock disabled in server/config.lua") end
+    local spec, specError = AdBlock.parseAddArgs(args)
+    if spec == nil then return output(source, raw, false, specError) end
+    local rule, reason = AdBlock.add(blockHosts, blockTokens, spec.rule, spec.kind)
+    if rule == nil then
+        -- The refusal is the useful half of this command: it names what was
+        -- wrong while the operator is still looking at what they typed.
+        return output(source, raw, false, string.format("refused %q: %s", tostring(spec.rule), tostring(reason)))
+    end
+    commitBlocklist(source, raw, string.format("%s %s", spec.kind, rule))
+end)
+
+command("media.adblock.remove", "media.adblock.remove <rule>", true, function(source, args, raw)
+    if args.n ~= 1 then error("wrong argument count", 0) end
+    if not AdBlock.remove(blockHosts, blockTokens, args[1]) then
+        return output(source, raw, false, "no such rule: " .. tostring(args[1]))
+    end
+    commitBlocklist(source, raw, "removed " .. tostring(args[1]))
+end)
+
+command("media.adblock.clear", "media.adblock.clear", true, function(source, args, raw)
+    blockHosts, blockTokens = {}, {}
+    commitBlocklist(source, raw, "cleared the operator layer")
+end)
+
+command("media.adblock.reload", "media.adblock.reload", true, function(source, args, raw)
+    loadBlocklist()
+    blockRevision = blockRevision + 1
+    pushBlocklist(nil)
+    output(source, raw, true, string.format("adblock reloaded from %s: %s (revision %d)",
+        blockSource, AdBlock.describe(blockHosts, blockTokens), blockRevision))
+end)
+
+command("media.adblock.status", "media.adblock.status", true, function(source, args, raw)
+    local lines = { string.format("adblock revision %d, %s", blockRevision,
+        AdBlock.describe(blockHosts, blockTokens)) }
+    local checked = 0
+    for _, player in ipairs(connectedPlayers()) do
+        local id = tonumber(player) or player
+        local receipt = blockReceipts[id]
+        checked = checked + 1
+        if receipt == nil then
+            lines[#lines + 1] = string.format("  player %s: no receipt yet", tostring(id))
+        elseif not receipt.applied then
+            lines[#lines + 1] = string.format(
+                "  player %s: NOT enforced (%s)%s", tostring(id), receipt.detail,
+                receipt.observed ~= nil
+                    and string.format("; the host holds revision %d", receipt.observed)
+                    or "")
+        else
+            lines[#lines + 1] = string.format(
+                "  player %s: revision %d enforced -- %d hosts + %d tokens (+%d compiled), %d refused",
+                tostring(id), receipt.revision, receipt.hosts, receipt.tokens, receipt.compiled,
+                #receipt.refused)
+            for _, refused in ipairs(receipt.refused) do
+                lines[#lines + 1] = "      refused " .. refused
+            end
+        end
+    end
+    if checked == 0 then lines[#lines + 1] = "  no players connected" end
+    output(source, raw, true, table.concat(lines, "\n"))
+end)
 
 local MAX_MEDIA = 64
 
@@ -388,17 +659,24 @@ local function spawn(recordId, position, yaw, url, source)
         -- Optional, and only the cinema records set it: a screen watched from
         -- across a lot must not stop streaming at the prop default.
         streamingRadius = record.streamingRadius,
-        -- No collision, and this is a fix for a specific problem rather than a
-        -- preference. A screen put down within arm's reach is one the player can
-        -- be pushed out of the world by, or pinned against, with the props
-        -- default of static collision -- the menu path sets the set down 1.1 m
-        -- ahead so nothing is ever created *through* the caller, and this keeps
-        -- the same promise for the console path, where the operator names the
-        -- spot. A screen is not something to stand on, so the honest answer is
-        -- that it has no collision at all -- and the prop can then be moved
-        -- freely with `media.place` if it is in the way visually.
-        physics = "none",
-        collision = false,
+        -- No collision by default, and this is a fix for a specific problem
+        -- rather than a preference. A screen put down within arm's reach is one
+        -- the player can be pushed out of the world by, or pinned against, with
+        -- the props default of static collision -- the menu path sets the set
+        -- down 1.1 m ahead so nothing is ever created *through* the caller, and
+        -- this keeps the same promise for the console path, where the operator
+        -- names the spot. A screen is not something to stand on, so the honest
+        -- answer is that it has no collision at all -- and the prop can then be
+        -- moved freely with `media.place` if it is in the way visually.
+        --
+        -- A record may override that, and the cinema panels do: a 30 m screen is
+        -- scenery the audience walks up to, and a picture you can stand inside
+        -- reads as a bug in the world rather than a feature of the screen. It is
+        -- the record's decision because the record is what knows the size -- the
+        -- smallest record here is a 16 cm monitor, and giving that a collider
+        -- buys nothing a body would ever notice.
+        physics = record.collision == true and "static" or "none",
+        collision = record.collision == true,
     })
     if prop == nil then return nil, "prop_create_failed:" .. tostring(propError) end
 
@@ -414,6 +692,12 @@ local function spawn(recordId, position, yaw, url, source)
         volume = DEFAULT_VOLUME,
         muted = false,
         paused = false,
+        border = type(record.border) == "string" and record.border or nil,
+        -- Every screen starts with its curtain open. A curtain is what an
+        -- operator puts in front of a film they are about to show, not a state a
+        -- screen is born in -- and a television that spawned closed would look
+        -- like a television that had failed.
+        curtain = "open",
         quad = copyQuad(record.quad),
         position = { x = position.x, y = position.y, z = position.z },
         -- Kept because it is now a placement decision rather than a detail: the
@@ -444,11 +728,13 @@ end
 local function describeEntry(entry)
     return string.format(
         "media=%d prop=%s record=%s pos=%.2f,%.2f,%.2f yaw=%.1f " ..
-        "url=%s volume=%d muted=%s paused=%s",
+        "curtain=%s border=%s url=%s volume=%d muted=%s paused=%s",
         entry.id, tostring(entry.prop), tostring(entry.record),
         tonumber(entry.position.x) or 0.0, tonumber(entry.position.y) or 0.0,
         tonumber(entry.position.z) or 0.0,
         tonumber(entry.yaw) or 0.0,
+        tostring(entry.curtain or "open"),
+        entry.border == nil and "none" or tostring(entry.border),
         entry.url == "" and "(idle screen)" or entry.url,
         entry.volume, tostring(entry.muted), tostring(entry.paused))
 end
@@ -564,6 +850,29 @@ command("media.pause", "media.pause <id> <on|off>", true, function(source, args,
     output(source, raw, true, string.format(
         "television %d paused=%s", entry.id, tostring(entry.paused)))
 end)
+
+---The curtain, from the console.
+---
+---`reveal` is the whole presentation and is what a cinema wants: the curtain
+---drops, the panel counts down 3-2-1, the colours go up, and the panels part on
+---`LINK START`. It is the race start's own effect -- `race.firework.burst` with
+---two `race.flare.smoke` columns, and `sq024_race_countdown` / `sq024_race_start`
+----- played by each client at the screen, because that is what the race resource
+---does at a start line and there is no reason to build a second one.
+command("media.curtain", "media.curtain <id> <open|closed|reveal>", true,
+    function(source, args, raw)
+        if args.n ~= 2 then error("wrong argument count", 0) end
+        local entry = media[math.floor(number(args[1]))]
+        if entry == nil then return output(source, raw, false, "no such television") end
+        local state = string.lower(tostring(args[2]))
+        if state ~= "open" and state ~= "closed" and state ~= "reveal" then
+            return output(source, raw, false, "curtain must be open, closed or reveal")
+        end
+        entry.curtain = state
+        broadcast(nil)
+        output(source, raw, true, string.format(
+            "television %d curtain=%s", entry.id, state))
+    end)
 
 command("media.remove", "media.remove <id>", true, function(source, args, raw)
     if args.n ~= 1 then error("wrong argument count", 0) end
@@ -755,6 +1064,11 @@ RegisterNetEvent("open77:media:ready", function()
     if source == nil then return end
     local entries = liveEntries()
     TriggerClientEvent("open77:media:snapshot", source, snapshotFor(entries))
+    -- The blocklist goes out with the snapshot, and for the same reason: a client
+    -- that has just joined is exactly the client whose television is about to
+    -- load somebody else's page. It is pushed again whenever the list changes, so
+    -- this is the join case only.
+    pushBlocklist(source)
 end)
 
 -- The menu's path to every mutation, so the same validation serves the console
@@ -804,6 +1118,15 @@ RegisterNetEvent("open77:media:control", function(action, payload)
             return
         end
         entry.url = url
+        -- A link is a play request, so setting one clears a pause.
+        --
+        -- Leaving it set is what put a black rectangle on a 100 ft screen while
+        -- the same link played on the unpaused set beside it: a paused player
+        -- never starts, paints nothing, and the page's own recovery refuses to
+        -- nudge a player the operator asked to pause. The transport is this
+        -- resource's state, so "a new link starts playing" belongs here as well
+        -- as in `web/tv.js`; pausing afterwards still does exactly what it did.
+        entry.paused = false
     elseif action == "title" then
         local label, labelError = acceptText(payload.title, MAX_TITLE_LENGTH, "title")
         if label == nil then
@@ -824,6 +1147,19 @@ RegisterNetEvent("open77:media:control", function(action, payload)
             return
         end
         entry[action] = payload.value
+    elseif action == "curtain" then
+        -- Three states, and a closed set rather than a colour or a string a page
+        -- could invent: `closed` is the curtain in front of the panel, `open` is
+        -- it out of the way, and `reveal` is the presentation -- the countdown
+        -- and the colours, then the panels part. Every client draws the same
+        -- three because the server is the only writer, and a joiner walking in
+        -- mid-reveal sees the reveal.
+        local value = tostring(payload.value or "")
+        if value ~= "open" and value ~= "closed" and value ~= "reveal" then
+            TriggerClientEvent("open77:media:result", source, false, "curtain_must_be_open_closed_or_reveal")
+            return
+        end
+        entry.curtain = value
     elseif action == "move" then
         -- The menu's path to the same arithmetic the `media.move` command uses.
         -- Both go through `Open77MediaPlacement`, so the distance clamps and the

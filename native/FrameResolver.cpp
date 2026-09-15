@@ -288,8 +288,15 @@ Response Fetch(const std::string& aUrl, const bool aWantBody, const int aTimeout
 } // namespace
 
 Answer Probe(const std::string& aUrl, const std::string& aOurOrigin, const int aDocumentTimeoutMilliseconds,
-             const int aCandidateTimeoutMilliseconds)
+             const int aCandidateTimeoutMilliseconds, const WebUI::Ads::Blocklist* const aBlocklist)
 {
+    // One predicate for both questions this file asks about a host -- the pasted
+    // link and each nested application it names -- so a rule an operator added
+    // covers the shell and what the shell wraps, which is where the advertising
+    // actually lives.
+    const auto blocked = [aBlocklist](const std::string& aTarget) {
+        return aBlocklist != nullptr ? aBlocklist->IsBlocked(aTarget) : WebUI::Ads::IsBlocked(aTarget);
+    };
     Answer answer;
     const std::string url = Trim(aUrl);
     if (url.empty() || url.size() > kMaximumUrlLength)
@@ -306,7 +313,7 @@ Answer Probe(const std::string& aUrl, const std::string& aOurOrigin, const int a
     // Refused without a request being made. A pasted advertising host is not
     // something to ask politely, and the page is told the same thing it would be
     // told by a site that refused framing.
-    if (WebUI::Ads::IsBlocked(url))
+    if (blocked(url))
     {
         answer.ok = true;
         answer.documentUrl = url;

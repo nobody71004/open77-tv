@@ -2,10 +2,10 @@
 # tools/extract-tv-patches.py. Apply by hand: this is not a patch
 # series, and the surrounding file has other unreleased work in it.
 diff --git a/webhost/src/SurfaceClient.hpp b/webhost/src/SurfaceClient.hpp
-index e83feac1..e6e69f85 100644
+index e83feac1..fbbe7c93 100644
 --- a/webhost/src/SurfaceClient.hpp
 +++ b/webhost/src/SurfaceClient.hpp
-@@ -1,22 +1,25 @@
+@@ -1,22 +1,28 @@
  #pragma once
  
  #include <filesystem>
@@ -13,6 +13,7 @@ index e83feac1..e6e69f85 100644
 +#include <atomic>
  #include <chrono>
  #include <memory>
++#include <mutex>
  #include <string>
  #include <unordered_map>
  #include <unordered_set>
@@ -20,6 +21,8 @@ index e83feac1..e6e69f85 100644
  #include <d3d11_4.h>
  #include <wrl/client.h>
  
++#include <op77/WebUI/AdBlock.hpp>
++#include <op77/WebUI/MediaSniff.hpp>
  #include <op77/WebUI/Messages.hpp>
  #include <op77/WebUI/SharedFrameBuffer.hpp>
  
@@ -31,7 +34,7 @@ index e83feac1..e6e69f85 100644
  #include "include/cef_resource_request_handler.h"
  #include "include/wrapper/cef_message_router.h"
  
-@@ -65,12 +69,29 @@ public:
+@@ -65,12 +75,29 @@ public:
  
      CefRefPtr<CefRenderHandler> GetRenderHandler() override { return this; }
      CefRefPtr<CefLifeSpanHandler> GetLifeSpanHandler() override { return this; }
@@ -61,7 +64,7 @@ index e83feac1..e6e69f85 100644
                                    CefRefPtr<CefProcessMessage> aMessage) override;
      void GetViewRect(CefRefPtr<CefBrowser> aBrowser, CefRect& aRect) override;
      bool GetScreenInfo(CefRefPtr<CefBrowser> aBrowser, CefScreenInfo& aScreenInfo) override;
-@@ -80,12 +101,26 @@ public:
+@@ -80,12 +107,26 @@ public:
                   const RectList& aDirtyRects, const void* aBuffer, int aWidth, int aHeight) override;
      void OnAcceleratedPaint(CefRefPtr<CefBrowser> aBrowser, PaintElementType aType,
                              const RectList& aDirtyRects,
@@ -88,7 +91,7 @@ index e83feac1..e6e69f85 100644
                       const CefString& aFailedUrl) override;
      bool OnConsoleMessage(CefRefPtr<CefBrowser> aBrowser, cef_log_severity_t aLevel,
                            const CefString& aMessage, const CefString& aSource,
-@@ -102,12 +137,18 @@ public:
+@@ -102,12 +143,18 @@ public:
      void OnRenderProcessTerminated(CefRefPtr<CefBrowser> aBrowser,
                                     TerminationStatus aStatus, int aErrorCode,
                                     const CefString& aErrorString) override;
@@ -107,7 +110,7 @@ index e83feac1..e6e69f85 100644
      bool OnQuery(CefRefPtr<CefBrowser> aBrowser, CefRefPtr<CefFrame> aFrame,
                   int64_t aQueryId, const CefString& aRequest, bool aPersistent,
                   CefRefPtr<Callback> aCallback) override;
-@@ -155,12 +196,21 @@ private:
+@@ -155,12 +202,31 @@ private:
          uint64_t cpuFrames{};
          uint64_t popupFrames{};
      };
@@ -123,13 +126,71 @@ index e83feac1..e6e69f85 100644
 +    /// which answers whether a link can be framed and which application it wraps
 +    /// when it cannot. Answered off the IO thread -- see `FrameResolveHandler`.
 +    [[nodiscard]] CefRefPtr<CefResourceHandler> MaybeServeFrameRoute(CefRefPtr<CefRequest> aRequest);
++    /// The fourth same-origin route a media page names (`/op77/media/found`):
++    /// the stream a framed page asked for, as far as this host could see it, so
++    /// the television can play the film instead of the player that cannot run
++    /// here. `?forget=1` is the page saying its link changed -- see
++    /// `RecordMediaRequest` for why the page, and not the host, owns that.
++    [[nodiscard]] CefRefPtr<CefResourceHandler> MaybeServeFoundRoute(CefRefPtr<CefRequest> aRequest);
++    /// Keeps the best stream request this surface has seen. Called from
++    /// `OnBeforeResourceLoad`, which is the only place the host is shown what a
++    /// framed page is fetching. The judgement itself is `WebUI::Sniff`.
++    void RecordMediaRequest(const std::string& aUrl);
      [[nodiscard]] static std::string MimeType(const std::filesystem::path& aPath);
      [[nodiscard]] static std::string JsonQuote(std::string_view aText);
  
      [[nodiscard]] bool EnsureGpuDevice(HANDLE aSourceHandle,
                                         Microsoft::WRL::ComPtr<ID3D11Texture2D>& aSource);
      [[nodiscard]] bool CreateDeviceOnAdapter(IDXGIAdapter1* aAdapter, std::string& aAdapterName);
-@@ -228,16 +283,29 @@ private:
+@@ -183,23 +249,47 @@ private:
+     /// the CPU transport, whose every frame is a blocking GPU->CPU readback.
+     [[nodiscard]] static int FrameRateFor(int aRequested, bool aCpuTransport);
+     void ApplyFrameRate();
+     [[nodiscard]] bool DeviceRemoved(const std::string& aStage);
+     [[nodiscard]] bool AcceptViewSize(uint32_t aWidth, uint32_t aHeight);
+ 
++    /// The ad blocklist this surface decides with: the compiled list plus the
++    /// operator's layer, as one snapshot. Every blocklist call site reads it
++    /// through here rather than through the free functions, so that a rule the
++    /// server added reaches the request path, the popup policy and the frame
++    /// resolver at once instead of in whichever places were remembered.
++    [[nodiscard]] std::shared_ptr<const op77::WebUI::Ads::Blocklist> Blocklist() const;
++
++    /// Open (or re-open) the device at the format CEF was told to produce, and
++    /// say so once in the trace. Called from the audio thread, so the state it
++    /// touches is either immutable after this point or atomic.
++    [[nodiscard]] bool EnsureAudio();
++
+     std::weak_ptr<HostRuntime> m_runtime;
+     op77::WebUI::CreateSurfacePayload m_definition;
+     std::filesystem::path m_root;
+     std::unordered_set<std::string> m_allowedFiles;
+     op77::WebUI::SharedFrameBuffer m_frames;
+     CefRefPtr<CefBrowser> m_browser;
+     CefRefPtr<CefRequestContext> m_requestContext;
++    /// The directory holding this television's cookies -- its own storage
++    /// partition, created with it and removed when it closes. See
++    /// `CookieJar.hpp` for why an empty path (the host's global partition) is
++    /// the one thing this must never be.
++    std::filesystem::path m_cookieJar;
+     CefRefPtr<CefMessageRouterBrowserSide> m_router;
+     std::unordered_map<uint64_t, PendingInvoke> m_pendingInvokes;
+     bool m_closing{};
+ 
++    /// What a framed page has asked for, and how good the guess is. Written from
++    /// CEF's IO thread by the request path and read from it by the route, so it
++    /// is the one piece of this surface's state that needs a lock.
++    std::mutex m_mediaMutex;
++    std::string m_mediaStream;
++    op77::WebUI::Sniff::Kind m_mediaKind{op77::WebUI::Sniff::Kind::None};
++
+     Microsoft::WRL::ComPtr<ID3D11Device> m_gpuDevice;
+     Microsoft::WRL::ComPtr<ID3D11DeviceContext> m_gpuContext;
+     Microsoft::WRL::ComPtr<ID3D11Device5> m_gpuDevice5;
+     Microsoft::WRL::ComPtr<ID3D11DeviceContext4> m_gpuContext4;
+     uint64_t m_gpuDeviceLuid{};
+     std::string m_gpuAdapterName;
+@@ -228,16 +318,32 @@ private:
      bool m_sharedTextures{};
      bool m_gpuFallback{};
      bool m_ringFallbackAllowed{};
@@ -147,14 +208,17 @@ index e83feac1..e6e69f85 100644
      bool m_acceleratedPaintInfoLogged{};
      bool m_sourceOpenFailureLogged{};
      bool m_viewSizeMismatchLogged{};
- 
++    // Paints rejected for arriving at the pre-resize size, counted so the
++    // re-requests that keep a resize from stranding the surface are bounded.
++    uint32_t m_viewSizeRepaints{};
++
 +    // Window and request refusals, counted rather than merely traced: a page that
 +    // pays for itself with advertising opens tens of windows a minute, and a
 +    // traced line for each would bury the log that has to stay readable. The
 +    // first few are named; the total is kept so the count is never lost.
 +    std::atomic<uint64_t> m_blockedPopups{};
 +    std::atomic<uint64_t> m_blockedRequests{};
-+
+ 
      IMPLEMENT_REFCOUNTING(SurfaceClient);
      DISALLOW_COPY_AND_ASSIGN(SurfaceClient);
  };

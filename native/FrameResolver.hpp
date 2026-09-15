@@ -67,9 +67,16 @@ inline constexpr std::size_t kMaximumProbedCandidates = 3;
 /// list has to name for the document to permit framing. It is passed in rather
 /// than assumed because only the surface knows it, and a name nothing can guess
 /// is the reason a site that permits framing says so on purpose.
+///
+/// `aBlocklist` is the caller's snapshot -- the compiled list plus the operator's
+/// layer -- and is borrowed for the duration of the call rather than read from
+/// anywhere global, because this runs on a worker thread by design (see the note
+/// at the top) and must not reach into a session's state. `nullptr` means the
+/// compiled list, which is what a caller with no session has.
 [[nodiscard]] Answer Probe(const std::string& aUrl, const std::string& aOurOrigin,
                            int aDocumentTimeoutMilliseconds = kDocumentTimeoutMilliseconds,
-                           int aCandidateTimeoutMilliseconds = kCandidateTimeoutMilliseconds);
+                           int aCandidateTimeoutMilliseconds = kCandidateTimeoutMilliseconds,
+                           const WebUI::Ads::Blocklist* aBlocklist = nullptr);
 
 /// The answer as the page's JSON, on one line, with every string escaped.
 [[nodiscard]] std::string ToJson(const Answer& aAnswer);

@@ -177,7 +177,12 @@ local quad = {
 }
 
 handlers["onClientResourceStart"]("open77_media")
-check(#threads == 1, "the client starts one selection thread")
+-- Two threads, and both are deliberate: the selection thread (which screens
+-- exist) and the blocklist receipt thread (whether the browser host took the
+-- operator's rules). The second is cheap by construction -- it exists only
+-- between a push and its answer -- but it is the one that turns "we sent it"
+-- into "it is in force", so it is pinned here.
+check(#threads == 2, "the client starts a selection thread and a receipt thread")
 check(#pages == 0, "nothing is materialised before the server says there is a set")
 
 -- Five metres east of the stubbed body (100, 200, 10): inside every radius the
@@ -517,4 +522,100 @@ check(lastBindFor("prop-10") ~= bound10,
     "the dropped screen is materialised again on the next pass, in the world that exists now")
 Open77.media.list = nil
 
+-- =============================================================================
+-- The operator's ad blocklist
+-- =============================================================================
+-- Three things have to be true for a server's rules to mean anything: the client
+-- hands them to the browser host, it waits for the host's receipt rather than
+-- assuming one, and it reports what the host said -- including when the host said
+-- nothing. The failure this section exists to prevent is the quiet one: a policy
+-- pushed into a plugin that does not implement it, and a server that concludes
+-- its rules are live because the push did not throw.
+
+check(type(handlers["open77:media:adblock"]) == "function",
+    "the client registers the blocklist handler")
+
+local pushed = nil
+local receipt = nil
+_G.TriggerServerEvent = function(name, payload)
+    if name == "open77:media:adblock:receipt" then receipt = payload end
+end
+
+-- No native: the answer is a refusal with a reason, not silence. This is exactly
+-- the state a game running a plugin older than the feature is in.
+handlers["open77:media:adblock"]({ revision = 9, hosts = { "newads.test" }, tokens = {} })
+check(receipt ~= nil and receipt.applied == false, "a host that cannot apply it is reported")
+check(receipt ~= nil and receipt.detail == "webui_blocklist_unavailable",
+    "and the reason names the missing native rather than blaming the rules")
+
+-- Now a host that takes it and answers. The stub records both calls, because
+-- "the rules arrived" and "the receipt was read" are the two halves that can
+-- each be wrong on their own.
+local sentRules = nil
+local reportedStates = 0
+Open77.webui = {
+    blocklist = function(payload)
+        sentRules = payload
+        return true
+    end,
+    blocklistState = function()
+        reportedStates = reportedStates + 1
+        return {
+            revision = 12, hostRules = 1, tokenRules = 1, compiledRules = 193,
+            refused = { "co.uk:registry_suffix" },
+        }
+    end,
+}
+
+receipt = nil
+handlers["open77:media:adblock"]({
+    revision = 12, source = "open77_media@127.0.0.1",
+    hosts = { "newads.test" }, tokens = { "newads" },
+})
+check(sentRules ~= nil, "the rules reach the native")
+check(sentRules.revision == 12 and sentRules.source == "open77_media@127.0.0.1",
+    "with the revision and the source the server can report against")
+check(sentRules.hosts[1] == "newads.test" and sentRules.tokens[1] == "newads",
+    "and both lists")
+check(receipt == nil, "nothing is reported before the host has answered")
+
+-- One pass of the receipt thread. The host answers revision 12, which is what is
+-- outstanding, so the pass reports it and clears the pending state.
+local okReceipt, receiptReason = pcall(threads[2])
+check(not okReceipt and receiptReason == "selection_pass_done",
+    "the receipt thread ran without error")
+check(receipt ~= nil and receipt.applied == true, "the host's receipt is reported")
+check(receipt ~= nil and receipt.revision == 12 and receipt.hosts == 1 and receipt.tokens == 1,
+    "with the counts the server displays")
+check(receipt ~= nil and receipt.compiled == 193,
+    "and the compiled count, so an operator can see the build's list is still there")
+check(receipt ~= nil and #(receipt.refused or {}) == 1
+    and receipt.refused[1] == "co.uk:registry_suffix",
+    "and every entry the host refused, named, so the operator learns which rule did nothing")
+check(reportedStates >= 1, "the receipt came from the host, not from the push's return value")
+
+-- The answer is not invented when the host stays silent: the pending push is
+-- abandoned at its deadline and reported as unconfirmed.
+local beforeSilent = reportedStates
+Open77.webui.blocklistState = function()
+    reportedStates = reportedStates + 1
+    return { revision = 11, hostRules = 0, tokenRules = 0, compiledRules = 193, refused = {} }
+end
+receipt = nil
+handlers["open77:media:adblock"]({ revision = 12, hosts = {}, tokens = {} })
+check(receipt == nil, "a push whose receipt has not arrived reports nothing yet")
+-- 3.0 s of deadline at 0.1 s a pass, each pass throwing out of `Wait`; the
+-- thread keeps its pending state across the passes that come back empty.
+local passes = 0
+while receipt == nil and passes < 40 do
+    pcall(threads[2])
+    passes = passes + 1
+end
+check(receipt ~= nil and receipt.applied == false and receipt.detail == "no_blocklist_receipt",
+    "a host that never answers is reported as unconfirmed, not as applied")
+check(receipt ~= nil and receipt.observed == 11,
+    "and the older revision the host does hold is reported with it")
+check(reportedStates > beforeSilent, "and the thread kept polling rather than giving up early")
+
+_G.TriggerServerEvent = function() end
 _G.TestResult = { passed = passed, failed = #failures, failures = failures }

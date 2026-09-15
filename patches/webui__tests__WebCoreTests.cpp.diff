@@ -2,19 +2,34 @@
 # tools/extract-tv-patches.py. Apply by hand: this is not a patch
 # series, and the surrounding file has other unreleased work in it.
 diff --git a/webui/tests/WebCoreTests.cpp b/webui/tests/WebCoreTests.cpp
-index f011342f..ba0ce24e 100644
+index f011342f..79dfec55 100644
 --- a/webui/tests/WebCoreTests.cpp
 +++ b/webui/tests/WebCoreTests.cpp
-@@ -1,6 +1,8 @@
+@@ -1,18 +1,23 @@
 +#include <op77/WebUI/AdBlock.hpp>
++#include <op77/WebUI/CookieJar.hpp>
 +#include <op77/WebUI/FramePolicy.hpp>
  #include <op77/WebUI/NamedPipe.hpp>
  #include <op77/WebUI/GpuRing.hpp>
  #include <op77/WebUI/DrawBounds.hpp>
  #include <op77/WebUI/SurfaceSizing.hpp>
++#include <op77/WebUI/MediaSniff.hpp>
  #include <op77/WebUI/Messages.hpp>
  #include <op77/WebUI/Protocol.hpp>
-@@ -117,12 +119,13 @@ int main()
+ #include <op77/WebUI/SharedFrameBuffer.hpp>
+ 
+ #include <Windows.h>
+ 
+ #include <algorithm>
+ #include <array>
++#include <filesystem>
+ #include <iostream>
+ #include <limits>
+ #include <string>
+ #include <thread>
+ #include <utility>
+ #include <vector>
+@@ -117,12 +122,13 @@ int main()
          .deviceScaleFactor = 2.0F,
          .framesPerSecond = 30,
          .layer = SurfaceLayer::Menu,
@@ -28,7 +43,7 @@ index f011342f..ba0ce24e 100644
      {
          return 1;
      }
-@@ -133,18 +136,90 @@ int main()
+@@ -133,18 +139,90 @@ int main()
                     createDecoded.generation == create.generation && createDecoded.entry == create.entry &&
                     createDecoded.allowedFiles == create.allowedFiles &&
                     createDecoded.width == create.width && createDecoded.height == create.height &&
@@ -120,7 +135,7 @@ index f011342f..ba0ce24e 100644
          .frameMapping = "Local\\Open77.WebUI.Frame.9.Resize.1",
          .width = 1920,
          .height = 1080,
-@@ -437,9 +512,158 @@ int main()
+@@ -437,9 +515,549 @@ int main()
                     "fail must return the slot with success=false and deactivate")) return 1;
          const auto failedEmpty = GpuRingConsumer{}.Fail();
          if (!Check(failedEmpty.size() == 1 && !failedEmpty[0].success,
@@ -170,20 +185,286 @@ index f011342f..ba0ce24e 100644
 +                   "YouTube's media origin must not be blocked: googlevideo is not googlesyndication") ||
 +            !Check(!Ads::IsBlocked("https://i.ytimg.com/vi/x/hq.jpg"), "thumbnails must not be blocked")) return 1;
 +
++        // -- the site a URL belongs to, which is what a window may not leave --
++        if (!Check(Ads::RegistrableDomain(Ads::LowerHost("https://cdn.vidrock.to/x")) == "vidrock.to",
++                   "a subdomain belongs to its parent's site") ||
++            !Check(Ads::RegistrableDomain(Ads::LowerHost("https://moviestv.my/")) == "moviestv.my",
++                   "a two-label host is its own site") ||
++            !Check(Ads::RegistrableDomain(Ads::LowerHost("https://a.b.foo.co.uk/x")) == "foo.co.uk" &&
++                       Ads::RegistrableDomain(Ads::LowerHost("https://foo.co.uk/x")) == "foo.co.uk",
++                   "a multi-label registry is not a company: foo.co.uk and bar.co.uk are two sites") ||
++            !Check(Ads::RegistrableDomain("localhost").empty() && Ads::RegistrableDomain("").empty(),
++                   "a single label has no site to compare, so nothing may be shown to stay inside it") ||
++            !Check(Ads::RegistrableDomain("10.0.0.7") == "10.0.0.7",
++                   "an address is returned whole, not as its last two labels") ||
++            !Check(Ads::SameSite("https://vidrock.to/tv/1", "https://cdn.vidrock.to/player") &&
++                       !Ads::SameSite("https://vidrock.to/tv/1", "https://vidrock.com/tv/1") &&
++                       !Ads::SameSite("https://foo.co.uk/x", "https://bar.co.uk/y") &&
++                       !Ads::SameSite("https://a.test/x", "about:blank"),
++                   "same-site is the registrable domain and nothing looser")) return 1;
++
++        // -- the one place a sniffed stream crosses back to the page --------
++        //
++        // `/op77/media/found` is how a site's own stream reaches the screen when
++        // the site's player cannot run here, and its body is the whole handoff.
++        // It shipped answering `"stream":""https://…""` -- the value quoted
++        // twice -- so the page's parse threw and the fallback gave up saying "no
++        // host to ask": a stream the host had found, lost silently, on every site
++        // whose player serves a manifest. The URL is the case that matters, and
++        // an exact string is the only assertion that catches a second pair of
++        // quotes around it.
++        if (!Check(Sniff::FoundRouteBody(Sniff::Kind::Manifest,
++                       "https://cdn.ngcorp.dad/tv/oxi/bigtits.m3u8") ==
++                       "{\"ok\":true,\"kind\":\"manifest\",\"stream\":"
++                       "\"https://cdn.ngcorp.dad/tv/oxi/bigtits.m3u8\"}",
++                   "the found route's answer must be JSON a page can read: the stream "
++                   "value is quoted exactly once") ||
++            !Check(Sniff::FoundRouteBody(Sniff::Kind::Manifest, "") == "{\"ok\":false}",
++                   "an empty stream is not a stream") ||
++            !Check(Sniff::FoundRouteBody(Sniff::Kind::Progressive, "https://a.test/x?q=\"1\"") ==
++                       "{\"ok\":true,\"kind\":\"progressive\",\"stream\":"
++                       "\"https://a.test/x?q=\\\"1\\\"\"}",
++                   "a quote in the URL must be escaped, not left to close the string") ||
++            !Check(Sniff::FoundRouteBody(Sniff::Kind::Manifest, "https://a.test/a\nb") ==
++                       "{\"ok\":true,\"kind\":\"manifest\",\"stream\":"
++                       "\"https://a.test/a\\nb\"}",
++                   "a raw newline would end the JSON line, so it must be escaped")) return 1;
++
 +        // -- what a framed page may open -----------------------------------
-+        if (!Check(Ads::DecidePopup("https://focusameneducation.com/x", true) == Ads::PopupAction::Drop,
++        const auto popup = [](const std::string_view aUrl, const std::string_view aAsker, const bool aGesture) {
++            return Ads::DecidePopup(Ads::PopupRequest{aUrl, aAsker, false, aGesture, false});
++        };
++        if (!Check(popup("https://focusameneducation.com/x", "https://vidrock.to/tv/1", true) ==
++                       Ads::PopupAction::Drop,
 +                   "a click on an advertisement is still an advertisement") ||
-+            !Check(Ads::DecidePopup("https://some-player.test/watch/1", false) == Ads::PopupAction::Drop,
++            !Check(popup("https://some-player.test/watch/1", "https://some-player.test/embed/9", false) ==
++                       Ads::PopupAction::Drop,
 +                   "a window with no click behind it is advertising, whoever serves it") ||
-+            !Check(Ads::DecidePopup("https://some-player.test/watch/1", true) == Ads::PopupAction::Follow,
-+                   "a window a click asked for must land on the screen, not nowhere") ||
-+            !Check(Ads::DecidePopup("javascript:alert(1)", true) == Ads::PopupAction::Drop,
++            !Check(popup("https://some-player.test/watch/1", "https://some-player.test/embed/9", true) ==
++                       Ads::PopupAction::Follow,
++                   "a window a click asked for, staying inside the site, must land on the screen") ||
++            !Check(popup("https://cdn.some-player.test/watch/1", "https://some-player.test/embed/9", true) ==
++                       Ads::PopupAction::Follow,
++                   "a subdomain of the asking site is still that site") ||
++            // The four windows one live session actually followed, every one of
++            // them advertising and every one of them asked for by the provider's
++            // own top document -- which is why following them replaced the player
++            // with a landing page that refuses to be framed.
++            !Check(popup("https://sorrowfulpsychology.com/iLmSbj", "https://vidrock.to/tv/105248/1/1", true) ==
++                           Ads::PopupAction::Drop &&
++                       popup("https://ay267.com/?rb=x", "https://freeonlinek.top/hdtoday/", true) ==
++                           Ads::PopupAction::Drop &&
++                       popup("https://yz.woolderstrolld.qpon/cx/x", "https://moviestv.my/", true) ==
++                           Ads::PopupAction::Drop &&
++                       popup("https://ro.dogfootpalmo.cfd/cx/x", "https://streamingnow.mov/js/dd.js", true) ==
++                           Ads::PopupAction::Drop,
++                   "an advertisement that ate the click must not be followed: it leaves the asking site") ||
++            !Check(popup("https://some-player.test/watch/1", "", true) == Ads::PopupAction::Drop,
++                   "a window whose asking frame is unknown has not been shown to stay anywhere") ||
++            // The one case with no site to leave: a page this host serves itself.
++            // And the case that must NOT be read that way, which is what keeps
++            // the exemption from being a hole a remote page can climb through.
++            !Check(Ads::DecidePopup(Ads::PopupRequest{"https://127.0.0.1:8399/followed-window",
++                                                      "https://r-test-g-1.cym-ui/web/popup-opener.html",
++                                                      true, true, false}) == Ads::PopupAction::Follow,
++                   "a page this host serves itself has no other site for its window to leave") ||
++            !Check(Ads::DecidePopup(Ads::PopupRequest{"https://127.0.0.1:8399/followed-window",
++                                                      "about:blank", false, true, false}) ==
++                       Ads::PopupAction::Drop,
++                   "a blank frame inside a remote page is not one of this host's own pages") ||
++            !Check(popup("javascript:alert(1)", "https://some-player.test/p", true) == Ads::PopupAction::Drop,
 +                   "a javascript: URL is not a window request") ||
-+            !Check(Ads::DecidePopup("about:blank", true) == Ads::PopupAction::Drop &&
-+                       Ads::DecidePopup("", true) == Ads::PopupAction::Drop,
++            !Check(popup("about:blank", "https://some-player.test/p", true) == Ads::PopupAction::Drop &&
++                       popup("", "https://some-player.test/p", true) == Ads::PopupAction::Drop,
 +                   "empty and about: URLs must be dropped") ||
 +            !Check(Ads::Describe(Ads::PopupAction::Follow) == std::string("follow"),
-+                   "the policy's name for the trace changed")) return 1;
++                   "the policy's name for the trace changed") ||
++            // A drop the reader cannot attribute is a drop nobody can act on, and
++            // the two rules that matter here -- an advertisement at the door, and
++            // an advertisement that ate a real click -- otherwise print alike.
++            !Check(std::string(Ads::RefusalReason(Ads::PopupRequest{"https://a.test/x", "https://b.test/y", false, true, false})) ==
++                           "cross_site" &&
++                       std::string(Ads::RefusalReason(Ads::PopupRequest{"https://a.test/x", "https://b.test/y", false, false, false})) ==
++                           "no_gesture" &&
++                       std::string(Ads::RefusalReason(Ads::PopupRequest{"javascript:x", "https://b.test/y", false, true, false})) ==
++                           "not_a_window" &&
++                       std::string(Ads::RefusalReason(Ads::PopupRequest{"https://focusameneducation.com/x", "https://b.test/y", false, true, false})) ==
++                           "blocked_host",
++                   "the trace must name the rule that refused the window")) return 1;
++    }
++
++    // -----------------------------------------------------------------------
++    // The operator layer of that blocklist: the rules a server pushes.
++    //
++    // This is the half that is NOT compiled in, which makes every one of its
++    // decisions a runtime one: a rule an operator typed is a string from outside
++    // the build, and the two ways it goes wrong are silent. A rule of `com` would
++    // stop every page loading, and a rule the validator quietly dropped looks
++    // from the operator's chair exactly like a network that kept working. So the
++    // refusals are pinned by name, and the additivity is pinned as an invariant:
++    // nothing arriving from a server may unblock something the build refuses.
++    // -----------------------------------------------------------------------
++    {
++        using namespace op77::WebUI;
++
++        std::string reason;
++        const auto rule = [&](const std::string_view aRaw) { return Ads::NormaliseRule(aRaw, reason); };
++        const auto token = [&](const std::string_view aRaw) { return Ads::NormaliseToken(aRaw, reason); };
++
++        // -- what an operator is allowed to have meant ----------------------
++        if (!Check(rule("ads.Example.COM") == "ads.example.com", "a rule is lowercased") ||
++            !Check(rule("https://tracker.bad.test:8443/pixel.gif?x=1") == "tracker.bad.test",
++                   "a pasted URL contributes its host and nothing else") ||
++            !Check(rule("*.popads.example") == "popads.example",
++                   "a leading wildcard is what a rule already means, so it is accepted") ||
++            !Check(rule(".example.test/") == "example.test", "a leading dot and a trailing slash go") ||
++            !Check(rule("  spam.example.test.  ") == "spam.example.test",
++                   "surrounding space and an absolute trailing dot go") ||
++            !Check(rule("10.0.0.7") == "10.0.0.7", "an address is a host an operator may want refused")) return 1;
++
++        // -- ...and what it refuses, each with a reason to act on -----------
++        if (!Check(rule("").empty() && reason == "empty", "an empty rule is refused, not stored") ||
++            !Check(rule("com").empty() && reason == "needs_a_domain",
++                   "a bare registry label would block the internet") ||
++            !Check(rule("co.uk").empty() && reason == "public_suffix",
++                   "a multi-label registry is refused too: one typo must not blank a country") ||
++            !Check(rule("ads example.com").empty() && reason == "invalid_character",
++                   "a space is refused rather than partially interpreted") ||
++            !Check(rule("ads.*.example.com").empty() && reason == "invalid_character",
++                   "no wildcard inside the host: the matching is suffix-only") ||
++            !Check(rule("a..b.com").empty() && reason == "empty_label", "an empty label is refused") ||
++            !Check(rule("-lead.example.com").empty() && reason == "invalid_hyphen",
++                   "a leading hyphen is not a hostname") ||
++            !Check(rule("trail-.example.com").empty() && reason == "invalid_hyphen",
++                   "a trailing hyphen is not a hostname") ||
++            !Check(rule("https://").empty(), "a URL with no authority is refused")) return 1;
++
++        // -- the token form, which matches ANYWHERE in a host --------------
++        if (!Check(token("PopAds") == "popads", "a token is lowercased") ||
++            !Check(token("com").empty() && reason == "registry_label",
++                   "a registry label as a token is every .com there is") ||
++            !Check(token("ab").empty() && reason == "token_too_short", "a two-letter token over-blocks") ||
++            !Check(token("ads.example").empty() && reason == "token_is_a_host",
++                   "a token with a dot is a host rule wearing the wrong hat") ||
++            !Check(token("my token").empty(), "a token cannot contain a space")) return 1;
++
++        // -- the list itself ------------------------------------------------
++        Ads::Blocklist blocked;
++        const std::size_t compiled = Ads::RuleCount();
++        if (!Check(blocked.Count() == compiled && blocked.OperatorRuleCount() == 0,
++                   "a fresh list is the compiled list and nothing else") ||
++            !Check(!blocked.IsBlocked("https://some-player.test/watch/1"),
++                   "a fresh list blocks nothing a real page needs")) return 1;
++
++        std::vector<Ads::Blocklist::Refusal> refused;
++        const std::vector<std::string> hosts = {
++            "newads.test", "cdn.newads.test", "newads.test", "broad", "co.uk", ""};
++        const std::size_t accepted = blocked.AddHostRules(hosts, refused);
++        if (!Check(accepted == 2 && blocked.OperatorRuleCount() == 2,
++                   "two distinct valid rules out of six entries, and the duplicate stored once") ||
++            !Check(refused.size() == 3 &&
++                       refused[0].reason == "needs_a_domain" && refused[1].reason == "public_suffix" &&
++                       refused[2].reason == "empty",
++                   "every refused entry must say why, in the order it arrived -- and only the "
++                   "refused ones are reported")) return 1;
++        if (!Check(blocked.IsBlocked("https://newads.test/x.js") &&
++                       blocked.IsBlocked("https://a.b.cdn.newads.test/x.js"),
++                   "an operator rule covers its own subdomains") ||
++            !Check(!blocked.IsBlocked("https://notnewads.test/x.js"),
++                   "an operator rule is a suffix match, not a substring match") ||
++            !Check(blocked.IsBlocked("https://cdn.newads.test:8443/ad.js?q=1"),
++                   "a port and a query do not hide the host")) return 1;
++
++        std::vector<Ads::Blocklist::Refusal> tokenRefused;
++        const std::vector<std::string> tokens = {"newads", "ads.example"};
++        blocked.AddTokenRules(tokens, tokenRefused);
++        if (!Check(blocked.OperatorRuleCount() == 3 && tokenRefused.size() == 1,
++                   "the token layer keeps its own count") ||
++            !Check(blocked.IsBlocked("https://newads-rotation-9.other.test/x.js"),
++                   "a token catches the campaign the list cannot enumerate") ||
++            !Check(blocked.Count() == compiled + 3, "Count() is compiled plus operator")) return 1;
++
++        // -- the asymmetry the whole feature rests on ------------------------
++        blocked.ClearOperatorRules();
++        if (!Check(blocked.OperatorRuleCount() == 0 &&
++                       !blocked.IsBlocked("https://newads.test/x.js"),
++                   "clearing the operator layer must clear exactly the operator layer") ||
++            !Check(blocked.IsBlocked("https://focusameneducation.com/x.js"),
++                   "...and must not be able to unblock a compiled rule")) return 1;
++
++        // A server cannot even describe unblocking: nothing in this API takes a
++        // rule away except the operator's own clear, and the compiled list is
++        // read-only by construction. The popup policy is where that shows up as
++        // behaviour rather than intent -- the same click, one rule later.
++        Ads::Blocklist operatorLayer;
++        const Ads::PopupRequest onSiteWindow{"https://tracker.bad.test/go", "https://tracker.bad.test/watch/1",
++                                             false, true, false};
++        if (!Check(Ads::DecidePopup(onSiteWindow, operatorLayer) == Ads::PopupAction::Follow,
++                   "without a rule, a clicked player's same-site window follows in place")) return 1;
++        std::vector<Ads::Blocklist::Refusal> ignored;
++        const std::vector<std::string> one = {"tracker.bad.test"};
++        operatorLayer.AddHostRules(one, ignored);
++        if (!Check(Ads::DecidePopup(onSiteWindow, operatorLayer) == Ads::PopupAction::Drop,
++                   "an operator rule turns that same click into a drop, gesture or not") ||
++            !Check(Ads::DecidePopup(Ads::PopupRequest{onSiteWindow.url, onSiteWindow.asker, false, false, false},
++                                    operatorLayer) == Ads::PopupAction::Drop,
++                   "...and still drops the one nobody asked for")) return 1;
++
++        // -- the wire ------------------------------------------------------
++        // The push is only allowed to be additive, so the codec is the place the
++        // limits live: a rule an operator could make arbitrarily long or a list
++        // they could make unbounded would be a way to stall a client from a
++        // server, and that is exactly what these bounds refuse.
++        Ads::Blocklist roundTripped;
++        std::vector<std::string> rawHosts = {"newads.test", "cdn.tracker.bad.test"};
++        std::vector<std::string> rawTokens = {"popads"};
++        roundTripped.AddHostRules(rawHosts, ignored);
++        roundTripped.AddTokenRules(rawTokens, ignored);
++        Message message;
++        message.type = MessageType::AdBlockPolicy;
++        AdBlockPolicyPayload policy;
++        policy.revision = 7;
++        policy.source = "open77_media@127.0.0.1";
++        policy.hosts = rawHosts;
++        policy.tokens = rawTokens;
++        std::vector<uint8_t> encoded;
++        if (!Check(EncodePayload(policy, encoded), "a policy must encode") ||
++            !Check(EncodePayload(policy, message.payload), "a policy must encode into a message")) return 1;
++        AdBlockPolicyPayload decoded;
++        if (!Check(DecodePayload(message, decoded), "a policy must decode") ||
++            !Check(decoded.revision == 7 && decoded.source == policy.source &&
++                       decoded.hosts == rawHosts && decoded.tokens == rawTokens,
++                   "a decoded policy must be the one that was sent") ||
++            !Check(Decode(Encode(message), message, reason), "a policy message must frame and parse") ||
++            !Check(DecodePayload(message, decoded) && decoded.hosts.size() == 2,
++                   "...and survive the framing round trip")) return 1;
++
++        AdBlockStatePayload state;
++        state.revision = 7;
++        state.compiledRules = static_cast<uint32_t>(compiled);
++        state.hostRules = 2;
++        state.tokenRules = 1;
++        state.refused = {"broad:needs_a_domain"};
++        std::vector<uint8_t> stateBytes;
++        if (!Check(EncodePayload(state, stateBytes), "a receipt must encode")) return 1;
++        Message stateMessage;
++        stateMessage.type = MessageType::AdBlockState;
++        stateMessage.payload = stateBytes;
++        AdBlockStatePayload stateBack;
++        if (!Check(DecodePayload(stateMessage, stateBack), "a receipt must decode") ||
++            !Check(stateBack.hostRules == 2 && stateBack.refused.size() == 1 &&
++                       stateBack.refused[0] == "broad:needs_a_domain" &&
++                       stateBack.compiledRules == compiled,
++                   "a receipt must carry the counts the server reports on")) return 1;
++
++        // The bounds, which are the only thing standing between an operator
++        // typo and a client that cannot load a page.
++        AdBlockPolicyPayload oversized = policy;
++        oversized.hosts.assign(513, std::string("newads.test"));
++        if (!Check(!EncodePayload(oversized, encoded), "513 rules must not encode")) return 1;
++        AdBlockPolicyPayload tooLong = policy;
++        tooLong.hosts = {std::string(300, 'a')};
++        if (!Check(!EncodePayload(tooLong, encoded), "a 300-byte rule must not encode")) return 1;
 +    }
 +
 +    {
@@ -274,6 +555,131 @@ index f011342f..ba0ce24e 100644
 +                   "an advertising host must not be offered as the page to show") ||
 +            !Check(FindEmbeds("<html><body>no frames here</body></html>", "https://a.test/").empty(),
 +                   "a page that nests nothing has no candidates")) return 1;
++    }
++
++    {
++        // A jar is named for the television that keeps it: a resource name
++        // arrives on the wire, so it is input, and a directory name built from
++        // input is where a `..` becomes a deletion somewhere it should not.
++        if (!Check(CookieJar::SanitizeResource("open77_media") == "open77_media",
++                   "a plain resource name is already path-safe") ||
++            !Check(CookieJar::SanitizeResource("") == "surface",
++                   "a nameless resource still gets a component") ||
++            !Check(CookieJar::SanitizeResource("..") == "surface",
++                   "a name made only of dots must not become a path component") ||
++            !Check(CookieJar::SanitizeResource(".hidden") == "hidden",
++                   "a leading dot must be dropped") ||
++            !Check(CookieJar::SanitizeResource("a/b\\c") == "a_b_c",
++                   "separators must not survive into a jar name") ||
++            !Check(CookieJar::SanitizeResource(std::string(200, 'x')).size() ==
++                       CookieJar::kMaximumResourceCharacters,
++                   "a long resource name must be capped")) return 1;
++
++        const auto traversal = CookieJar::SanitizeResource("../..");
++        if (!Check(traversal.find('/') == std::string::npos &&
++                       traversal.find('\\') == std::string::npos &&
++                       (traversal.empty() || traversal.front() != '.'),
++                   "a traversal name must not survive as a path component")) return 1;
++
++        if (!Check(CookieJar::NameFor("open77_media", 7) != CookieJar::NameFor("open77_media", 8),
++                   "two televisions must not share one jar") ||
++            !Check(CookieJar::NameFor("a", 7) != CookieJar::NameFor("b", 7),
++                   "the same surface id in two resources must not share one jar") ||
++            !Check(CookieJar::NameFor("open77_media", 7) == CookieJar::NameFor("open77_media", 7),
++                   "a television's jar name must be stable across its own pages")) return 1;
++
++        const std::filesystem::path dataRoot = L"C:\\data";
++        const auto jarOne = CookieJar::PathFor(dataRoot, "open77_media", 1);
++        const auto jarTwo = CookieJar::PathFor(dataRoot, "open77_media", 2);
++        const auto escaped = CookieJar::PathFor(dataRoot, "../../etc", 3);
++        if (!Check(jarOne.parent_path() == CookieJar::RootFor(dataRoot),
++                   "a jar must live in the cookies directory") ||
++            !Check(jarOne != jarTwo, "two televisions must be given two directories") ||
++            !Check(escaped.parent_path() == CookieJar::RootFor(dataRoot),
++                   "a traversal resource name must not escape the cookies directory") ||
++            !Check(CookieJar::PathFor({}, "open77_media", 1).empty(),
++                   "no data root means no jar of its own, never the default one")) return 1;
++    }
++
++    {
++        // Sweeping and removal, against the real filesystem: the property that
++        // matters is that one television's end cannot touch another's jar, nor
++        // anything the host keeps beside them.
++        const auto base = std::filesystem::temp_directory_path() / UniqueName(L"op77-jar-");
++        const auto dataRoot = base / L"data";
++        const auto jarOne = CookieJar::PathFor(dataRoot, "open77_media", 1);
++        const auto jarTwo = CookieJar::PathFor(dataRoot, "open77_media", 2);
++        const auto bystander = base / L"unrelated";
++        std::error_code ignored;
++        std::filesystem::create_directories(jarOne / L"Cache", ignored);
++        std::filesystem::create_directories(jarTwo, ignored);
++        std::filesystem::create_directories(bystander, ignored);
++        if (!Check(std::filesystem::exists(jarOne) && std::filesystem::exists(jarTwo),
++                   "a jar for each of two televisions must be creatable")) return 1;
++
++        CookieJar::Remove(jarOne);
++        if (!Check(!std::filesystem::exists(jarOne),
++                   "a closed surface's jar must be removed") ||
++            !Check(std::filesystem::exists(jarTwo),
++                   "another television's jar must survive its neighbour closing")) return 1;
++
++        CookieJar::Sweep(dataRoot);
++        if (!Check(!std::filesystem::exists(CookieJar::RootFor(dataRoot)),
++                   "starting the host must leave no jar from the previous session") ||
++            !Check(std::filesystem::exists(bystander),
++                   "the sweep must not reach outside the cookies directory")) return 1;
++
++        std::filesystem::remove_all(base, ignored);
++    }
++
++    {
++        // What a framed site's player asked for, judged well enough to hand to
++        // the decoder. The two questions this answers are "is this a stream at
++        // all" and "is it better than what is already held", and both have a
++        // cost when they are wrong: a script recorded as a stream spends an
++        // ffmpeg on nothing, and a segment kept over a manifest plays four
++        // seconds of the film instead of the film.
++        using op77::WebUI::Sniff::Kind;
++        const auto kind = [](const char* const aUrl) { return Sniff::Classify(aUrl); };
++
++        if (!Check(kind("https://cdn.example/live/master.m3u8") == Kind::Manifest,
++                   "an HLS index is a manifest") ||
++            !Check(kind("https://cdn.example/x/y.mpd?token=1") == Kind::Manifest,
++                   "a DASH manifest is a manifest, query and all") ||
++            // The one that motivated the shape rule: several of these players
++            // address their index as `/playlist/<hash>`, with no extension to
++            // recognise. It is the request that matters most and the one an
++            // extension list would miss.
++            !Check(kind("https://stream.example/playlist/dd54b5f9a8d56334") == Kind::Manifest,
++                   "an extensionless HLS index is still a manifest") ||
++            !Check(kind("https://cdn.example/movie.mp4") == Kind::Progressive,
++                   "an ordinary media file is progressive") ||
++            !Check(kind("https://cdn.example/live/seg-00012.ts") == Kind::Segment,
++                   "a transport-stream chunk is a segment") ||
++            !Check(kind("https://cdn.example/v/init.mp4") == Kind::Segment,
++                   "an fMP4 initialisation fragment is a segment") ||
++            !Check(kind("https://cdn.example/ads/invoke.js") == Kind::None,
++                   "a script is not a stream") ||
++            !Check(kind("https://cdn.example/track/cmf/generic?ttd_pid=x") == Kind::None,
++                   "a tracker is not a stream") ||
++            !Check(kind("https://open77.invalid/op77/media/stream?u=https%3A%2F%2Fcdn.example%2Ffilm.mp4") ==
++                         Kind::None,
++                   "this host's own route is never recorded as the stream it asks about") ||
++            !Check(kind("https://cdn.example/art/poster.jpg") == Kind::None,
++                   "an image is not a stream")) return 1;
++
++        // The ranking, which is the whole policy: a better kind replaces a worse
++        // one and an equal kind never replaces what is already held, so the
++        // first manifest -- the film -- survives the segments that follow it.
++        if (!Check(Sniff::Supersedes(Kind::Manifest, Kind::None) &&
++                       Sniff::Supersedes(Kind::Progressive, Kind::Segment) &&
++                       Sniff::Supersedes(Kind::Manifest, Kind::Progressive),
++                   "a better candidate must replace a worse one") ||
++            !Check(!Sniff::Supersedes(Kind::Manifest, Kind::Manifest) &&
++                       !Sniff::Supersedes(Kind::Segment, Kind::Manifest),
++                   "the first candidate of a kind must be kept, not overwritten") ||
++            !Check(!Sniff::Supersedes(Kind::None, Kind::None),
++                   "nothing never supersedes anything")) return 1;
 +    }
 +
      std::cout << "Open77 WebCore tests passed\n";

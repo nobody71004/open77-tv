@@ -13,6 +13,9 @@ open77_media/          the resource -- this is the television
   open77.lua             manifest: permissions, the page, what ships to clients
   server/main.lua        authority: which screen exists, on which prop, showing what;
                          `media.move` / `media.rotate` nudge and turn a set
+  server/config.lua      the operator's ad-blocklist seed, and where their edits are kept
+  server/adblock.lua     the rule grammar a server pushes; the browser host validates
+                         every rule again before it enforces it
   client/main.lua        binds a surface to a prop, keeps the quad on it, decides
                          which sets are worth materialising, releases pages on exit
   shared/records.lua     the catalogue: 38 records -- the game's real televisions,
@@ -23,8 +26,8 @@ open77_media/          the resource -- this is the television
   web/tv.html|css|js     the page one television shows: YouTube's own player, a
                          framed third-party site, or the host's decode route for a
                          link this CEF build cannot play itself
-  tests/                 three suites: records (1572 assertions), placement (114),
-                         client (41)
+  tests/                 four suites: records (1572 assertions), placement (114),
+                         adblock (351), client (58)
 native/
   MediaScreens.hpp|cpp   the host-side module: bind a surface to a prop, project
                          its screen quad, publish overlay items, line-of-sight test
@@ -42,7 +45,8 @@ native/
   FrameResolver.hpp|cpp  the WinHTTP probe that answers that: response headers,
                          embed discovery, and the best page to frame
   AdBlock.hpp            the popup/navigation/request policy -- a window with no
-                         click behind it is advertising; a click is followed
+                         click behind it is advertising, and a click is followed
+                         only when the window stays inside the site that asked
   ScreenInput.hpp        which world screen holds the pointer and keyboard, and
                          where on that screen the page pointer has landed
   AudioSink.hpp|cpp      browser audio into the game's mixer
@@ -61,7 +65,7 @@ tests/
                                 probe, pinned across the three languages it spans
   fixtures/                     a snapshot of open77_admin's prop-model aliases
 tools/
-  run-suite.py           run the three Lua suites with no monorepo
+  run-suite.py           run the four Lua suites with no monorepo
   extract-tv-patches.py  regenerate patches/ from a checkout
 ```
 

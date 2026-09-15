@@ -2,7 +2,7 @@
 # tools/extract-tv-patches.py. Apply by hand: this is not a patch
 # series, and the surrounding file has other unreleased work in it.
 diff --git a/scripting/src/ResourceHost.cpp b/scripting/src/ResourceHost.cpp
-index 7707d62f..4bef2f5e 100644
+index 7707d62f..6dc15111 100644
 --- a/scripting/src/ResourceHost.cpp
 +++ b/scripting/src/ResourceHost.cpp
 @@ -7847,12 +7847,297 @@ public:
@@ -303,7 +303,7 @@ index 7707d62f..4bef2f5e 100644
      // anchor grants is exactly the capability `Open77.camera.project` already
      // grants ungated -- turning a world point into a screen point -- with the
      // sampling moved off the Lua tick. What an anchor *can* touch is bounded by
-@@ -10857,12 +11179,30 @@ public:
+@@ -10857,12 +11321,30 @@ public:
          if (layer == "system") return 3;
          if (layer == "debug") return 4;
          luaL_error(aState, "invalid WebUI layer");
@@ -334,7 +334,7 @@ index 7707d62f..4bef2f5e 100644
          auto& instance = *context->instance;
          const bool options = lua_istable(aState, 1);
          WebUiCreateRequest request;
-@@ -10870,12 +11210,13 @@ public:
+@@ -10870,12 +11352,13 @@ public:
          if (options)
          {
              lua_getfield(aState, 1, "entry");
@@ -348,7 +348,7 @@ index 7707d62f..4bef2f5e 100644
              const auto fps = luaL_optinteger(aState, -1, 30);
              lua_pop(aState, 1);
              if (fps <= 0)
-@@ -10884,12 +11225,13 @@ public:
+@@ -10884,12 +11367,13 @@ public:
              }
              request.framesPerSecond = static_cast<uint16_t>(std::min<lua_Integer>(fps, 60));
              lua_getfield(aState, 1, "zIndex"); request.zIndex = static_cast<int32_t>(luaL_optinteger(aState, -1, 0)); lua_pop(aState, 1);
@@ -362,7 +362,158 @@ index 7707d62f..4bef2f5e 100644
                  bool validBounds = lua_istable(aState, -1);
                  std::array<float, 4> bounds{};
                  constexpr std::array<const char*, 4> names{"x", "y", "width", "height"};
-@@ -12607,12 +12954,20 @@ public:
+@@ -10948,12 +11432,133 @@ public:
+             return 1;
+         }
+         PushWebPage(aState, instance.defaultWebPage, instance.generation);
+         return 1;
+     }
+ 
++    /// Reads a `{ "rule", ... }` array out of a table field, with the bound the
++    /// host's own message encoding uses. A rule that is not a string is a
++    /// refusal rather than a skip: an operator's list is small enough that a
++    /// silently dropped entry is a rule they believe is in force.
++    static bool ReadRuleArray(lua_State* const aState, const int aTable, const char* const aField,
++                              std::vector<std::string>& aOut, std::string& aError)
++    {
++        aOut.clear();
++        lua_getfield(aState, aTable, aField);
++        if (lua_isnil(aState, -1)) { lua_pop(aState, 1); return true; }
++        if (!lua_istable(aState, -1))
++        {
++            lua_pop(aState, 1);
++            aError = std::string("invalid_") + aField;
++            return false;
++        }
++        const auto count = lua_rawlen(aState, -1);
++        if (count > 512)
++        {
++            lua_pop(aState, 1);
++            aError = std::string(aField) + "_out_of_range";
++            return false;
++        }
++        aOut.reserve(count);
++        for (size_t index = 1; index <= count; ++index)
++        {
++            lua_rawgeti(aState, -1, static_cast<lua_Integer>(index));
++            const bool isString = lua_type(aState, -1) == LUA_TSTRING;
++            const std::string rule = isString ? std::string(lua_tostring(aState, -1)) : std::string();
++            lua_pop(aState, 1);
++            if (!isString)
++            {
++                lua_pop(aState, 1);
++                aError = std::string(aField) + "_must_be_strings";
++                return false;
++            }
++            aOut.push_back(rule);
++        }
++        lua_pop(aState, 1);
++        return true;
++    }
++
++    /// `Open77.webui.blocklist({ hosts = {...}, tokens = {...}, revision = n,
++    ///                            source = "..." })`
++    ///
++    /// The operator's ad-blocklist layer, on its way to the process that can
++    /// enforce it. Gated by `webui.policy` rather than folded into an existing
++    /// group: this is the only verb in the host that widens what a client's
++    /// browser refuses, and a resource that may draw a page is not automatically
++    /// a resource that may change what a page can reach. The layer only ever
++    /// ADDS to the compiled list -- the direction is enforced in the host, not
++    /// asked for here.
++    static int LuaWebUiBlocklist(lua_State* const aState)
++    {
++        auto* const context = GetContext(aState);
++        auto& instance = *context->instance;
++        if (!HasPermission(instance, "webui.policy"))
++            return PropFailure(aState, "permission_denied:webui.policy");
++        if (!context->host->config.webUi.applyBlocklist)
++            return PropFailure(aState, "webui_policy_backend_unavailable");
++        if (!lua_istable(aState, 1)) return PropFailure(aState, "invalid_blocklist");
++
++        std::vector<std::string> hosts;
++        std::vector<std::string> tokens;
++        std::string error;
++        if (!ReadRuleArray(aState, 1, "hosts", hosts, error) ||
++            !ReadRuleArray(aState, 1, "tokens", tokens, error)) return PropFailure(aState, error);
++
++        lua_getfield(aState, 1, "revision");
++        const auto revision = lua_isnumber(aState, -1) ? static_cast<uint64_t>(lua_tonumber(aState, -1)) : 0;
++        lua_pop(aState, 1);
++        std::string source;
++        lua_getfield(aState, 1, "source");
++        if (lua_type(aState, -1) == LUA_TSTRING) source = lua_tostring(aState, -1);
++        lua_pop(aState, 1);
++
++        if (!context->host->config.webUi.applyBlocklist(std::move(hosts), std::move(tokens),
++                                                        revision, std::move(source), error))
++            return PropFailure(aState, error.empty() ? "blocklist_not_applied" : error);
++        lua_pushboolean(aState, 1);
++        return 1;
++    }
++
++    /// `Open77.webui.blocklistState()` -- the host's receipt, or nil and why not.
++    ///
++    /// A separate verb from the push because "sent" and "in force" are different
++    /// facts: a host older than the policy message accepts nothing and there is
++    /// no receipt to describe, and a server that cannot tell that case apart from
++    /// a working one will conclude its rules are live while pages keep showing
++    /// advertising.
++    static int LuaWebUiBlocklistState(lua_State* const aState)
++    {
++        auto* const context = GetContext(aState);
++        if (!HasPermission(*context->instance, "webui.policy"))
++            return PropFailure(aState, "permission_denied:webui.policy");
++        if (!context->host->config.webUi.blocklistState)
++            return PropFailure(aState, "webui_policy_backend_unavailable");
++        WebUiBlocklistState state;
++        std::string error;
++        if (!context->host->config.webUi.blocklistState(state, error))
++            return PropFailure(aState, error.empty() ? "no_blocklist_receipt" : error);
++
++        lua_newtable(aState);
++        lua_pushnumber(aState, static_cast<lua_Number>(state.revision));
++        lua_setfield(aState, -2, "revision");
++        lua_pushinteger(aState, static_cast<lua_Integer>(state.compiledRules));
++        lua_setfield(aState, -2, "compiledRules");
++        lua_pushinteger(aState, static_cast<lua_Integer>(state.hostRules));
++        lua_setfield(aState, -2, "hostRules");
++        lua_pushinteger(aState, static_cast<lua_Integer>(state.tokenRules));
++        lua_setfield(aState, -2, "tokenRules");
++        lua_newtable(aState);
++        for (size_t index = 0; index < state.refused.size(); ++index)
++        {
++            lua_pushlstring(aState, state.refused[index].data(), state.refused[index].size());
++            lua_rawseti(aState, -2, static_cast<lua_Integer>(index + 1));
++        }
++        lua_setfield(aState, -2, "refused");
++        return 1;
++    }
++
+     static int LuaWebPageId(lua_State* const aState)
+     {
+         lua_pushinteger(aState, static_cast<lua_Integer>(CheckWebPage(aState)->surface));
+         return 1;
+     }
+ 
+@@ -12141,12 +12746,16 @@ public:
+         SetFunction(state, "call", &LuaCallExport);
+         lua_setfield(state, -2, "exports");
+ 
+         lua_newtable(state); // Open77.webui
+         SetFunction(state, "create", &LuaWebUiCreate);
+         SetFunction(state, "default", &LuaWebUiDefault);
++        // The operator's ad-blocklist layer (permission webui.policy), and the
++        // receipt that says whether the browser host actually took it.
++        SetFunction(state, "blocklist", &LuaWebUiBlocklist);
++        SetFunction(state, "blocklistState", &LuaWebUiBlocklistState);
+         lua_pushvalue(state, -1); lua_setglobal(state, "WebUI");
+         lua_setfield(state, -2, "webui");
+ 
+         lua_newtable(state); // Open77.animations
+         for (const char* method : {"list", "get", "request", "sequence", "cancel", "state"})
+         {
+@@ -12607,12 +13226,20 @@ public:
          SetFunction(state, "nearest", &LuaPropNearest);
          SetFunction(state, "project", &LuaPropProject);
          SetFunction(state, "unproject", &LuaPropUnproject);
@@ -383,7 +534,7 @@ index 7707d62f..4bef2f5e 100644
          SetFunction(state, "remove", &LuaAnchorRemove);
          SetFunction(state, "clear", &LuaAnchorClear);
          SetFunction(state, "list", &LuaAnchorList);
-@@ -12993,12 +13348,19 @@ public:
+@@ -12993,12 +13620,19 @@ public:
          // generation, and the only thing that ever collected the strays was
          // `Api::Props::ReleaseAll` at DLL unload. Stopping a resource must undo
          // everything that resource made; the six neighbours here are what that

@@ -93,7 +93,104 @@ local function pageState(entry)
         volume = entry.spec.volume,
         muted = entry.spec.muted,
         paused = entry.spec.paused,
+        border = entry.spec.border,
+        curtain = entry.spec.curtain or "open",
     }
+end
+
+-- -----------------------------------------------------------------------------
+-- The reveal: the race start's own effect, at this panel
+-- -----------------------------------------------------------------------------
+-- `race.firework.burst` with two `race.flare.smoke` columns is what the freeroam
+-- race resource plays on the start line -- `freeroam/race/shared/config.lua`
+-- `presentation.startVfx` -- and the two sounds are the race's own countdown
+-- beats (`DeathmatchConfig.sfx.tick` / `.start`, `sq024_race_countdown` and
+-- `sq024_race_start`). A film reveal wants exactly that and nothing new, so this
+-- reuses it rather than drawing a second celebration.
+--
+-- The CLOCK is the page's. It draws the curtain and counts 3-2-1 on the panel and
+-- reports each beat; this half plays the game-side effect for the beat it hears.
+-- The alternative -- firing the effects from the snapshot transition -- would put
+-- the explosions on a different clock from the numbers, and would leave a client
+-- that joined mid-countdown watching a silent reveal.
+local REVEAL_VFX = {
+    -- lateral/forward/z are QUAD-relative, not metres from the prop origin: the
+    -- panel's own rectangle is what the effect has to line up with, and the
+    -- rectangle is in the prop's local frame (see `panelStage`).
+    { effect = "race.flare.smoke", lateral = -0.85, forward = 2.0, z = -0.45, duration = 8.0 },
+    { effect = "race.flare.smoke", lateral = 0.85, forward = 2.0, z = -0.45, duration = 8.0 },
+    { effect = "race.firework.burst", lateral = 0.0, forward = 6.0, z = 0.15, duration = 7.5 },
+}
+
+---Where the panel is, in world space, and which way it looks.
+---
+---The prop's origin is not the panel: the record's quad carries its own offset,
+---and for the cinema records that offset is a hundred feet of panel above the
+---origin. So the effects are placed against the rectangle -- its centre, its
+---width and its heading -- rather than against the prop.
+---@return table|nil
+local function panelStage(entry)
+    local spec = entry.spec or {}
+    local position = spec.position
+    local quad = spec.quad
+    if type(position) ~= "table" or type(quad) ~= "table" then return nil end
+    local offset = type(quad.offset) == "table" and quad.offset or {}
+    return {
+        position = position,
+        yaw = math.rad(tonumber(spec.yaw) or 0.0),
+        -- The quad's own offset in the prop's frame: { right, forward, up }.
+        forward = tonumber(offset[2]) or 0.0,
+        up = tonumber(offset[3]) or 0.0,
+        width = tonumber(quad.width) or 0.0,
+        height = tonumber(quad.height) or 0.0,
+    }
+end
+
+---One effect's transform, in the shape `Open77.vfx.play` reads. The arithmetic
+---is the race resource's own (`startTransform`), with the panel's rectangle in
+---place of a course's start line.
+local function placementTransform(stage, placement)
+    if stage == nil then return nil end
+    local halfWidth = stage.width * 0.5
+    local forwardX, forwardY = -math.sin(stage.yaw), math.cos(stage.yaw)
+    local rightX, rightY = math.cos(stage.yaw), math.sin(stage.yaw)
+    local forward = stage.forward + (tonumber(placement.forward) or 0.0)
+    local lateral = (tonumber(placement.lateral) or 0.0) * halfWidth
+    local halfYaw = stage.yaw * 0.5
+    return {
+        position = {
+            x = stage.position.x + forwardX * forward + rightX * lateral,
+            y = stage.position.y + forwardY * forward + rightY * lateral,
+            z = stage.position.z + stage.up + (tonumber(placement.z) or 0.0) * stage.height,
+        },
+        orientation = { x = 0.0, y = 0.0, z = math.sin(halfYaw), w = math.cos(halfYaw) },
+        duration = tonumber(placement.duration) or 5.0,
+        ignoreTimeDilation = true,
+    }
+end
+
+local function playRevealCue(event)
+    if type(Open77.sfx) ~= "table" or type(Open77.sfx.play) ~= "function" then return end
+    local handle, reason = Open77.sfx.play(event, { unique = true, duration = 3.0 })
+    if handle == nil then
+        print(string.format("[open77_media] reveal sound %s failed: %s", event, tostring(reason)))
+    end
+end
+
+local function playRevealVfx(entry)
+    if type(Open77.vfx) ~= "table" or type(Open77.vfx.play) ~= "function" then return end
+    local stage = panelStage(entry)
+    if stage == nil then return end
+    for _, placement in ipairs(REVEAL_VFX) do
+        local transform = placementTransform(stage, placement)
+        if transform ~= nil then
+            local handle, reason = Open77.vfx.play(placement.effect, transform)
+            if handle == nil then
+                print(string.format("[open77_media] reveal effect %s failed: %s",
+                    placement.effect, tostring(reason)))
+            end
+        end
+    end
 end
 
 ---The surface a screen rectangle maps onto, as something comparable.
@@ -263,6 +360,24 @@ local function materialisePage(entry)
         print(string.format("[open77_media] television %s: %s%s",
             tostring(entry.spec.id), tostring(payload.status),
             payload.detail ~= nil and (" (" .. tostring(payload.detail) .. ")") or ""))
+        -- The page's reveal beats, played in the world. The countdown is the
+        -- page's clock and the sound is the race's own; the colours go up on the
+        -- beat the page calls a start.
+        if payload.status == "reveal_tick" then
+            playRevealCue("sq024_race_countdown")
+        elseif payload.status == "reveal_start" then
+            playRevealCue("sq024_race_start")
+            playRevealVfx(entry)
+        end
+    end)
+
+    -- The page's curtain button. Same path as its URL bar and its volume keys:
+    -- the request goes to the server, so the curtain every client sees is the one
+    -- the server holds.
+    page:on("media:curtain", function(payload)
+        if type(payload) ~= "table" or type(payload.curtain) ~= "string" then return end
+        TriggerServerEvent("open77:media:control", "curtain",
+            { id = entry.spec.id, value = payload.curtain })
     end)
 
     -- The page's URL bar, when someone is driving the television on foot. It goes
@@ -364,6 +479,93 @@ local function applySnapshot(snapshot)
     state.version = state.version + 1
     TriggerEvent("open77:media:changed", state.version)
 end
+
+-- =============================================================================
+-- AD BLOCKLIST
+-- =============================================================================
+-- The server's operator layer, on its way to the process that enforces it.
+--
+-- This half does three things and nothing else: hand the rules to the browser
+-- host, wait for that host to say what it did with them, and report it back. The
+-- waiting is the part worth explaining.
+--
+-- The push and its receipt are on different clocks -- Lua calls into the plugin,
+-- the plugin puts a message on a pipe, a different process answers -- so reading
+-- the receipt immediately after the push reports the PREVIOUS policy about half
+-- the time. That is worse than reporting nothing: a server would see revision 6
+-- confirmed when it had just sent revision 7, and conclude a rule was in force
+-- when it had not been applied yet. So the receipt is polled, bounded, and only
+-- reported once the revision matches or the deadline passes.
+local adBlockPending = nil   -- { revision = n, deadline = seconds }
+
+---Sends what the host last said about the blocklist, if it has said anything.
+---
+---`applied = false` is a real answer and is sent as one: a client whose host
+---never took the message -- an older host, a host that failed to start -- reports
+---it instead of leaving the server to conclude its rules are live.
+---Reports what the host has said about `revision`, or why nothing can be said.
+---
+---`applied` is true only when the host's own receipt is FOR THIS REVISION or a
+---newer one. Anything else -- no receipt at all, a receipt for an older list, a
+---plugin without the native -- is reported as not applied, with the reason, which
+---is the distinction the whole receipt mechanism exists for.
+local function reportBlocklist(revision, detail)
+    local payload = {
+        revision = revision,
+        applied = false,
+        detail = detail or "no_blocklist_receipt",
+    }
+    -- Guarded rather than assumed: a game whose plugin predates this feature has
+    -- no `Open77.webui` at all, and the answer for that client is the same one a
+    -- host that never replies gets -- nobody confirmed what is in force.
+    local state = nil
+    if type(Open77.webui) == "table" and type(Open77.webui.blocklistState) == "function" then
+        state = select(1, Open77.webui.blocklistState())
+    end
+    if state ~= nil then
+        payload.observed = tonumber(state.revision) or 0
+        if payload.observed >= revision then
+            payload.applied = true
+            payload.revision = payload.observed
+            payload.hosts = tonumber(state.hostRules) or 0
+            payload.tokens = tonumber(state.tokenRules) or 0
+            payload.compiled = tonumber(state.compiledRules) or 0
+            payload.refused = state.refused or {}
+        end
+    end
+    TriggerServerEvent("open77:media:adblock:receipt", payload)
+    print(string.format("[open77_media] adblock revision %s %s%s", tostring(payload.revision),
+        payload.applied and "enforced by the host" or "NOT enforced",
+        payload.applied and string.format(" (%d hosts + %d tokens, %d refused)",
+            payload.hosts, payload.tokens, #(payload.refused or {})) or
+            (string.format(": %s%s", tostring(payload.detail),
+                payload.observed ~= nil and string.format(" (host holds revision %d)", payload.observed)
+                or ""))))
+    return payload.applied
+end
+
+RegisterNetEvent("open77:media:adblock", function(payload)
+    if type(payload) ~= "table" then return end
+    if type(Open77.webui) ~= "table" or type(Open77.webui.blocklist) ~= "function" then
+        -- The plugin in this game's directory predates the feature. Said out
+        -- loud, because the alternative is a server whose rules are silently
+        -- not applied and an operator with no reason to suspect it.
+        reportBlocklist(tonumber(payload.revision) or 0, "webui_blocklist_unavailable")
+        return
+    end
+    local ok, reason = Open77.webui.blocklist({
+        hosts = payload.hosts or {},
+        tokens = payload.tokens or {},
+        revision = tonumber(payload.revision) or 0,
+        source = tostring(payload.source or ""),
+    })
+    local revision = tonumber(payload.revision) or 0
+    if not ok then
+        reportBlocklist(revision, tostring(reason or "blocklist_not_applied"))
+        return
+    end
+    adBlockPending = { revision = revision, deadline = 3.0 }
+end)
 
 RegisterNetEvent("open77:media:snapshot", applySnapshot)
 
@@ -606,6 +808,38 @@ AddEventHandler("onClientResourceStart", function(name)
                 print("[open77_media] materialisation failed: " .. tostring(err))
             end
             Wait(1000)
+        end
+    end)
+
+    -- The blocklist receipt, polled while one is outstanding. Cheap by
+    -- construction -- the thread exists only between a push and its answer, and a
+    -- policy is pushed on join and when an operator changes the list, so in a
+    -- normal session this costs a handful of iterations total.
+    CreateThread(function()
+        while true do
+            if adBlockPending ~= nil then
+                local state = nil
+                if Open77.webui ~= nil and type(Open77.webui.blocklistState) == "function" then
+                    state = select(1, Open77.webui.blocklistState())
+                end
+                local observed = nil
+                if state ~= nil then observed = tonumber(state.revision) or -1 end
+                -- `>=` and not `==`: a push superseded by a newer one still has
+                -- to be answered, and what is in force is the revision the host
+                -- names, not the one this thread was waiting on.
+                if observed ~= nil and observed >= adBlockPending.revision then
+                    adBlockPending = nil
+                    reportBlocklist(observed, nil)
+                else
+                    adBlockPending.deadline = adBlockPending.deadline - 0.1
+                    if adBlockPending.deadline <= 0 then
+                        local revision = adBlockPending.revision
+                        adBlockPending = nil
+                        reportBlocklist(revision, "no_blocklist_receipt")
+                    end
+                end
+            end
+            Wait(100)
         end
     end)
 end)

@@ -2,10 +2,10 @@
 # tools/extract-tv-patches.py. Apply by hand: this is not a patch
 # series, and the surrounding file has other unreleased work in it.
 diff --git a/webhost/src/SurfaceClient.cpp b/webhost/src/SurfaceClient.cpp
-index d75b7b15..bdcf2ad1 100644
+index d75b7b15..dad0de8c 100644
 --- a/webhost/src/SurfaceClient.cpp
 +++ b/webhost/src/SurfaceClient.cpp
-@@ -1,22 +1,29 @@
+@@ -1,22 +1,31 @@
  #include "SurfaceClient.hpp"
  
 +#include "FrameResolver.hpp"
@@ -19,6 +19,7 @@ index d75b7b15..bdcf2ad1 100644
 +#include <cstring>
  #include <fstream>
  #include <sstream>
++#include <system_error>
  #include <format>
 +#include <thread>
  
@@ -26,6 +27,7 @@ index d75b7b15..bdcf2ad1 100644
  #include <utility>
  
 +#include <op77/WebUI/AdBlock.hpp>
++#include <op77/WebUI/CookieJar.hpp>
 +#include <op77/WebUI/Decoder.hpp>
 +#include <op77/WebUI/FramePolicy.hpp>
 +
@@ -35,7 +37,7 @@ index d75b7b15..bdcf2ad1 100644
  #include "include/cef_request_context.h"
  #include "include/cef_request_context_handler.h"
  #include "include/cef_stream.h"
-@@ -94,12 +108,111 @@ SurfaceClient::SurfaceClient(std::weak_ptr<HostRuntime> aRuntime, CreateSurfaceP
+@@ -94,12 +117,111 @@ SurfaceClient::SurfaceClient(std::weak_ptr<HostRuntime> aRuntime, CreateSurfaceP
      config.js_query_function = "open77Query";
      config.js_cancel_function = "open77QueryCancel";
      m_router = CefMessageRouterBrowserSide::Create(config);
@@ -147,7 +149,141 @@ index d75b7b15..bdcf2ad1 100644
          m_definition.pixelWidth == 0 || m_definition.pixelHeight == 0 ||
          m_definition.width > kMaximumSurfaceDimension ||
          m_definition.height > kMaximumSurfaceDimension ||
-@@ -1289,26 +1412,111 @@ bool SurfaceClient::OnBeforeBrowse(CefRefPtr<CefBrowser> aBrowser, CefRefPtr<Cef
+@@ -223,12 +345,41 @@ bool SurfaceClient::CreateBrowser()
+     settings.background_color = m_definition.transparent ? CefColorSetARGB(0, 0, 0, 0)
+                                                          : CefColorSetARGB(255, 0, 0, 0);
+     const std::string url = "https://" + m_definition.origin + "/" + m_definition.entry;
+     if (runtime) runtime->Trace("browser_create_url:" + url);
+     CefRequestContextSettings contextSettings;
+     contextSettings.persist_session_cookies = false;
++    // A television keeps its own jar. An empty cache_path selects CEF's global
++    // partition -- the host's own profile -- which is what made every television
++    // in the world share one jar, let two of them overwrite each other's sign-in,
++    // and put signed-in cookies on disk beside the host's own data. The jar is
++    // named for the television and lives under the host's data root, where the
++    // host only ever points CEF at it.
++    m_cookieJar = op77::WebUI::CookieJar::PathFor(
++        runtime ? std::filesystem::path(runtime->DataDirectory()) : std::filesystem::path{},
++        m_definition.resource, m_definition.surface);
++    if (!m_cookieJar.empty())
++    {
++        std::error_code error;
++        std::filesystem::create_directories(m_cookieJar, error);
++        CefString(&contextSettings.cache_path) = m_cookieJar.wstring();
++        if (error && runtime)
++            runtime->Trace("cookie_jar_uncreatable:" + op77::WebUI::CookieJar::NameFor(
++                                                        m_definition.resource,
++                                                        m_definition.surface));
++    }
++    else if (runtime)
++    {
++        // No data root means no jar of its own, and an empty cache_path is CEF's
++        // global partition: the shared, on-disk store this whole arrangement
++        // exists to keep televisions out of. It cannot happen as the game
++        // launches this host (the client always passes `--open77-data`, below
++        // its own plugin cache), so the one thing left to get wrong is getting
++        // it wrong quietly.
++        runtime->Trace("cookie_jar_missing_data_root:sharing_the_host_profile");
++    }
+     m_requestContext = CefRequestContext::CreateContext(contextSettings, nullptr);
+     return m_requestContext && CefBrowserHost::CreateBrowser(window, this, url, settings, nullptr, m_requestContext);
+ }
+ 
+ void SurfaceClient::Close()
+ {
+@@ -383,12 +535,39 @@ void SurfaceClient::Send(const CharacterPayload& aPayload)
+     event.character = static_cast<char16_t>(aPayload.codepoint);
+     event.unmodified_character = event.character;
+     event.modifiers = aPayload.modifiers;
+     m_browser->GetHost()->SendKeyEvent(event);
+ }
+ 
++bool SurfaceClient::FollowInFrame(const CefRefPtr<CefFrame>& aFrame, const std::string& aUrl)
++{
++    // A followed window is navigated by the frame's OWN page, never by this
++    // process, and that is the whole of this function.
++    //
++    // `CefFrame::LoadURL` builds a `CefRequest` and hands it to `LoadRequest`,
++    // whose own documentation in `cef_frame.h` reads: "This method will fail with
++    // 'bad IPC message' reason INVALID_INITIATOR_ORIGIN (213) unless you first
++    // navigate to the request origin using some other mechanism." A followed
++    // popup is on a different origin from the frame that asked for it by
++    // definition -- that is what the frame just said -- so the browser answers
++    // that navigation by terminating the renderer, and Chromium paints its crash
++    // card inside the frame: a grey box with a sad face, which is what a player
++    // reported as "a square down face" whenever they pressed play on a framed
++    // site. Measured in their own session trace: five `popup:follow` decisions
++    // and five renderer terminations, one-for-one, and two and two in the next.
++    //
++    // `location.assign` from the frame's own document is the same trip with an
++    // initiator origin that exists -- the frame's own -- so nothing is rejected
++    // for having none. It is not a bypass: a renderer-initiated navigation still
++    // passes through `OnBeforeBrowse`, which is where the blocklist and the page
++    // policy keep their veto over where a window may lead.
++    if (!aFrame || aUrl.empty()) return false;
++    aFrame->ExecuteJavaScript("location.assign(" + JsonQuote(aUrl) + ")", aFrame->GetURL(), 0);
++    return true;
++}
++
+ void SurfaceClient::SendToJavaScript(const WebEventPayload& aPayload)
+ {
+     if (!m_browser || aPayload.generation != m_definition.generation) return;
+     const auto parsed = CefParseJSON(aPayload.json, JSON_PARSER_RFC);
+     const std::string payload = parsed ? aPayload.json : "null";
+     const std::string script = "window.Open77&&window.Open77.__dispatch(" + JsonQuote(aPayload.name) + "," + payload + ");";
+@@ -1244,13 +1441,28 @@ void SurfaceClient::OnBeforeClose(CefRefPtr<CefBrowser> aBrowser)
+     CefRefPtr<SurfaceClient> keepAlive(this);
+     m_router->OnBeforeClose(aBrowser);
+     m_router->RemoveHandler(this);
+     for (auto& [_, pending] : m_pendingInvokes) pending.callback->Failure(-1, "surface_closed");
+     m_pendingInvokes.clear();
+     m_browser = nullptr;
++    // The jar goes with the television. A surface that closes must not leave a
++    // signed-in cookie store behind for the next surface to reuse the id.
++    m_requestContext = nullptr;
++    op77::WebUI::CookieJar::Remove(m_cookieJar);
++    m_cookieJar.clear();
+     ResetGpuTransport();
++    // The sink owns a device and a thread: releasing it here means a closed
++    // surface stops making sound in the same frame its picture disappears.
++    if (m_audio != nullptr)
++    {
++        if (const auto runtime = m_runtime.lock())
++            runtime->Trace("surface_audio_final:" + std::to_string(m_definition.surface) + ":" +
++                           m_audio->Describe());
++        m_audio->Close();
++        m_audio.reset();
++    }
+     if (const auto runtime = m_runtime.lock())
+     {
+         runtime->Notify(MessageType::SurfaceClosed, {m_definition.surface, m_definition.generation, {}});
+         runtime->SurfaceClosed(m_definition.surface);
+     }
+ }
+@@ -1277,38 +1495,178 @@ bool SurfaceClient::OnConsoleMessage(CefRefPtr<CefBrowser>, const cef_log_severi
+     if (const auto runtime = m_runtime.lock())
+         runtime->Trace("browser_console:" + aSource.ToString() + ":" + std::to_string(aLine) + ":" +
+                        aMessage.ToString());
+     return false;
+ }
+ 
++std::shared_ptr<const op77::WebUI::Ads::Blocklist> SurfaceClient::Blocklist() const
++{
++    if (const auto runtime = m_runtime.lock()) return runtime->Blocklist();
++    // A surface outlives its runtime only for a moment, inside Close(). Answering
++    // with the compiled list is the honest thing there -- the operator's layer is
++    // per-session, and the session is what just went away -- and it is the
++    // alternative to dereferencing a runtime that is no longer there.
++    static const auto compiledOnly = std::make_shared<const op77::WebUI::Ads::Blocklist>();
++    return compiledOnly;
++}
++
+ bool SurfaceClient::OnBeforeBrowse(CefRefPtr<CefBrowser> aBrowser, CefRefPtr<CefFrame> aFrame,
+                                    CefRefPtr<CefRequest> aRequest, bool, bool)
+ {
+     const auto url = aRequest->GetURL().ToString();
+     const bool sameOrigin = SameOrigin(url);
+     if (const auto runtime = m_runtime.lock())
          runtime->Trace("browser_before_browse:same=" + std::string(sameOrigin ? "yes:" : "no:") + url);
      if (sameOrigin)
      {
@@ -160,7 +296,7 @@ index d75b7b15..bdcf2ad1 100644
 +    // redirects the frame itself needs nothing asked and no click, and the page
 +    // behind the advertisement is then simply gone. Menus are untouched -- a
 +    // strict surface cannot reach a remote origin in the first place.
-+    if (m_definition.pagePolicy == WebPagePolicy::Media && op77::WebUI::Ads::IsBlocked(url))
++    if (m_definition.pagePolicy == WebPagePolicy::Media && Blocklist()->IsBlocked(url))
 +    {
 +        if (const auto runtime = m_runtime.lock())
 +            runtime->Trace("adblock:navigation " + Shorten(url));
@@ -187,28 +323,39 @@ index d75b7b15..bdcf2ad1 100644
 +    // to open them in.
 +    if (m_definition.pagePolicy != WebPagePolicy::Media) return true;
 +    const std::string url = aTargetUrl.ToString();
-+    if (op77::WebUI::Ads::DecidePopup(url, aUserGesture) != op77::WebUI::Ads::PopupAction::Follow)
++    const std::string askerUrl = aFrame ? aFrame->GetURL().ToString() : std::string();
++    if (op77::WebUI::Ads::DecidePopup(
++            op77::WebUI::Ads::PopupRequest{url, askerUrl, aFrame && SameOrigin(askerUrl), aUserGesture},
++            *Blocklist()) != op77::WebUI::Ads::PopupAction::Follow)
 +        return true;
 +    if (const auto runtime = m_runtime.lock()) runtime->Trace("popup:follow-tab " + Shorten(url));
-+    if (aFrame) aFrame->LoadURL(url);
++    FollowInFrame(aFrame, url);
      return true;
  }
  
 -bool SurfaceClient::OnOpenURLFromTab(CefRefPtr<CefBrowser>, CefRefPtr<CefFrame>, const CefString&,
 -                                     cef_window_open_disposition_t, bool)
+-{
 +bool SurfaceClient::OnBeforePopup(CefRefPtr<CefBrowser>, CefRefPtr<CefFrame> aFrame, const int,
 +                                  const CefString& aTargetUrl, const CefString&,
 +                                  const cef_window_open_disposition_t, const bool aUserGesture,
 +                                  const CefPopupFeatures&, CefWindowInfo&, CefRefPtr<CefClient>&,
 +                                  CefBrowserSettings&, CefRefPtr<CefDictionaryValue>&, bool*)
- {
++{
 +    // Menus are left exactly as they were: a strict surface frames nothing and
 +    // loads no remote script, so a window from one is a case this work did not
 +    // set out to change.
 +    if (m_definition.pagePolicy != WebPagePolicy::Media) return false;
 +
 +    const std::string url = aTargetUrl.ToString();
-+    const auto action = op77::WebUI::Ads::DecidePopup(url, aUserGesture);
++    const auto blocklist = Blocklist();
++    // The frame that asked, and whether it is a page THIS process served. The
++    // second one is the host's own fact to supply: `SameOrigin` is what knows
++    // which origins are ours, and `Ads` is a pure function over strings that
++    // cannot tell a surface's own document from somebody else's site.
++    const std::string askerUrl = aFrame ? aFrame->GetURL().ToString() : std::string();
++    const op77::WebUI::Ads::PopupRequest request{url, askerUrl, aFrame && SameOrigin(askerUrl), aUserGesture};
++    const auto action = op77::WebUI::Ads::DecidePopup(request, *blocklist);
 +    if (action == op77::WebUI::Ads::PopupAction::Follow)
 +    {
 +        // The one case where a window is refused and the URL is not: a player
@@ -216,13 +363,24 @@ index d75b7b15..bdcf2ad1 100644
 +        // frame that asked for it. The window itself is still never created --
 +        // there is no window manager here, and a popup CEF draws is an overlay
 +        // with no title bar to close it by.
-+        if (const auto runtime = m_runtime.lock()) runtime->Trace("popup:follow " + Shorten(url));
-+        if (aFrame) aFrame->LoadURL(url);
++        // The asking frame is named, because "a window was followed" says nothing
++        // about WHICH window: a same-site player window and an advertisement that
++        // ate the click are the same line without it, and the difference decides
++        // whether the screen keeps showing the film.
++        if (const auto runtime = m_runtime.lock())
++            runtime->Trace("popup:follow " + Shorten(url) + " asker=" + Shorten(askerUrl) +
++                (request.askerIsHostPage ? " (host page)" : ""));
++        FollowInFrame(aFrame, url);
 +        return true;
 +    }
++    // Which rule refused it, by name. A drop is the policy working, so the line
++    // exists to make it auditable rather than to report a fault -- and the two
++    // rules a reader will want to tell apart (an advertisement at the door, and
++    // an advertisement that ate a real click) are otherwise the same line.
 +    if (const auto runtime = m_runtime.lock())
-+        runtime->Trace("popup:drop gesture=" + std::string(aUserGesture ? "yes" : "no") + " " +
-+            Shorten(url) + (op77::WebUI::Ads::IsBlocked(url) ? " (blocked host)" : ""));
++        runtime->Trace("popup:drop reason=" + std::string(op77::WebUI::Ads::RefusalReason(request)) +
++            " gesture=" + std::string(aUserGesture ? "yes" : "no") + " " + Shorten(url) +
++            (blocklist->IsBlocked(url) ? " (blocked host)" : ""));
 +    ++m_blockedPopups;
      return true;
  }
@@ -237,11 +395,34 @@ index d75b7b15..bdcf2ad1 100644
 +    // arrives to ask for anything.
 +    if (m_definition.pagePolicy != WebPagePolicy::Media) return RV_CONTINUE;
 +    const std::string url = aRequest->GetURL().ToString();
-+    if (!op77::WebUI::Ads::IsBlocked(url)) return RV_CONTINUE;
++    // Every request a framed page makes is seen here, which is also the only
++    // place the site's own player ever says where its film lives. Recorded
++    // before the blocklist decides, because the two are unrelated questions.
++    RecordMediaRequest(url);
++    if (!Blocklist()->IsBlocked(url)) return RV_CONTINUE;
 +    if (const auto runtime = m_runtime.lock())
 +        runtime->Trace("adblock:request " + Shorten(url));
 +    ++m_blockedRequests;
 +    return RV_CANCEL;
++}
++
++void SurfaceClient::RecordMediaRequest(const std::string& aUrl)
++{
++    // This host's own routes carry somebody else's URL as a parameter, so a
++    // `/op77/media/stream?u=...` would otherwise be recorded as the stream it is
++    // asking the decoder for. Same-origin is the whole test: a television's page
++    // is served from this origin and a framed site never is.
++    if (SameOrigin(aUrl)) return;
++    const auto kind = op77::WebUI::Sniff::Classify(aUrl);
++    if (kind == op77::WebUI::Sniff::Kind::None) return;
++    {
++        const std::scoped_lock lock(m_mediaMutex);
++        if (!op77::WebUI::Sniff::Supersedes(kind, m_mediaKind)) return;
++        m_mediaKind = kind;
++        m_mediaStream = aUrl;
++    }
++    if (const auto runtime = m_runtime.lock())
++        runtime->Trace("media_found:" + std::string(op77::WebUI::Sniff::Describe(kind)) + " " + Shorten(aUrl));
 +}
 +
  CefRefPtr<CefResourceRequestHandler> SurfaceClient::GetResourceRequestHandler(
@@ -262,7 +443,7 @@ index d75b7b15..bdcf2ad1 100644
  void SurfaceClient::OnRenderProcessTerminated(CefRefPtr<CefBrowser> aBrowser, TerminationStatus,
                                                 const int aErrorCode, const CefString& aErrorString)
  {
-@@ -1318,20 +1526,34 @@ void SurfaceClient::OnRenderProcessTerminated(CefRefPtr<CefBrowser> aBrowser, Te
+@@ -1318,20 +1676,35 @@ void SurfaceClient::OnRenderProcessTerminated(CefRefPtr<CefBrowser> aBrowser, Te
              std::to_string(aErrorCode) + ":" + aErrorString.ToString()});
  }
  
@@ -274,6 +455,7 @@ index d75b7b15..bdcf2ad1 100644
 +    // a question about a page BEFORE that page is framed; the transcode routes
 +    // are asked after a link has been judged unplayable as it is.
 +    if (auto route = MaybeServeFrameRoute(aRequest)) return route;
++    if (auto route = MaybeServeFoundRoute(aRequest)) return route;
 +    if (auto route = MaybeServeTranscodeRoute(aRequest)) return route;
      std::filesystem::path path;
      if (!ResolveFile(aRequest->GetURL(), path)) return nullptr;
@@ -299,7 +481,7 @@ index d75b7b15..bdcf2ad1 100644
      return new CefStreamResourceHandler(200, "OK", MimeType(path), std::move(headers), stream);
  }
  
-@@ -1439,12 +1661,352 @@ std::string SurfaceClient::MimeType(const std::filesystem::path& aPath)
+@@ -1439,12 +1812,401 @@ std::string SurfaceClient::MimeType(const std::filesystem::path& aPath)
      if (extension == ".woff2") return "font/woff2";
      if (extension == ".mp3") return "audio/mpeg";
      if (extension == ".ogg") return "audio/ogg";
@@ -480,8 +662,15 @@ index d75b7b15..bdcf2ad1 100644
 +        m_pending = aCallback;
 +        auto self = CefRefPtr<FrameResolveHandler>(this);
 +        const auto runtime = m_runtime.lock();
-+        std::thread([self, runtime]() {
-+            const auto answer = op77::WebHost::FrameResolver::Probe(self->m_target, self->m_origin);
++        // The blocklist is captured rather than read on the worker: the probe
++        // must not touch the runtime's state from another thread, and a snapshot
++        // is exactly what it needs -- the list this request was decided with.
++        const auto blocklist = runtime ? runtime->Blocklist()
++                                       : std::make_shared<const op77::WebUI::Ads::Blocklist>();
++        std::thread([self, runtime, blocklist]() {
++            const auto answer = op77::WebHost::FrameResolver::Probe(self->m_target, self->m_origin,
++                op77::WebHost::FrameResolver::kDocumentTimeoutMilliseconds,
++                op77::WebHost::FrameResolver::kCandidateTimeoutMilliseconds, blocklist.get());
 +            self->m_body = op77::WebHost::FrameResolver::ToJson(answer);
 +            if (runtime)
 +                runtime->Trace("web_frame:url=" + Shorten(self->m_target, 120) +
@@ -597,8 +786,10 @@ index d75b7b15..bdcf2ad1 100644
 +            probe = op77::WebUI::Transcode::ParseProbeCsv(result.output);
 +            verdict = op77::WebUI::Transcode::Judge(probe);
 +        }
++        // The source is part of the line because a probe that failed and a probe
++        // that succeeded on the wrong URL read identically without it.
 +        runtime->Trace("media_probe: " + op77::WebUI::Transcode::Describe(probe) + " -> " +
-+            op77::WebUI::Transcode::Describe(verdict));
++            op77::WebUI::Transcode::Describe(verdict) + " src=" + Shorten(query.source));
 +        return TextAnswer(op77::WebUI::Transcode::BuildProbeJson(probe, verdict, detail),
 +                          "application/json");
 +    }
@@ -620,6 +811,46 @@ index d75b7b15..bdcf2ad1 100644
 +    headers.emplace("Access-Control-Allow-Origin", "*");
 +    return new CefStreamResourceHandler(200, "OK", "video/webm", std::move(headers),
 +        CefStreamReader::CreateForHandler(reader));
++}
++
++CefRefPtr<CefResourceHandler> SurfaceClient::MaybeServeFoundRoute(CefRefPtr<CefRequest> aRequest)
++{
++    const std::string url = aRequest->GetURL().ToString();
++    if (!SameOrigin(url)) return nullptr;
++    if (Lower(RoutePath(url)) != "/op77/media/found") return nullptr;
++    if (m_definition.pagePolicy != WebPagePolicy::Media)
++    {
++        return TextAnswer("{\"ok\":false,\"error\":\"surface_policy\"}", "application/json");
++    }
++
++    // The page owns the question. It is the only side that knows its own link
++    // changed -- the host merely watched somebody else's page fetch something --
++    // so a new link starts by clearing, and a stream recorded for the last one
++    // can never arrive as the film the viewer just asked for.
++    const std::string query = Lower(RouteQueryPart(url));
++    if (query.find("forget=1") != std::string::npos || query.find("forget=true") != std::string::npos)
++    {
++        const std::scoped_lock lock(m_mediaMutex);
++        m_mediaStream.clear();
++        m_mediaKind = op77::WebUI::Sniff::Kind::None;
++        if (const auto runtime = m_runtime.lock()) runtime->Trace("media_found:forgotten");
++        return TextAnswer("{\"ok\":false}", "application/json");
++    }
++
++    std::string stream;
++    op77::WebUI::Sniff::Kind kind{op77::WebUI::Sniff::Kind::None};
++    {
++        const std::scoped_lock lock(m_mediaMutex);
++        stream = m_mediaStream;
++        kind = m_mediaKind;
++    }
++    // The body is built by `Sniff::FoundRouteBody`, which is where the escaping
++    // belongs and which is tested without a browser. This line used to wrap
++    // `JsonQuote` -- already a quoted string -- in another pair of quotes, and
++    // answered `"stream":""https://…""`: invalid JSON, which the page's parse
++    // turned into "no host to ask" and gave up on a stream this route had just
++    // been handed.
++    return TextAnswer(op77::WebUI::Sniff::FoundRouteBody(kind, stream), "application/json");
 +}
 +
 +CefRefPtr<CefResourceHandler> SurfaceClient::MaybeServeFrameRoute(CefRefPtr<CefRequest> aRequest)

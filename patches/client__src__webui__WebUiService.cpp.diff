@@ -2,7 +2,7 @@
 # tools/extract-tv-patches.py. Apply by hand: this is not a patch
 # series, and the surrounding file has other unreleased work in it.
 diff --git a/client/src/webui/WebUiService.cpp b/client/src/webui/WebUiService.cpp
-index db02375c..683a66a1 100644
+index db02375c..13e8666f 100644
 --- a/client/src/webui/WebUiService.cpp
 +++ b/client/src/webui/WebUiService.cpp
 @@ -1,7 +1,8 @@
@@ -42,7 +42,29 @@ index db02375c..683a66a1 100644
      std::atomic_bool gpuUsePending{};
      std::atomic_uint64_t lastUseFence{};
  
-@@ -520,17 +555,23 @@ bool LaunchHost(std::string& aError)
+@@ -229,12 +245,21 @@ DWORD s_processId{};
+ std::mutex s_surfaceMutex;
+ std::unordered_map<SurfaceId, std::shared_ptr<Surface>> s_surfaces;
+ 
+ std::mutex s_eventMutex;
+ std::deque<Event> s_events;
+ 
++// The browser host's receipt for the ad-blocklist layer a server pushed. Written
++// on the pipe reader thread when the answer arrives, read on the game thread by
++// `Open77.webui.blocklistState` -- and `known` is what separates "no policy was
++// ever pushed in this session" from "a policy was pushed and the host said
++// nothing", which are different answers for an operator to receive.
++std::mutex s_blocklistMutex;
++AdBlockStatePayload s_blocklistState;
++bool s_blocklistStateKnown{};
++
+ std::mutex s_outboundMutex;
+ std::condition_variable s_outboundReady;
+ std::deque<Message> s_outbound;
+ 
+ std::mutex s_focusMutex;
+ SurfaceId s_focusSurface{};
+@@ -520,17 +564,23 @@ bool LaunchHost(std::string& aError)
      if (directoryError)
      {
          aError = "web_data_directory_failed";
@@ -67,7 +89,56 @@ index db02375c..683a66a1 100644
      PROCESS_INFORMATION process{};
      if (!CreateProcessW(s_hostExecutable.c_str(), mutableCommand.data(), nullptr, nullptr, FALSE,
                          CREATE_NO_WINDOW | CREATE_SUSPENDED, nullptr,
-@@ -1820,15 +1861,17 @@ SurfaceId Create(const CreateOptions& aOptions, std::string& aError)
+@@ -627,12 +677,28 @@ void HandleMessage(const Message& aMessage)
+         }
+         Log(LogLevel::Info, std::format(
+             "Open77 WebUI surface {} [{}] generation {} transport reported by the host: {} ({})",
+             payload.surface, surface->definition.resource, payload.generation, payload.transport, payload.detail));
+         return;
+     }
++    if (aMessage.type == MessageType::AdBlockState)
++    {
++        AdBlockStatePayload payload;
++        if (!DecodePayload(aMessage, payload)) return;
++        {
++            const std::scoped_lock lock(s_blocklistMutex);
++            s_blocklistState = std::move(payload);
++            s_blocklistStateKnown = true;
++        }
++        Log(LogLevel::Info, std::format(
++            "Open77 web ad blocklist enforced by the host: revision {} -- {} operator hosts, "
++            "{} operator tokens, {} compiled rules, {} refused",
++            payload.revision, payload.hostRules, payload.tokenRules, payload.compiledRules,
++            payload.refused.size()));
++        return;
++    }
+     if (aMessage.type == MessageType::FrameReady)
+     {
+         FrameReadyPayload payload;
+         if (!DecodePayload(aMessage, payload)) return;
+         const std::scoped_lock lock(s_surfaceMutex);
+         if (const auto found = s_surfaces.find(payload.surface); found != s_surfaces.end() &&
+@@ -1738,12 +1804,19 @@ void Shutdown()
+         s_events.clear();
+     }
+     {
+         const std::scoped_lock lock(s_outboundMutex);
+         s_outbound.clear();
+     }
++    {
++        // The receipt belongs to the host that is gone: keeping it would let a
++        // resource report an enforcement from a previous session as this one's.
++        const std::scoped_lock lock(s_blocklistMutex);
++        s_blocklistState = {};
++        s_blocklistStateKnown = false;
++    }
+     s_connected.store(false, std::memory_order_release);
+     for (auto& key : s_keyStates) key.store(false, std::memory_order_release);
+     s_token.clear();
+     s_pipeName.clear();
+     Log(LogLevel::Info, "Open77 WebUI service stopped.");
+ }
+@@ -1820,15 +1893,17 @@ SurfaceId Create(const CreateOptions& aOptions, std::string& aError)
          .deviceScaleFactor = 1.0F,
          .framesPerSecond = aOptions.framesPerSecond,
          .layer = aOptions.layer,
@@ -85,7 +156,7 @@ index db02375c..683a66a1 100644
      }
      if (s_connected.load(std::memory_order_acquire)) SendCreate(surface);
      return id;
-@@ -1939,12 +1982,18 @@ bool SetFocus(const SurfaceId aSurface, const bool aKeyboard, const bool aCursor
+@@ -1939,12 +2014,18 @@ bool SetFocus(const SurfaceId aSurface, const bool aKeyboard, const bool aCursor
                  s_suppressedFocusKeys.fill(false);
              }
          }
@@ -104,7 +175,7 @@ index db02375c..683a66a1 100644
              s_focusCursor = false;
              s_keepGameInput = false;
              s_suppressedFocusKeys.fill(false);
-@@ -1967,12 +2016,155 @@ bool SendEvent(const SurfaceId aSurface, const std::string_view aName, const std
+@@ -1967,12 +2048,201 @@ bool SendEvent(const SurfaceId aSurface, const std::string_view aName, const std
      if (!surface || aName.empty() || aName.size() > 128 || aJson.size() > 2U * 1024U * 1024U) return false;
      return SendPayload(MessageType::LuaToJsEvent,
                         WebEventPayload{aSurface, surface->definition.generation, 0,
@@ -254,13 +325,59 @@ index db02375c..683a66a1 100644
 +}
 +} // namespace ScreenInput
 +
++bool ApplyBlocklist(std::vector<std::string> aHosts, std::vector<std::string> aTokens,
++                    const uint64_t aRevision, std::string aSource, std::string& aError)
++{
++    if (!s_initialized.load(std::memory_order_acquire))
++    {
++        aError = "webui_service_unavailable";
++        return false;
++    }
++    // Deliberately no `s_connected` check here: `SendPayload` has one, and a
++    // policy pushed during the loading screen -- before the pipe is up -- is a
++    // policy the client can hold and send the moment it is. The one thing this
++    // must not do is report success for a message that was dropped, which is
++    // why the answer is SendPayload's own return value rather than `true`.
++    AdBlockPolicyPayload payload;
++    payload.revision = aRevision;
++    payload.source = std::move(aSource);
++    payload.hosts = std::move(aHosts);
++    payload.tokens = std::move(aTokens);
++    if (!SendPayload(MessageType::AdBlockPolicy, payload))
++    {
++        aError = "blocklist_not_accepted";
++        return false;
++    }
++    Log(LogLevel::Info, std::format(
++        "Open77 web ad blocklist pushed to the host: revision {} -- {} hosts, {} tokens from {}",
++        payload.revision, payload.hosts.size(), payload.tokens.size(),
++        payload.source.empty() ? "this client" : payload.source));
++    return true;
++}
++
++bool BlocklistState(AdBlockStatePayload& aOut, std::string& aError)
++{
++    const std::scoped_lock lock(s_blocklistMutex);
++    if (!s_blocklistStateKnown)
++    {
++        // Two real causes, one answer: no policy has been pushed in this session,
++        // or a policy was pushed to a host too old to answer. Both mean "nobody
++        // has confirmed what is in force", which is what the caller must not
++        // round up to working rules.
++        aError = "no_blocklist_receipt";
++        return false;
++    }
++    aOut = s_blocklistState;
++    return true;
++}
++
  bool ResolveInvoke(const SurfaceId aSurface, const uint64_t aRequest, const bool aSuccess,
                     const std::string_view aJson)
  {
      auto surface = FindSurface(aSurface);
      if (!surface || aRequest == 0 || aJson.size() > 2U * 1024U * 1024U) return false;
      return SendPayload(MessageType::InvokeResult,
-@@ -2046,13 +2238,21 @@ std::vector<SurfaceStatus> DescribeSurfaces()
+@@ -2046,13 +2316,21 @@ std::vector<SurfaceStatus> DescribeSurfaces()
              status.cpuGraphicsBytes = surface->cpuGraphicsBytes.load(std::memory_order_acquire);
              status.drawPixels = surface->drawPixels.load(std::memory_order_acquire);
              // Exactly the predicate Draw() applies, so `drawn=no` next to the
@@ -282,7 +399,7 @@ index db02375c..683a66a1 100644
      }
      std::ranges::sort(result, [](const SurfaceStatus& aLeft, const SurfaceStatus& aRight) {
          return aLeft.surface < aRight.surface;
-@@ -2379,17 +2579,36 @@ void Draw(const float aViewportWidth, const float aViewportHeight)
+@@ -2379,17 +2657,36 @@ void Draw(const float aViewportWidth, const float aViewportHeight)
      // two coordinate spaces can differ after WebUI scaling and cause a visible
      // pointer to disagree with the element that actually receives the click.
      const bool pageDrawsCursor = focused && focused->first->definition.resource == "open77_shell";
@@ -323,7 +440,7 @@ index db02375c..683a66a1 100644
          }
      }
      std::vector<std::shared_ptr<Surface>> allSurfaces;
-@@ -2470,12 +2689,17 @@ void Draw(const float aViewportWidth, const float aViewportHeight)
+@@ -2470,12 +2767,17 @@ void Draw(const float aViewportWidth, const float aViewportHeight)
      std::vector<std::shared_ptr<Surface>> surfaces;
      for (const auto& surface : allSurfaces)
      {
@@ -341,7 +458,7 @@ index db02375c..683a66a1 100644
      }
      std::ranges::sort(surfaces, [](const auto& left, const auto& right) {
          if (left->definition.layer != right->definition.layer)
-@@ -2645,12 +2927,18 @@ void HandleRawMouseMotion(HWND aWindow, const RAWMOUSE& aMouse)
+@@ -2645,12 +3005,18 @@ void HandleRawMouseMotion(HWND aWindow, const RAWMOUSE& aMouse)
      y = std::clamp(y, 0L, std::max(0L, viewportHeight - 1));
      s_pointerX.store(x, std::memory_order_release);
      s_pointerY.store(y, std::memory_order_release);
@@ -360,7 +477,7 @@ index db02375c..683a66a1 100644
  
  void HandleRawMouseButtons(HWND aWindow, const RAWMOUSE& aMouse)
  {
-@@ -2701,12 +2989,13 @@ void HandleRawMouseButtons(HWND aWindow, const RAWMOUSE& aMouse)
+@@ -2701,12 +3067,13 @@ void HandleRawMouseButtons(HWND aWindow, const RAWMOUSE& aMouse)
              y = viewportHeight / 2;
          }
      }

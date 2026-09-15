@@ -2,10 +2,10 @@
 # tools/extract-tv-patches.py. Apply by hand: this is not a patch
 # series, and the surrounding file has other unreleased work in it.
 diff --git a/webui/CMakeLists.txt b/webui/CMakeLists.txt
-index 22861c34..90311927 100644
+index 22861c34..cd3b6dbd 100644
 --- a/webui/CMakeLists.txt
 +++ b/webui/CMakeLists.txt
-@@ -9,12 +9,17 @@ target_sources(
+@@ -9,12 +9,18 @@ target_sources(
          src/NamedPipe.cpp
      PUBLIC
          FILE_SET HEADERS
@@ -14,6 +14,7 @@ index 22861c34..90311927 100644
              include/op77/WebUI/Protocol.hpp
 +            include/op77/WebUI/PagePolicy.hpp
 +            include/op77/WebUI/AdBlock.hpp
++            include/op77/WebUI/CookieJar.hpp
 +            include/op77/WebUI/FramePolicy.hpp
 +            include/op77/WebUI/TranscodePlan.hpp
 +            include/op77/WebUI/Decoder.hpp
@@ -23,7 +24,7 @@ index 22861c34..90311927 100644
              include/op77/WebUI/SurfaceSizing.hpp
              include/op77/WebUI/SharedFrameBuffer.hpp
              include/op77/WebUI/NamedPipe.hpp
-@@ -36,7 +41,36 @@ if(BUILD_TESTING)
+@@ -36,7 +42,36 @@ if(BUILD_TESTING)
      target_compile_definitions(Open77.WebCore.Tests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
      if(MSVC)
          target_compile_options(Open77.WebCore.Tests PRIVATE /W4 /permissive- /EHsc /utf-8)

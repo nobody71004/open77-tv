@@ -2,7 +2,7 @@
 # tools/extract-tv-patches.py. Apply by hand: this is not a patch
 # series, and the surrounding file has other unreleased work in it.
 diff --git a/webui/src/Messages.cpp b/webui/src/Messages.cpp
-index d9673a15..196121ba 100644
+index d9673a15..d2da6ccf 100644
 --- a/webui/src/Messages.cpp
 +++ b/webui/src/Messages.cpp
 @@ -164,20 +164,22 @@ bool EncodePayload(const CreateSurfacePayload& aPayload, std::vector<uint8_t>& a
@@ -49,3 +49,97 @@ index d9673a15..196121ba 100644
  bool EncodePayload(const SurfaceStatePayload& aPayload, std::vector<uint8_t>& aOut)
  {
      Writer writer;
+@@ -393,7 +400,93 @@ bool EncodePayload(const CharacterPayload& aPayload, std::vector<uint8_t>& aOut)
+ bool DecodePayload(const Message& aMessage, CharacterPayload& aOut)
+ {
+     Reader reader(aMessage.payload);
+     return reader.U64(aOut.surface) && reader.U32(aOut.codepoint) && reader.U32(aOut.modifiers) &&
+         reader.Empty() && aOut.codepoint <= 0x10FFFFU;
+ }
++
++namespace
++{
++// A blocklist is small by construction -- it is a hand-maintained list of
++// advertising networks, not EasyList -- and the bounds below are what makes that
++// load-bearing rather than aspirational: a client that accepted a million rules
++// would be a client an operator could freeze from the server side.
++constexpr uint32_t kMaximumBlockRules = 512;
++constexpr size_t kMaximumRuleBytes = 256;
++constexpr uint32_t kMaximumRefusalEntries = 64;
++constexpr size_t kMaximumRefusalBytes = kMaximumRuleBytes + 64;
++
++bool EncodeRules(Writer& aWriter, const std::vector<std::string>& aRules)
++{
++    if (aRules.size() > kMaximumBlockRules) return false;
++    aWriter.U32(static_cast<uint32_t>(aRules.size()));
++    for (const auto& rule : aRules)
++        if (!aWriter.String(rule, kMaximumRuleBytes)) return false;
++    return true;
++}
++
++bool DecodeRules(Reader& aReader, std::vector<std::string>& aRules)
++{
++    uint32_t count = 0;
++    if (!aReader.U32(count) || count > kMaximumBlockRules) return false;
++    aRules.clear();
++    aRules.reserve(count);
++    for (uint32_t index = 0; index < count; ++index)
++    {
++        std::string rule;
++        if (!aReader.String(rule, kMaximumRuleBytes) || rule.empty()) return false;
++        aRules.push_back(std::move(rule));
++    }
++    return true;
++}
++} // namespace
++
++bool EncodePayload(const AdBlockPolicyPayload& aPayload, std::vector<uint8_t>& aOut)
++{
++    Writer writer;
++    writer.U64(aPayload.revision);
++    if (!writer.String(aPayload.source, kMaximumRuleBytes) ||
++        !EncodeRules(writer, aPayload.hosts) || !EncodeRules(writer, aPayload.tokens)) return false;
++    aOut = writer.Take();
++    return true;
++}
++
++bool DecodePayload(const Message& aMessage, AdBlockPolicyPayload& aOut)
++{
++    Reader reader(aMessage.payload);
++    return reader.U64(aOut.revision) && reader.String(aOut.source, kMaximumRuleBytes) &&
++        DecodeRules(reader, aOut.hosts) && DecodeRules(reader, aOut.tokens) && reader.Empty();
++}
++
++bool EncodePayload(const AdBlockStatePayload& aPayload, std::vector<uint8_t>& aOut)
++{
++    Writer writer;
++    writer.U64(aPayload.revision);
++    writer.U32(aPayload.compiledRules);
++    writer.U32(aPayload.hostRules);
++    writer.U32(aPayload.tokenRules);
++    if (aPayload.refused.size() > kMaximumRefusalEntries) return false;
++    writer.U32(static_cast<uint32_t>(aPayload.refused.size()));
++    for (const auto& entry : aPayload.refused)
++        if (!writer.String(entry, kMaximumRefusalBytes)) return false;
++    aOut = writer.Take();
++    return true;
++}
++
++bool DecodePayload(const Message& aMessage, AdBlockStatePayload& aOut)
++{
++    Reader reader(aMessage.payload);
++    uint32_t refusedCount = 0;
++    if (!reader.U64(aOut.revision) || !reader.U32(aOut.compiledRules) ||
++        !reader.U32(aOut.hostRules) || !reader.U32(aOut.tokenRules) ||
++        !reader.U32(refusedCount) || refusedCount > kMaximumRefusalEntries) return false;
++    aOut.refused.clear();
++    aOut.refused.reserve(refusedCount);
++    for (uint32_t index = 0; index < refusedCount; ++index)
++    {
++        std::string entry;
++        if (!reader.String(entry, kMaximumRefusalBytes)) return false;
++        aOut.refused.push_back(std::move(entry));
++    }
++    return reader.Empty();
++}
+ } // namespace op77::WebUI

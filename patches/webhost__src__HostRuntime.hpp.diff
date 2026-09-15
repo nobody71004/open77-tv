@@ -2,14 +2,26 @@
 # tools/extract-tv-patches.py. Apply by hand: this is not a patch
 # series, and the surrounding file has other unreleased work in it.
 diff --git a/webhost/src/HostRuntime.hpp b/webhost/src/HostRuntime.hpp
-index 4bfa8c70..755faa5d 100644
+index 4bfa8c70..55bfdd70 100644
 --- a/webhost/src/HostRuntime.hpp
 +++ b/webhost/src/HostRuntime.hpp
-@@ -11,12 +11,13 @@
+@@ -1,22 +1,25 @@
+ #pragma once
+ 
+ #include <atomic>
+ #include <chrono>
+ #include <condition_variable>
+ #include <cstdint>
++#include <filesystem>
+ #include <memory>
+ #include <mutex>
+ #include <string>
+ #include <string_view>
  #include <thread>
  #include <unordered_map>
  #include <vector>
  
++#include <op77/WebUI/AdBlock.hpp>
  #include <op77/WebUI/Messages.hpp>
  #include <op77/WebUI/NamedPipe.hpp>
 +#include <op77/WebUI/Decoder.hpp>
@@ -19,7 +31,7 @@ index 4bfa8c70..755faa5d 100644
  namespace op77::WebHost
  {
  class SurfaceClient;
-@@ -24,12 +25,17 @@ class SurfaceClient;
+@@ -24,12 +27,17 @@ class SurfaceClient;
  struct HostOptions
  {
      std::wstring pipeName;
@@ -37,13 +49,38 @@ index 4bfa8c70..755faa5d 100644
  {
  public:
      explicit HostRuntime(HostOptions aOptions);
-@@ -64,12 +70,15 @@ public:
+@@ -59,17 +67,40 @@ public:
+ 
+     void Notify(op77::WebUI::MessageType aType, const op77::WebUI::SurfaceStatePayload& aPayload);
+     void NotifyFrame(const op77::WebUI::FrameReadyPayload& aPayload);
+     void NotifyGpuFrame(const op77::WebUI::GpuFrameReadyPayload& aPayload);
+     void NotifyRing(const op77::WebUI::SurfaceGpuRingPayload& aPayload);
      void NotifyTransport(const op77::WebUI::SurfaceTransportPayload& aPayload);
++    /// The ad blocklist every surface consults: the compiled list plus whatever
++    /// this session's operator has added.
++    ///
++    /// Handed out as one immutable snapshot rather than as a reference, because
++    /// the two sides are on different threads by construction -- the policy
++    /// arrives on the UI thread and is read on the IO thread, once per request a
++    /// framed page makes -- and a rule arriving mid-request must not be visible
++    /// half-applied. Taking the snapshot is cheap and never blocks a reader for
++    /// longer than a pointer copy.
++    [[nodiscard]] std::shared_ptr<const op77::WebUI::Ads::Blocklist> Blocklist() const;
++    /// The operator's layer, as pushed by the server the client is in a session
++    /// with. REPLACES the previous layer -- so an operator can take a rule back
++    /// -- and answers with a receipt, because the sender cannot otherwise tell a
++    /// list that is in force from one that was never read.
++    void SetAdBlockPolicy(const op77::WebUI::AdBlockPolicyPayload& aPayload);
++    void NotifyAdBlockState(const op77::WebUI::AdBlockStatePayload& aPayload);
      void ForwardWebEvent(op77::WebUI::MessageType aType, const op77::WebUI::WebEventPayload& aPayload);
      [[nodiscard]] uint64_t AllocateRequest();
      void SurfaceClosed(op77::WebUI::SurfaceId aSurface);
      void Trace(std::string_view aMessage);
      [[nodiscard]] uint32_t ParentProcessId() const { return m_options.parentProcessId; }
++    /// The host's data root -- the same directory CEF uses as its global cache
++    /// path. Every television's cookie jar is a sibling of that profile rather
++    /// than a part of it, so signed-in cookies never join the host's own data.
++    [[nodiscard]] std::filesystem::path DataDirectory() const { return m_options.dataDirectory; }
 +    /// The staged decoder tools, resolved once at construction. `probe` empty
 +    /// means the transcode routes answer "disabled" rather than spawn anything.
 +    [[nodiscard]] const op77::WebUI::Transcode::DecoderPaths& DecoderPaths() const { return m_decoderPaths; }
@@ -53,7 +90,7 @@ index 4bfa8c70..755faa5d 100644
      void PostToUi(op77::WebUI::Message aMessage);
      void HandleOnUi(const op77::WebUI::Message& aMessage);
      void CreateSurface(const op77::WebUI::CreateSurfacePayload& aPayload);
-@@ -79,12 +88,13 @@ private:
+@@ -79,12 +110,13 @@ private:
      void CloseAll();
      void Finish();
      [[nodiscard]] bool Send(op77::WebUI::MessageType aType, std::vector<uint8_t> aPayload,
@@ -67,3 +104,19 @@ index 4bfa8c70..755faa5d 100644
      std::atomic_bool m_cefReady{};
      std::atomic_uint64_t m_sequence{1};
      std::atomic_uint64_t m_request{1};
+@@ -108,8 +140,15 @@ private:
+     std::condition_variable m_adapterCondition;
+     bool m_adapterKnown{};
+ 
+     bool m_externalBeginFrames{true};
+     std::atomic_int64_t m_lastBeginFrameTicks{};
+     bool m_beginFrameTimerArmed{};
++
++    // The blocklist snapshot. Written on the UI thread when a policy arrives,
++    // read from the IO thread for every request a framed page makes; the mutex
++    // is held only to copy the pointer, and the pointed-to list is never
++    // mutated after publication.
++    mutable std::mutex m_blocklistMutex;
++    std::shared_ptr<const op77::WebUI::Ads::Blocklist> m_blocklist;
+ };
+ } // namespace op77::WebHost

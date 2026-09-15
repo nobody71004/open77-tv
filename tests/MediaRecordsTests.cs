@@ -92,6 +92,86 @@ public sealed class MediaRecordsTests
     }
 
     /// <summary>
+    /// The operator's ad-blocklist policy: the rule grammar, the refusals, the
+    /// payload and the store format.
+    /// </summary>
+    /// <remarks>
+    /// Every failure mode in this file is silent from the server's chair. A rule
+    /// accepted that should have been refused (`com`, `co.uk`) takes a client's
+    /// whole browser down and reads at the console as a typo that worked; a rule
+    /// quietly dropped looks exactly like a network that kept serving
+    /// advertising; and a payload carrying anything but the rules is a client
+    /// validating strings the server never meant to send. None of the three
+    /// throws and none of them leaves a line anywhere, which is why the grammar
+    /// is pinned here -- and why the client's half of the same grammar is
+    /// deliberately NOT pinned here: the browser host validates every incoming
+    /// rule again, the two implementations are separate on purpose, and the
+    /// receipt is what catches a disagreement between them.
+    /// </remarks>
+    [TestMethod]
+    public void TelevisionAdBlockSuitePasses()
+    {
+        using var lua = new Lua(true) { Encoding = Encoding.UTF8 };
+
+        RunChunk(lua, RepoFile("resources/system/open77_media/server/config.lua"),
+            "@open77_media/server/config.lua");
+        RunChunk(lua, RepoFile("resources/system/open77_media/server/adblock.lua"),
+            "@open77_media/server/adblock.lua");
+        RunChunk(lua, RepoFile("resources/system/open77_media/tests/adblock_test.lua"),
+            "@open77_media/tests/adblock_test.lua");
+
+        EnsureTestPassed(lua, "adblock_test.lua");
+    }
+
+    /// <summary>
+    /// The media resource's server half loads in a sandbox that withholds the
+    /// standard libraries a resource is not allowed to reach for, so naming one
+    /// is a runtime error rather than a style matter.
+    /// </summary>
+    /// <remarks>
+    /// Measured, not assumed: the local server logged
+    /// <c>script error: open77_media/server/main.lua:399: attempt to index a nil
+    /// value (global 'os')</c> while a client was connected, because the ad-block
+    /// receipt handler read <c>os.time()</c>. It threw on every receipt -- losing
+    /// the receipt -- and nothing caught it, because a Lua file that compiles is
+    /// all the other suites check. The withheld names are the ones
+    /// <c>LuaResourceRuntime</c> removes; the replacement is
+    /// <c>Open77.time.monotonic</c>, which is what every other resource uses.
+    /// </remarks>
+    [TestMethod]
+    public void MediaServerScriptsNameNoWithheldLibrary()
+    {
+        var resource = Path.GetDirectoryName(Path.GetDirectoryName(
+            RepoFile("resources/system/open77_media/server/main.lua")))!;
+
+        // The withheld libraries, which the runtime does not install. Two things
+        // are filtered out, because a check that fails on a sentence or on
+        // `Open77.io.writeJson` is a check somebody deletes: comments, and any
+        // match that is a member of another table rather than a global.
+        var withheld = new[] { "os", "io", "debug", "package", "dofile", "loadfile" };
+        var checkedFiles = 0;
+        foreach (var folder in new[] { "server", "shared" })
+        {
+            foreach (var file in Directory.GetFiles(Path.Combine(resource, folder), "*.lua",
+                SearchOption.AllDirectories))
+            {
+                checkedFiles++;
+                var source = Regex.Replace(
+                    Regex.Replace(File.ReadAllText(file), @"--\[\[.*?\]\]", " ", RegexOptions.Singleline),
+                    @"--[^\n]*", " ");
+                foreach (var name in withheld)
+                {
+                    var pattern = $@"(?<![\w.]){name}\s*[.(]";
+                    Assert.IsFalse(Regex.IsMatch(source, pattern),
+                        $"{Path.GetFileName(file)} names the withheld library '{name}'");
+                }
+            }
+        }
+
+        Assert.IsTrue(checkedFiles > 0, "the media resource must still have server-side Lua");
+    }
+
+    /// <summary>
     /// The client half of the television resource, run against a stub of the
     /// native surface whose shape is the native's own.
     /// </summary>

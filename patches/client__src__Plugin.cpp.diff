@@ -2,10 +2,10 @@
 # tools/extract-tv-patches.py. Apply by hand: this is not a patch
 # series, and the surrounding file has other unreleased work in it.
 diff --git a/client/src/Plugin.cpp b/client/src/Plugin.cpp
-index 3472c587..e573787a 100644
+index 3472c587..49b6b07b 100644
 --- a/client/src/Plugin.cpp
 +++ b/client/src/Plugin.cpp
-@@ -25,12 +25,13 @@
+@@ -25,13 +25,15 @@
  #include "api/Doors.hpp"
  #include "api/Elevators.hpp"
  #include "api/Loot.hpp"
@@ -14,12 +14,14 @@ index 3472c587..e573787a 100644
  #include "api/WorldAnchors.hpp"
 +#include "api/MediaScreens.hpp"
  #include "api/Nameplates.hpp"
++#include "api/ViewBody.hpp"
  #include "api/DilationAuthorisation.hpp"
  #include "api/Effects.hpp"
  #include "debug/ControlledSpawnProbe.hpp"
  #include "debug/CrashProbe.hpp"
  #include "debug/DebugBridge.hpp"
-@@ -101,12 +102,13 @@ bool RunningOnEnter(RED4ext::CGameApplication*)
+ #include "debug/DeveloperConsole.hpp"
+@@ -101,12 +103,13 @@ bool RunningOnEnter(RED4ext::CGameApplication*)
      op77::GameThreadQueue::OnRunningEnter();
      op77::EntityService::OnRunningEnter();
      op77::DynamicEntityService::OnRunningEnter();
@@ -33,7 +35,7 @@ index 3472c587..e573787a 100644
      // session is armed; a leftover lease would be the one thing that reopened it.
      op77::Api::DilationAuthorisation::OnRunningEnter();
      op77::Api::Interactions::OnRunningEnter();
-@@ -294,12 +296,17 @@ bool RunningOnUpdate(RED4ext::CGameApplication*)
+@@ -294,12 +297,22 @@ bool RunningOnUpdate(RED4ext::CGameApplication*)
      // this frame is then projected with this frame's camera instead of waiting
      // one more. That single frame is the whole point of the service.
      op77::Api::WorldAnchors::OnRunningUpdate();
@@ -45,13 +47,18 @@ index 3472c587..e573787a 100644
 +    // camera rather than next frame's. It sits after `Props` too, so a prop
 +    // projected this tick is already visible to the lookup.
 +    op77::Api::MediaScreens::OnRunningUpdate();
++    // After the resource host, like the anchors and the screens: a model a
++    // resource asked for this frame is spawned, dressed and hidden against this
++    // frame's player rather than the next one's, and a body still building
++    // itself resolves here.
++    op77::Api::ViewBody::Tick();
      op77::PreGameBridge::OnRunningUpdate();
      op77::DynamicEntityProbe::OnRunningUpdate();
      op77::ControlledSpawnProbe::OnRunningUpdate();
      op77::SpawnerEventObserver::OnRunningUpdate();
      op77::TweakDbProbe::OnRunningUpdate();
      op77::WorldProbe::OnRunningUpdate();
-@@ -467,12 +474,13 @@ bool RunningOnExit(RED4ext::CGameApplication*)
+@@ -467,12 +480,16 @@ bool RunningOnExit(RED4ext::CGameApplication*)
      op77::Api::Camera::OnRunningExit();
      op77::Api::Population::OnRunningExit();
      op77::Api::Notifications::OnRunningExit();
@@ -59,13 +66,16 @@ index 3472c587..e573787a 100644
      op77::Api::WorldAnchors::OnRunningExit();
      op77::Api::Nameplates::OnRunningExit();
 +    op77::Api::MediaScreens::OnRunningExit();
++    // A world teardown must not leave the player invisible: the view body hides
++    // meshes on a live entity, and nothing else would put them back.
++    op77::Api::ViewBody::OnRunningExit();
      op77::Api::Markers::OnRunningExit();
      op77::Api::Props::OnRunningExit();
      op77::Api::Effects::OnRunningExit();
      op77::Api::DilationAuthorisation::OnRunningExit();
      op77::Api::Blips::OnRunningExit();
      op77::Api::Interactions::OnRunningExit();
-@@ -726,12 +734,13 @@ RED4EXT_C_EXPORT bool RED4EXT_CALL Main(
+@@ -726,12 +744,13 @@ RED4EXT_C_EXPORT bool RED4EXT_CALL Main(
          op77::Api::Doors::Initialize(aHandle, aSdk);
          op77::Api::Elevators::Initialize(aHandle, aSdk);
          op77::Api::Loot::Initialize(aHandle, aSdk);
@@ -79,7 +89,7 @@ index 3472c587..e573787a 100644
          if (!op77::DebugBridge::Start())
          {
              s_sdk->logger->Error(s_pluginHandle, "Open77 could not start its local debug bridge.");
-@@ -817,12 +826,13 @@ RED4EXT_C_EXPORT bool RED4EXT_CALL Main(
+@@ -817,12 +836,13 @@ RED4EXT_C_EXPORT bool RED4EXT_CALL Main(
          op77::Api::Loot::Shutdown();
          op77::CombatReplication::Shutdown();
          op77::Api::Effects::ReleaseAll();

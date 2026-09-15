@@ -2,10 +2,10 @@
 # tools/extract-tv-patches.py. Apply by hand: this is not a patch
 # series, and the surrounding file has other unreleased work in it.
 diff --git a/server/tests/Open77.Server.Tests/Resources/WebUiAssetTests.cs b/server/tests/Open77.Server.Tests/Resources/WebUiAssetTests.cs
-index d027b0ca..09376861 100644
+index d027b0ca..595c03d4 100644
 --- a/server/tests/Open77.Server.Tests/Resources/WebUiAssetTests.cs
 +++ b/server/tests/Open77.Server.Tests/Resources/WebUiAssetTests.cs
-@@ -35,12 +35,65 @@ public sealed class WebUiAssetTests
+@@ -35,12 +37,327 @@ public sealed class WebUiAssetTests
              Path.Combine(resources, "system", "open77_admin", "web", "app.js"));
          StringAssert.Contains(adminHtml, "id=\"cat-makers-menu\"");
          StringAssert.Contains(adminHtml, "role=\"listbox\"");
@@ -63,6 +63,268 @@ index d027b0ca..09376861 100644
 +        // than being re-implemented in the host.
 +        StringAssert.Contains(resolver, "WebUI::Framing::EvaluateFraming(document.headers");
 +        StringAssert.Contains(resolver, "WebUI::Framing::FindEmbeds(document.body");
++    }
++
++    /// <summary>
++    /// The frame that shows somebody else's player carries no `sandbox`
++    /// attribute, and that is a measured requirement rather than a preference.
++    /// </summary>
++    /// <remarks>
++    /// The player these sites ship (`vidsrc.buzz/embed/...`) decides whether it
++    /// is allowed to play by copying `document.domain` and reading
++    /// `localStorage`, and Chromium refuses the first of those inside any
++    /// sandboxed frame -- so the site's own verdict came back `sandboxed` and it
++    /// answered "Sandbox is not allowed / Remove the sandbox attribute from the
++    /// iframe to play the video." in place of the film. Both settings were
++    /// measured through the real host; see
++    /// `docs/research/webui-media-and-audio.md`. The attribute is the kind of
++    /// thing an edit re-adds as obviously prudent, which is why it is pinned:
++    /// what bounds a framed site is the page policy, the request blocklist, the
++    /// popup policy and the origin, not this attribute.
++    /// </remarks>
++    [TestMethod]
++    public void TheFramedSiteIsNotSandboxed()
++    {
++        var root = FindRepositoryRoot();
++        var tvJs = File.ReadAllText(
++            Path.Combine(root, "resources", "system", "open77_media", "web", "tv.js"));
++
++        Assert.IsFalse(tvJs.Contains("setAttribute(\"sandbox\""),
++            "the framed site must carry no sandbox attribute -- the players these sites ship refuse to play inside one");
++
++        // The permissions the frame DOES grant, and the referrer policy, are the
++        // half that must survive: a player needs `encrypted-media` and autoplay,
++        // and the sites that check a referrer would otherwise be sent the
++        // surface's own origin.
++        StringAssert.Contains(tvJs, "frame.setAttribute(\"allow\",");
++        StringAssert.Contains(tvJs, "autoplay; fullscreen; encrypted-media; picture-in-picture");
++        StringAssert.Contains(tvJs, "frame.setAttribute(\"referrerpolicy\", \"no-referrer\")");
++    }
++
++    /// <summary>
++    /// A television that is paused when it is given a link still shows
++    /// something, because "paused" and "black" are not the same answer.
++    /// </summary>
++    /// <remarks>
++    /// The report was a 100 ft cinema screen showing black while the same link
++    /// played on the 150 ft set beside it. The session log says why: the 100 ft
++    /// set carried `paused=true`, its player reported `unstarted at 0.0s` eleven
++    /// times and never `playing`, and the page builds its player with
++    /// `autoplay: 1` and then immediately pauses a stream that has never started
++    /// -- which leaves a YouTube player painting nothing at all. Its own recovery
++    /// (`watchYouTube`) deliberately refuses to nudge a player the operator asked
++    /// to pause, so nothing on the page could recover.
++    ///
++    /// Two files own the rule, so both are pinned: the set must not autoplay what
++    /// it is about to pause (and should cue, which is what puts the poster on
++    /// screen), and a new link must clear the pause, because pasting a link is a
++    /// play request and the transport state is the server's.
++    /// </remarks>
++    [TestMethod]
++    public void APausedTelevisionShowsAPictureRatherThanNothing()
++    {
++        var root = FindRepositoryRoot();
++        var tvJs = File.ReadAllText(
++            Path.Combine(root, "resources", "system", "open77_media", "web", "tv.js"));
++        var server = File.ReadAllText(
++            Path.Combine(root, "resources", "system", "open77_media", "server", "main.lua"));
++
++        // The player is told not to autoplay a set that is paused, and is cued so
++        // the poster arrives: ``autoplay: 1`` followed by `pauseVideo` is the
++        // black rectangle this test exists for.
++        StringAssert.Contains(tvJs, "autoplay: state.paused ? 0 : 1");
++        StringAssert.Contains(tvJs, "cueVideoById(videoId)");
++
++        // And a link clears the pause on the server, which is the half a re-paste
++        // has to fix: the menu cannot reach a paused set's player from outside.
++        var urlAction = server.IndexOf("elseif action == \"url\" then", StringComparison.Ordinal);
++        Assert.IsTrue(urlAction >= 0, "the media server must still accept a url action");
++        var nextAction = server.IndexOf("elseif action ==", urlAction + 1, StringComparison.Ordinal);
++        Assert.IsTrue(nextAction > urlAction, "the url action must be followed by another action");
++        StringAssert.Contains(
++            server.Substring(urlAction, nextAction - urlAction), "entry.paused = false");
++    }
++
++    /// <summary>
++    /// The curtain and the reveal are one feature written in five files, and this
++    /// is the test that would have caught the state the feature was actually in:
++    /// every layer finished except the two that draw it.
++    /// </summary>
++    /// <remarks>
++    /// The failure mode is worth naming precisely, because no log and no module
++    /// test can see it. `tv.html` carried the pelmet, the two panels, the gold
++    /// braid and the countdown; `server/main.lua` held `open|closed|reveal`,
++    /// validated it, broadcast it and stored it; `client/main.lua` forwarded the
++    /// page's request and played the race resource's own countdown beats on the
++    /// beats it heard. Between them, `tv.js` read none of it and `tv.css` styled
++    /// none of it -- so a screen told to reveal did nothing at all, silently,
++    /// with every half of the feature present and tested on its own side.
++    ///
++    /// Each assertion names one end of one wire, and the last two are generators
++    /// rather than samples: every class the page toggles must have a rule, and
++    /// every element it reads by id must be in the document. Those two are the
++    /// checks that fail on the half-built state above.
++    /// </remarks>
++    [TestMethod]
++    public void TheCurtainIsDrawnFromTheServerStateAndReportsItsBeats()
++    {
++        var root = FindRepositoryRoot();
++        var web = Path.Combine(root, "resources", "system", "open77_media", "web");
++        var tvJs = File.ReadAllText(Path.Combine(web, "tv.js"));
++        var tvCss = File.ReadAllText(Path.Combine(web, "tv.css"));
++        // The stylesheet's own prose paints nothing, and the first version of the
++        // check below was satisfied by the words `.flare` and `.parting` in a
++        // comment -- a generator that asserted almost nothing. Comments out, and
++        // a rule has to look like a rule.
++        var cssRules = Regex.Replace(tvCss, @"/\*.*?\*/", string.Empty, RegexOptions.Singleline);
++        var tvHtml = File.ReadAllText(Path.Combine(web, "tv.html"));
++        var server = File.ReadAllText(Path.Combine(
++            root, "resources", "system", "open77_media", "server", "main.lua"));
++        var client = File.ReadAllText(Path.Combine(
++            root, "resources", "system", "open77_media", "client", "main.lua"));
++
++        // The pieces the timeline moves, including the colours on the start beat.
++        foreach (var id in new[]
++        {
++            "curtain", "curtain-countdown", "curtain-flare", "curtain-toggle", "reveal",
++        })
++        {
++            HasText("tv.html", tvHtml, "id=\"" + id + "\"");
++        }
++        HasText("tv.html", tvHtml, "class=\"curtain-panel curtain-left\"");
++        HasText("tv.html", tvHtml, "class=\"curtain-panel curtain-right\"");
++
++        // The three modes are the server's vocabulary and the page's; the page
++        // reads them out of the state rather than inventing a duration or a
++        // colour of its own.
++        HasText("tv.js", tvJs,
++            "curtain: typeof payload.curtain === \"string\" ? payload.curtain : state.curtain");
++        HasText("tv.js", tvJs, "const CURTAIN_OPEN = \"open\";");
++        HasText("tv.js", tvJs, "const CURTAIN_CLOSED = \"closed\";");
++        HasText("tv.js", tvJs, "const CURTAIN_REVEAL = \"reveal\";");
++        HasText("server/main.lua", server, "curtain = \"open\",");
++        HasText("server/main.lua", server,
++            "if value ~= \"open\" and value ~= \"closed\" and value ~= \"reveal\" then");
++
++        // A state that merely re-states the mode must not restart the timeline:
++        // the server re-broadcasts every television on every control, so another
++        // player nudging the volume would otherwise restart the countdown for
++        // everyone, forever.
++        HasText("tv.js", tvJs,
++            "if (state.curtain !== appliedCurtain) presentCurtain(state.curtain);");
++
++        // The beats. The page owns the clock and says what it is doing; the
++        // client's Lua half plays the race start's own sound and effect on the
++        // beat it hears, because that is the presentation a race already has.
++        HasText("tv.js", tvJs, "report(\"reveal_tick\", tick);");
++        HasText("tv.js", tvJs, "report(\"reveal_start\", \"the panels part\");");
++        HasText("client/main.lua", client, "payload.status == \"reveal_tick\"");
++        HasText("client/main.lua", client, "payload.status == \"reveal_start\"");
++        HasText("client/main.lua", client, "playRevealCue(\"sq024_race_countdown\")");
++        HasText("client/main.lua", client, "playRevealVfx(entry)");
++
++        // The two buttons go to the server, like the URL bar and the volume keys,
++        // so the curtain every client draws is the one the server holds.
++        HasText("tv.js", tvJs, "bridge.emit(\"media:curtain\"");
++        HasText("client/main.lua", client, "page:on(\"media:curtain\"");
++
++        // The clock itself: the numbers come before the panels part, and the
++        // panels travel for as long as the stylesheet says they do -- one figure
++        // written twice, which is exactly the pair that drifts.
++        HasText("tv.js", tvJs, "ticks: [\"3\", \"2\", \"1\"]");
++        HasText("tv.js", tvJs, "part: 2400");
++        HasText("tv.css", tvCss, "transition: transform 2.4s");
++
++        // Every beat the page switches on by name must be something the
++        // stylesheet draws. A class with no rule is a beat that happens in the
++        // state and nowhere on the screen -- silently, which is the whole point.
++        foreach (var name in new[] { "parting", "flare", "tick" })
++        {
++            Assert.IsTrue(
++                Regex.IsMatch(tvJs,
++                    @"classList\.(add|remove|toggle)\(\s*" + Regex.Escape("\"" + name + "\"")),
++                "tv.js no longer toggles the `" + name + "` class the reveal is built on");
++            Assert.IsTrue(
++                Regex.IsMatch(cssRules, @"\." + name + @"\b[^{}]*\{"),
++                "tv.css has no rule for the `" + name + "` class tv.js toggles");
++        }
++
++        // And every element the page reads by id must exist in the document: a
++        // missing node throws at the moment of the reveal.
++        foreach (Match read in Regex.Matches(tvJs, @"getElementById\(""([^""]+)""\)"))
++        {
++            HasText("tv.html", tvHtml, "id=\"" + read.Groups[1].Value + "\"");
++        }
++    }
++
++    /// <summary>
++    /// The borderline a cinema record declares reaches the panel, and the panel's
++    /// edge and the glow around it are the same colour.
++    /// </summary>
++    /// <remarks>
++    /// A 30 m rectangle watched in the dark reads as a hole in the world without
++    /// an edge on it, which is why the two cinema records in `shared/records.lua`
++    /// carry `#c8102e` and why nothing else does. The colour is written once -- in
++    /// the record -- and travels to the glass through the snapshot, the page state
++    /// and a CSS custom property. It is the custom property rather than a bare
++    /// `border-color` that makes this one fact instead of two: the glow is what
++    /// the eye reads as a lit edge, and a record edited to another colour would
++    /// otherwise move the border and leave the old halo behind it.
++    /// </remarks>
++    [TestMethod]
++    public void TheCinemaBorderIsDrawnFromTheRecordThatDeclaresIt()
++    {
++        var root = FindRepositoryRoot();
++        var web = Path.Combine(root, "resources", "system", "open77_media", "web");
++        var tvJs = File.ReadAllText(Path.Combine(web, "tv.js"));
++        var tvCss = File.ReadAllText(Path.Combine(web, "tv.css"));
++        // The stylesheet's own prose paints nothing, and the first version of the
++        // check below was satisfied by the words `.flare` and `.parting` in a
++        // comment -- a generator that asserted almost nothing. Comments out, and
++        // a rule has to look like a rule.
++        var cssRules = Regex.Replace(tvCss, @"/\*.*?\*/", string.Empty, RegexOptions.Singleline);
++        var records = File.ReadAllText(Path.Combine(
++            root, "resources", "system", "open77_media", "shared", "records.lua"));
++        var server = File.ReadAllText(Path.Combine(
++            root, "resources", "system", "open77_media", "server", "main.lua"));
++        var client = File.ReadAllText(Path.Combine(
++            root, "resources", "system", "open77_media", "client", "main.lua"));
++
++        // The record is the only place the colour is chosen, and it is the two
++        // cinema panels that choose one.
++        HasText("records.lua", records, "border = \"#c8102e\",");
++        Assert.AreEqual(2, Regex.Matches(records, @"border = ""#").Count,
++            "the bordering is the cinema records' own declaration, not a default for the catalogue");
++
++        // The snapshot, the page state, and the page.
++        HasText("server/main.lua", server, "border = entry.border,");
++        HasText("client/main.lua", client, "border = entry.spec.border,");
++        HasText("tv.js", tvJs,
++            "border: typeof payload.border === \"string\" ? payload.border : state.border,");
++        HasText("tv.js", tvJs, "elements.frame.style.setProperty(\"--frame\", wanted);");
++
++        // The one fact, drawn in two places off one property.
++        HasText("tv.css", tvCss, "border-color: var(--frame, #c8102e);");
++        HasText("tv.css", tvCss, "0 0 2.2vmin var(--frame, #c8102e);");
++        // A panel that owes somebody a colour owes them no click either: the
++        // frame is a picture over the picture, not a thing on top of it.
++        Assert.IsTrue(Regex.IsMatch(cssRules, @"\.frame \{[^}]*pointer-events: none;"),
++            "the frame must not swallow input aimed at the screen behind it");
++    }
++
++    /// <summary>
++    /// One needle, named on failure.
++    /// </summary>
++    /// <remarks>
++    /// `StringAssert.Contains` on a whole source file prints the whole file when
++    /// it fails -- 55 KB for `tv.js` -- and buries the one line the reader needs.
++    /// These are wire checks between files that cannot be run together, so when
++    /// one breaks, the name of the missing string IS the diagnosis.
++    /// </remarks>
++    private static void HasText(string file, string text, string needle)
++    {
++        Assert.IsTrue(text.Contains(needle, StringComparison.Ordinal),
++            file + " no longer contains `" + needle + "`");
 +    }
 +
      private static string FindRepositoryRoot()

@@ -26,6 +26,17 @@ shared_script "shared/records.lua"
 -- a heading), shared because the server applies it and the tests pin it.
 shared_script "shared/placement.lua"
 
+-- Listed explicitly, one per line, never globbed. Manifest order IS load order
+-- within each group, so these land exactly as written:
+--
+--   1. `config.lua`  publishes `MediaServerConfig` -- the seed the ad blocklist
+--      starts from on a server nobody has told anything yet;
+--   2. `adblock.lua` publishes `MediaAdBlock` (the pure policy: the rule grammar,
+--      the refusals, the payload, the store format);
+--   3. `main.lua`    reads BOTH at load, validates the seed and prints the
+--      banner, and owns the live list.
+server_script "server/config.lua"
+server_script "server/adblock.lua"
 server_script "server/main.lua"
 client_script "client/main.lua"
 
@@ -44,7 +55,8 @@ web_files { "web/**" }
 -- All three, including the client half: a resource whose catalogue suite ships
 -- and whose client suite does not is one where the half that chooses which screens
 -- to materialise is the half nobody can run outside the game.
-files { "tests/records_test.lua", "tests/placement_test.lua", "tests/client_test.lua" }
+files { "tests/records_test.lua", "tests/placement_test.lua", "tests/client_test.lua",
+        "tests/adblock_test.lua" }
 
 permissions {
     -- Spawn/remove/URL requests from the menu, and the state pushes back down.
@@ -54,4 +66,20 @@ permissions {
     -- is gated by this same capability because a screen with no prop has nothing
     -- to be a screen on.
     "world.props",
+
+    -- `Open77.webui.blocklist` / `.blocklistState`: the operator's ad-blocklist
+    -- layer, and the receipt that says whether the browser host took it. Its own
+    -- name rather than part of an existing group, because it is the only verb in
+    -- the client that changes what a page is allowed to reach -- a resource that
+    -- may draw a page is not automatically a resource that may widen what a
+    -- client refuses, and the push can only ever ADD to the compiled list.
+    "webui.policy",
+
+    -- The live list, kept in this resource's own `data/` directory
+    -- (`Open77.io.readJson` / `writeJson`). The host confines both to that
+    -- directory, so this grants the resource its own state and nothing else --
+    -- without them every `media.adblock.*` command still works, and says so,
+    -- but the change is lost when the resource restarts.
+    "filesystem.read",
+    "filesystem.write",
 }

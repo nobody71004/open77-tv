@@ -2,10 +2,10 @@
 # tools/extract-tv-patches.py. Apply by hand: this is not a patch
 # series, and the surrounding file has other unreleased work in it.
 diff --git a/webhost/src/HostRuntime.cpp b/webhost/src/HostRuntime.cpp
-index a2384cb5..af36df9f 100644
+index a2384cb5..9dbf377a 100644
 --- a/webhost/src/HostRuntime.cpp
 +++ b/webhost/src/HostRuntime.cpp
-@@ -41,12 +41,18 @@ bool EnvironmentSet(const wchar_t* const aName)
+@@ -41,21 +43,79 @@ bool EnvironmentSet(const wchar_t* const aName)
      return GetEnvironmentVariableW(aName, value, static_cast<DWORD>(std::size(value))) != 0;
  }
  } // namespace
@@ -24,3 +24,88 @@ index a2384cb5..af36df9f 100644
      // a 60 fps menu at 40/s) and the UI felt laggier than before. CEF's own
      // scheduler holds the requested windowless_frame_rate exactly, so it stays
      // the default; the external path is an opt-in for latency experiments.
+     , m_externalBeginFrames(EnvironmentSet(L"OP77_WEBUI_EXTERNAL_BEGINFRAME") &&
+                             !EnvironmentSet(L"OP77_WEBUI_INTERNAL_BEGINFRAME"))
++    // The compiled list is the policy until a session says otherwise, so a host
++    // that never hears from a server is still a host with an ad blocker.
++    , m_blocklist(std::make_shared<const Ads::Blocklist>())
++{
++}
++
++std::shared_ptr<const Ads::Blocklist> HostRuntime::Blocklist() const
++{
++    const std::scoped_lock lock(m_blocklistMutex);
++    return m_blocklist;
++}
++
++void HostRuntime::SetAdBlockPolicy(const AdBlockPolicyPayload& aPayload)
++{
++    // Built off to the side and published in one assignment: the readers see the
++    // previous list until this one exists, and the next one after, never a
++    // partly-filled object.
++    auto next = std::make_shared<Ads::Blocklist>();
++    std::vector<Ads::Blocklist::Refusal> refusals;
++    next->AddHostRules(aPayload.hosts, refusals);
++    next->AddTokenRules(aPayload.tokens, refusals);
++
++    AdBlockStatePayload receipt;
++    receipt.revision = aPayload.revision;
++    receipt.compiledRules = static_cast<uint32_t>(Ads::RuleCount());
++    receipt.hostRules = static_cast<uint32_t>(next->OperatorHosts().size());
++    receipt.tokenRules = static_cast<uint32_t>(next->OperatorTokens().size());
++    receipt.refused.reserve(refusals.size());
++    for (const auto& refusal : refusals)
++        receipt.refused.push_back(refusal.rule + ":" + refusal.reason);
++
++    {
++        const std::scoped_lock lock(m_blocklistMutex);
++        m_blocklist = std::move(next);
++    }
++
++    // The line an operator reads when they ask whether their network is blocked:
++    // the count, the revision it came from, and why any entry did nothing.
++    std::string trace = "adblock_policy:" + std::to_string(aPayload.revision) + ":" +
++        std::to_string(receipt.hostRules) + " hosts + " + std::to_string(receipt.tokenRules) +
++        " tokens + " + std::to_string(receipt.compiledRules) + " compiled";
++    if (!aPayload.source.empty()) trace += " source=" + aPayload.source;
++    for (const auto& refused : receipt.refused) trace += " refused=" + refused;
++    Trace(trace);
++
++    NotifyAdBlockState(receipt);
++}
++
++void HostRuntime::NotifyAdBlockState(const AdBlockStatePayload& aPayload)
+ {
++    std::vector<uint8_t> payload;
++    if (EncodePayload(aPayload, payload))
++        static_cast<void>(Send(MessageType::AdBlockState, std::move(payload)));
+ }
+ 
+ HostRuntime::~HostRuntime() { Stop(); }
+ 
+ bool HostRuntime::Connect(std::string& aError)
+ {
+@@ -337,12 +402,23 @@ void HostRuntime::HandleOnUi(const Message& aMessage)
+     if (aMessage.type == MessageType::CreateSurface)
+     {
+         CreateSurfacePayload payload;
+         if (DecodePayload(aMessage, payload)) CreateSurface(payload);
+         return;
+     }
++    // Deliberately before the surface switch: the policy belongs to the process,
++    // not to any one surface, so it is applied whether or not a television
++    // exists yet -- a rule pushed as the player joins must be in force for the
++    // screen they spawn an hour later.
++    if (aMessage.type == MessageType::AdBlockPolicy)
++    {
++        AdBlockPolicyPayload payload;
++        if (DecodePayload(aMessage, payload)) SetAdBlockPolicy(payload);
++        else Trace("adblock_policy_rejected:undecodable");
++        return;
++    }
+ 
+     SurfaceTogglePayload toggle;
+     SurfaceFocusPayload focus;
+     SurfaceResizePayload resize;
+     WebEventPayload event;
+     switch (aMessage.type)

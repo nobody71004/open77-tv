@@ -2,10 +2,19 @@
 # tools/extract-tv-patches.py. Apply by hand: this is not a patch
 # series, and the surrounding file has other unreleased work in it.
 diff --git a/webhost/tests/WebHostTests.cpp b/webhost/tests/WebHostTests.cpp
-index 68da2a3a..5f1993fa 100644
+index 68da2a3a..d9d27eb4 100644
 --- a/webhost/tests/WebHostTests.cpp
 +++ b/webhost/tests/WebHostTests.cpp
-@@ -46,12 +47,65 @@
+@@ -1,6 +1,8 @@
++#include <op77/WebUI/AdBlock.hpp>
++#include <op77/WebUI/CookieJar.hpp>
+ #include <op77/WebUI/Messages.hpp>
+ #include <op77/WebUI/NamedPipe.hpp>
+ #include <op77/WebUI/SharedFrameBuffer.hpp>
+ 
+ #include <Windows.h>
+ #include <d3d12.h>
+@@ -46,16 +49,155 @@
  
  namespace
  {
@@ -19,6 +28,75 @@ index 68da2a3a..5f1993fa 100644
 +/// The shell-link probe: asks the host what a pasted link can be shown as, then
 +/// frames the answer.
 +constexpr uint64_t kFrameResolveSurface = 20;
++// The same probe page again, under the media policy, after an OPERATOR rule has
++// blocked the origin it frames. This is the third copy of that page on purpose:
++// the first is the control (media policy, framed), the second is the other
++// policy (strict, refused by its own CSP), and this one is the same policy as
++// the control with one server-supplied rule added -- so a difference between the
++// first and this one can only be the rule.
++constexpr uint64_t kAdBlockProbeSurface = 21;
++// The shell-link page again, asking the host about the origin the operator's
++// rule names. The resolver has its own verdict for that case (`blocked`), and
++// without this surface the claim "an operator's rule reaches the resolver too"
++// would be a line of code nobody ran.
++constexpr uint64_t kAdBlockResolveSurface = 22;
++// A framed page that opens its video in a window: the shape this host's popup
++// policy has a `Follow` answer for. The stage is here because following one
++// through `CefFrame::LoadURL` killed the frame's renderer -- CEF documents that
++// failure on `LoadRequest` as `bad IPC message` reason INVALID_INITIATOR_ORIGIN
++// (213) -- and a terminated renderer is Chromium's crash card, a grey box with a
++// sad face, which is what a player saw instead of the film. What is asserted
++// below is therefore the renderer's survival as much as the navigation.
++constexpr uint64_t kPopupFollowSurface = 23;
++
++// The live-site surface. Every other surface in this file loads a fixture from a
++// temporary directory; this one loads the real television page and frames the
++// real internet, which is the only way to answer the question a player asked
++// ("does the video actually play?") instead of a question about a fixture. It is
++// opt-in, because a suite that fails when a third party is down teaches people
++// to ignore it.
++constexpr uint64_t kLiveSiteSurface = 24;
++// The window the opener page asks for: a different origin (so the follow really
++// is a cross-origin navigation, the case that failed) on a port nothing listens
++// on, so a window that lands cannot be mistaken for a page this host served.
++// HTTPS for a mechanical reason as well as a representative one: a secure page
++// may not navigate a frame to an insecure URL at all, and the stage would then
++// be measuring Chromium's mixed-content rule instead of the follow path.
++constexpr const char* kPopupFollowTarget = "https://127.0.0.1:8399/followed-window";
++
++/// The page the ad-blocklist stage loads. It asks the host for the link to
++/// resolve -- `Open77.invoke`, the same request/response the television page
++/// uses -- so the target arrives when the page is listening rather than being
++/// raced against its own load, and then it asks the route the real page asks.
++constexpr const char* kAdBlockResolvePage = R"HTML(<!doctype html><html><body><script>
++Open77.ready();
++const state = { ok: false, frameable: null, violation: "", via: "", best: "", candidates: 0,
++                bestLoad: false, bestViolation: "", note: "none" };
++function report(note) { state.note = note; Open77.emit("frame:resolve", state); }
++Open77.invoke("resolve:target").then(answer => {
++  const target = answer && answer.url;
++  if (!target) { report("no-target"); return; }
++  fetch("/op77/web/frame?u=" + encodeURIComponent(target))
++    .then(response => response.json())
++    .then(a => {
++      state.ok = a.ok === true;
++      state.frameable = a.frameable === true;
++      state.violation = String(a.violation || "");
++      state.via = String(a.via || "");
++      state.best = String(a.best || "");
++      state.candidates = (a.candidates || []).length;
++      if (!state.best) { report("no-best"); return; }
++      // No `sandbox`, matching the television's own page: the players these
++      // sites ship refuse to play inside a sandboxed frame.
++      const frame = document.createElement("iframe");
++      frame.addEventListener("load", () => { state.bestLoad = true; report("best-load"); });
++      frame.src = state.best;
++      document.body.appendChild(frame);
++      setTimeout(() => report("best-timeout"), 6000);
++    })
++    .catch(error => report("fetch-failed:" + error));
++}).catch(error => report("invoke-failed:" + error));
++</script></body></html>)HTML";
 +
 +/// The page the resolve stage loads. It is the same question the television asks
 +/// (`/op77/web/frame?u=...`) about the same link, so the stage exercises the page's
@@ -51,10 +129,9 @@ index 68da2a3a..5f1993fa 100644
 +    state.best = String(answer.best || "");
 +    state.candidates = (answer.candidates || []).length;
 +    if (!state.best) { report("no-best"); return; }
++    // No `sandbox`, matching the television's own page -- see
++    // `open77_media/web/tv.js` for the measurement behind that.
 +    const frame = document.createElement("iframe");
-+    frame.setAttribute("sandbox", "allow-scripts allow-same-origin allow-forms " +
-+      "allow-popups allow-popups-to-escape-sandbox allow-top-navigation-by-user-activation " +
-+      "allow-presentation");
 +    frame.addEventListener("load", () => { state.bestLoad = true; report("best-load"); });
 +    frame.addEventListener("error", () => report("best-error"));
 +    frame.src = state.best;
@@ -65,19 +142,319 @@ index 68da2a3a..5f1993fa 100644
 +setTimeout(() => report("timeout"), 20000);
 +</script></body></html>)HTML";
 +
++// The first check that failed, in its own words.
++//
++// `passed` alone cannot answer "which check failed". Every stage ANDs into it, so
++// by the time a later stage reports, the failure can be several stages old -- and
++// a stage that reports with `Check(passed, ...)` then names itself for a failure
++// that was not its own. Worse, its own condition may never have run: the setup
++// it depends on is behind a `passed &&`, so an earlier failure short-circuits the
++// stage and leaves its message to be printed by a check that never executed.
++// The final summary had the same problem with `error`, which held whatever string
++// the last failed read happened to leave behind rather than the failing check.
++// Only the first failure speaks now, and the summary repeats it verbatim.
++std::string firstFailure;
++
  bool Check(const bool aCondition, const std::string& aMessage)
  {
-     if (!aCondition) std::cerr << aMessage << '\n';
-     return aCondition;
+-    if (!aCondition) std::cerr << aMessage << '\n';
+-    return aCondition;
++    if (aCondition) return true;
++    if (firstFailure.empty())
++    {
++        firstFailure = aMessage;
++        std::cerr << aMessage << '\n';
++    }
++    return false;
  }
  
-@@ -453,12 +507,61 @@ undeclared.src = 'web/secret.svg';
+ std::string Utf8(const std::wstring& aValue)
+ {
+     const int count = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, aValue.data(),
+                                           static_cast<int>(aValue.size()), nullptr, 0, nullptr, nullptr);
+@@ -117,12 +259,113 @@ struct Inbox
+     std::condition_variable ready;
+     std::deque<Message> messages;
+     bool closed{};
+     std::string error;
+ };
+ 
++// --- The live-site stage's evidence -----------------------------------------
++//
++// The stage drives the real internet, so what it measures has to be kept
++// somewhere the message dispatcher -- a lambda inside a `wmain` that is already
++// far too large -- can reach. Everything here is a recorded fact, never an
++// inference: the page's own reports, its playback samples, and the renderer's
++// fate.
++struct LiveSiteEvidence
++{
++    bool enabled = false;
++    std::filesystem::path resourceRoot;
++    std::string url;
++    uint64_t surface = 0;
++    std::vector<std::string> reports;
++    std::vector<std::string> playback;
++    bool crashed = false;
++    std::string crashDetail;
++    int streamsFound = 0;
++    int popupsFollowed = 0;
++    int popupsDropped = 0;
++    int adsBlocked = 0;
++    int framesBlocked = 0;
++    std::string foundStream;
++    std::string foundKind;
++
++    /// Records one page event if it belongs to this stage, and says whether it
++    /// was this stage's. Answering `false` lets the ordinary dispatcher handle
++    /// everything else exactly as it did before this stage existed.
++    bool Record(const Message& aMessage);
++
++    /// The last thing the page said, which is the line to print when a stage
++    /// fails and the reason is inside somebody else's page.
++    [[nodiscard]] std::string LastReport() const
++    {
++        return reports.empty() ? std::string("<none>") : reports.back();
++    }
++
++    /// The furthest a video element got, in the only terms that answer "is a
++    /// video playing": readyState, and the clock.
++    [[nodiscard]] std::string BestPlayback() const
++    {
++        double bestReady = -1.0;
++        double bestTime = -1.0;
++        std::string best;
++        for (const auto& sample : playback)
++        {
++            const double readyState = NumberField(sample, "readyState");
++            const double currentTime = NumberField(sample, "currentTime");
++            if (readyState > bestReady || (readyState == bestReady && currentTime > bestTime))
++            {
++                bestReady = readyState;
++                bestTime = currentTime;
++                best = sample;
++            }
++        }
++        return best.empty() ? std::string("<no samples>") : best;
++    }
++
++    /// Reads a numeric field out of one of this page's own JSON replies.
++    static double NumberField(const std::string& aJson, const std::string& aName);
++};
++
++LiveSiteEvidence g_liveSite;
++
++double LiveSiteEvidence::NumberField(const std::string& aJson, const std::string& aName)
++{
++    // Found by name and then by the colon, rather than by a `"name":` needle.
++    // These samples arrive as the *detail* of a page event, so every quote in
++    // them is escaped once more on the way out (`\"readyState\":4`), and a
++    // needle with the quotes in it matches nothing -- which is exactly how the
++    // first version of this reader reported every sample as -1 and the stage as
++    // "no samples" while twelve of them sat in the vector.
++    const auto at = aJson.find(aName);
++    if (at == std::string::npos) return -1.0;
++    const auto colon = aJson.find(':', at);
++    if (colon == std::string::npos) return -1.0;
++    try
++    {
++        return std::stod(aJson.substr(colon + 1));
++    }
++    catch (...)
++    {
++        return -1.0;
++    }
++}
++
++bool LiveSiteEvidence::Record(const Message& aMessage)
++{
++    WebEventPayload event;
++    if (!DecodePayload(aMessage, event) || event.surface != kLiveSiteSurface) return false;
++    if (event.name == "media:report")
++    {
++        reports.push_back(event.json);
++        std::cerr << "stage=live_report " << event.json << '\n';
++        // Every sample the page was asked for is kept, whatever it says: a
++        // television with nothing playing is a measurement too.
++        if (event.json.find("readyState") != std::string::npos) playback.push_back(event.json);
++    }
++    return true;
++}
++
+ void ReaderMain(PipeConnection& aConnection, Inbox& aInbox)
+ {
+     Message message;
+     std::string error;
+     while (aConnection.Receive(message, error))
+     {
+@@ -407,12 +650,71 @@ int wmain(const int aCount, wchar_t** const aArguments)
+     const auto data = root / L"data";
+     std::error_code fileError;
+     std::filesystem::create_directories(resource / L"web", fileError);
+     std::filesystem::create_directories(data, fileError);
+     if (!Check(!fileError, "temporary directory creation failed")) return 1;
+ 
++    // --- The live-site stage's inputs --------------------------------------
++    //
++    // Opt-in (`--live`, or `OP77_WEBHOST_LIVE=1`) because it depends on a third
++    // party being up. `OP77_WEBHOST_LIVE_URL` picks the page and
++    // `OP77_WEBHOST_LIVE_RESOURCE` the resource root; the defaults are the page
++    // and the television the session that reported the fault was using. The
++    // decoder directory has a default too, because the transcode route answers
++    // "disabled" without one -- and a run that quietly measured nothing would be
++    // worse than no run at all.
++    std::wstring liveDecoderArgument;
++    {
++        const auto environment = [](const wchar_t* const aName) {
++            const DWORD length = GetEnvironmentVariableW(aName, nullptr, 0);
++            if (length == 0) return std::string{};
++            std::wstring value(length, L'\0');
++            const DWORD written = GetEnvironmentVariableW(aName, value.data(), length);
++            value.resize(written);
++            return Utf8(value);
++        };
++
++        g_liveSite.enabled = (aCount == 3 && std::wstring(aArguments[2]) == L"--live") ||
++            GetEnvironmentVariableW(L"OP77_WEBHOST_LIVE", nullptr, 0) != 0;
++        // The player shell the reported session reached, for the episode it was
++        // watching: the page whose own player fetches the film.
++        g_liveSite.url = "https://multiembed.mov/?video_id=105248&tmdb=1&s=1&e=1";
++        g_liveSite.resourceRoot =
++            std::filesystem::current_path() / "resources" / "system" / "open77_media";
++        if (const auto url = environment(L"OP77_WEBHOST_LIVE_URL"); !url.empty()) g_liveSite.url = url;
++        if (const auto given = environment(L"OP77_WEBHOST_LIVE_RESOURCE"); !given.empty())
++            g_liveSite.resourceRoot = std::filesystem::path(given);
++
++        std::error_code liveError;
++        if (g_liveSite.enabled &&
++            !std::filesystem::is_regular_file(g_liveSite.resourceRoot / "web" / "tv.html", liveError))
++        {
++            std::cerr << "SKIP: --live was asked for but " << g_liveSite.resourceRoot.string()
++                      << "/web/tv.html is not there (set OP77_WEBHOST_LIVE_RESOURCE)\n";
++            g_liveSite.enabled = false;
++        }
++
++        std::string decoder = environment(L"OP77_WEBHOST_DECODER_DIR");
++        if (decoder.empty())
++        {
++            const auto deployed = std::filesystem::path(
++                "C:/Program Files (x86)/Steam/steamapps/common/Cyberpunk 2077/red4ext/plugins/Open77/decoder");
++            if (std::filesystem::is_regular_file(deployed / "ffmpeg.exe", liveError))
++                decoder = deployed.string();
++        }
++        if (!decoder.empty())
++        {
++            liveDecoderArgument = L" " + Quote(L"--open77-decoder-dir=" +
++                std::wstring(decoder.begin(), decoder.end()));
++        }
++        if (g_liveSite.enabled)
++            std::cerr << "stage=live_armed url=" << g_liveSite.url
++                      << " resource=" << g_liveSite.resourceRoot.string()
++                      << " decoder=" << (decoder.empty() ? "<none>" : decoder) << '\n';
++    }
++
+     const auto cleanup = [&] {
+         std::error_code ignored;
+         std::filesystem::remove_all(root, ignored);
+     };
+     {
+         std::ofstream html(resource / L"web" / L"index.html", std::ios::binary | std::ios::trunc);
+@@ -453,12 +755,156 @@ undeclared.src = 'web/secret.svg';
  
      {
          std::ofstream companion(resource / L"web" / L"companion.html", std::ios::binary | std::ios::trunc);
          companion << "<!doctype html><body style='background:transparent'><script>Open77.ready();</script></body>";
      }
  
++    // The followed-window pages. A site that opens its video in a window is the
++    // case the popup policy exists for, and this is the smallest honest version
++    // of it: a button filling a NESTED frame -- the real window came from a
++    // frame inside the framed site, not from the surface's own document -- whose
++    // click handler asks for a window on another origin. The page reports both
++    // that it was armed and what happened when it was clicked, because "the
++    // policy decided" and "the click arrived" are different facts and only one
++    // of them is visible from outside.
++    {
++        std::ofstream opener(resource / L"web" / L"popup-opener.html", std::ios::binary | std::ios::trunc);
++        opener << R"HTML(<!doctype html><html><body style="margin:0;background:#101820">
++<button id="open" style="position:fixed;inset:0;width:100%;height:100%;border:0;background:#1f6f4f;color:#fff;font:20px sans-serif">open in a window</button>
++<script>
++const state = { clicked: false, asked: false, handle: false, href: location.href };
++// A click anywhere in this frame is reported as well as a click on the button,
++// because "the input never reached the renderer" and "the input reached the
++// frame but missed the button" are different faults and only one of them is
++// about the popup path at all.
++document.addEventListener("click", event => {
++  parent.postMessage({ kind: "popup:frame-click", x: event.clientX, y: event.clientY,
++                       w: innerWidth, h: innerHeight }, "*");
++});
++document.addEventListener("mousedown", event => {
++  parent.postMessage({ kind: "popup:frame-down", x: event.clientX, y: event.clientY,
++                       w: innerWidth, h: innerHeight }, "*");
++});
++document.addEventListener("mousemove", event => {
++  parent.postMessage({ kind: "popup:frame-move", x: event.clientX, y: event.clientY,
++                       w: innerWidth, h: innerHeight }, "*");
++});
++document.getElementById("open").addEventListener("click", () => {
++  state.clicked = true;
++  const handle = window.open("https://127.0.0.1:8399/followed-window", "open77-popup-probe");
++  state.asked = true;
++  state.handle = !!handle;
++  parent.postMessage(Object.assign({ kind: "popup:opened" }, state), "*");
++});
++parent.postMessage(Object.assign({ kind: "popup:armed" }, state), "*");
++</script></body></html>)HTML";
++        if (!Check(static_cast<bool>(opener), "popup opener page write failed")) { cleanup(); return 1; }
++    }
++    {
++        // The parent is the surface's own document, and it is the half that can
++        // speak to the host: the bridge is injected into the page the host
++        // serves, not into a frame of it, so the nested frame reports by the
++        // ordinary route a framed site uses -- `postMessage` -- and this page
++        // relays it. The listener is installed before the frame exists, because
++        // the frame's first act is to post.
++        std::ofstream parent(resource / L"web" / L"popup-parent.html", std::ios::binary | std::ios::trunc);
++        parent << R"HTML(<!doctype html><html><head><style>
++  html, body { margin: 0; height: 100%; background: #101820; }
++  body { display: flex; }
++  #own { width: 50%; height: 100%; border: 0; background: #6f1f4f; color: #fff; font: 20px sans-serif; }
++</style></head><body>
++<script>
++Open77.ready();
++window.addEventListener("message", event => {
++  const data = event.data || {};
++  if (data && data.kind) Open77.emit(data.kind, data);
++});
++// The surface's own document reports its input as well as the frame's. Which of
++// these arrive is what says whether a failure is about the popup path or about
++// input never reaching a document at all.
++document.addEventListener("mousedown", event =>
++  Open77.emit("popup:page-down", { button: event.button, x: event.clientX, y: event.clientY,
++                                    w: innerWidth, h: innerHeight }));
++document.addEventListener("click", event =>
++  Open77.emit("popup:page-click", { button: event.button, x: event.clientX, y: event.clientY }));
++document.addEventListener("keydown", event => Open77.emit("popup:page-key", { key: event.key }));
++document.addEventListener("wheel", event => Open77.emit("popup:page-wheel", { dy: event.deltaY }));
++// Left half: the window is asked for by a NESTED frame, which is where the real
++// one came from. Right half: asked for by the surface's own document -- the
++// other geometry -- so a difference between the two is visible rather than
++// assumed.
++const frame = document.createElement("iframe");
++frame.src = "/web/popup-opener.html";
++frame.style.cssText = "width:50%;height:100%;border:0";
++document.body.appendChild(frame);
++const own = document.createElement("button");
++own.id = "own";
++own.textContent = "the page opens a window";
++own.addEventListener("click", () => {
++  const handle = window.open("https://127.0.0.1:8399/followed-window", "open77-popup-probe-parent");
++  Open77.emit("popup:opened", { kind: "popup:opened", where: "parent", asked: true, handle: !!handle });
++});
++document.body.appendChild(own);
++</script></body></html>)HTML";
++        if (!Check(static_cast<bool>(parent), "popup parent page write failed")) { cleanup(); return 1; }
++    }
++
 +    // The frame-grant probe page. It frames one third-party origin and reports
 +    // WHICH of the two possible refusals happened, because on screen they are
 +    // indistinguishable: a frame this host's policy refused never navigates at
@@ -105,9 +482,6 @@ index 68da2a3a..5f1993fa 100644
 +  report("violation");
 +});
 +const frame = document.createElement("iframe");
-+frame.setAttribute("sandbox", "allow-scripts allow-same-origin allow-forms " +
-+  "allow-popups allow-popups-to-escape-sandbox allow-top-navigation-by-user-activation " +
-+  "allow-presentation");
 +frame.addEventListener("load", () => { state.load = true; report("load"); });
 +frame.addEventListener("error", () => report("error"));
 +frame.src = "https://example.com/";
@@ -127,13 +501,36 @@ index 68da2a3a..5f1993fa 100644
 +        if (!Check(static_cast<bool>(resolve), "frame resolve page write failed")) { cleanup(); return 1; }
 +    }
 +
++    // The ad-blocklist stage's page, which asks the host for its target rather
++    // than carrying one in its own markup.
++    {
++        std::ofstream resolve(resource / L"web" / L"adblock-resolve.html", std::ios::binary | std::ios::trunc);
++        resolve << kAdBlockResolvePage;
++        if (!Check(static_cast<bool>(resolve), "adblock resolve page write failed")) { cleanup(); return 1; }
++    }
++
      // The GPU half only runs when this process can be a D3D12 consumer and the
      // operator did not switch the transport off for the host.
      const bool gpuDisabledByEnvironment = GetEnvironmentVariableW(L"OP77_WEBUI_DISABLE_GPU", nullptr, 0) != 0;
      Gpu gpu;
      std::string gpuError;
      const bool gpuAvailable = CreateGpu(gpu, gpuError);
-@@ -619,15 +722,28 @@ undeclared.src = 'web/secret.svg';
+@@ -492,13 +938,13 @@ undeclared.src = 'web/secret.svg';
+     }
+ 
+     std::wstring command = Quote(aArguments[1]) + L" " +
+         Quote(L"--open77-pipe=" + pipeName) + L" " +
+         Quote(L"--open77-token=" + std::wstring(token.begin(), token.end())) + L" " +
+         Quote(L"--open77-parent=" + std::to_wstring(GetCurrentProcessId())) + L" " +
+-        Quote(L"--open77-data=" + data.wstring());
++        Quote(L"--open77-data=" + data.wstring()) + liveDecoderArgument;
+     std::vector<wchar_t> mutableCommand(command.begin(), command.end());
+     mutableCommand.push_back(L'\0');
+     STARTUPINFOW startup{sizeof(startup)};
+     PROCESS_INFORMATION process{};
+     // Without a consumer the host must stay on the CPU transport by itself;
+     // it is only switched off explicitly when this process cannot consume.
+@@ -619,47 +1065,181 @@ undeclared.src = 'web/secret.svg';
      bool transportGpuSeen = false;
      bool transportCpuSeen = false;
      std::string transportDetail;
@@ -146,6 +543,12 @@ index 68da2a3a..5f1993fa 100644
      std::string expectedOpening;
      bool openingReceived = false;
      bool openingRendered = false;
++    // Acks for the expected token that arrived while the page still reported
++    // itself hidden. They are deliberately not counted -- "the page sees itself
++    // visible" is half of what the reveal stage checks -- but they are the only
++    // evidence that tells "the reveal was one frame behind the push" apart from
++    // "the page never answered", so a failure prints them.
++    int revealWhileHidden = 0;
 +    // The frame-grant probe, one report per surface: the media-policy surface
 +    // may frame the origin, and the strict-policy surface must refuse it.
 +    bool mediaFrameReported = false;
@@ -156,17 +559,69 @@ index 68da2a3a..5f1993fa 100644
 +    // which of the four things went wrong instead of only that one did.
 +    bool resolveReported = false;
 +    std::string resolveJson;
++
++    // The operator's blocklist layer, as the stage after the shell-link probe
++    // measures it: the receipt the host sends back, and what the probe page then
++    // reports about the origin the rule names.
++    bool adBlockReceipt = false;
++    AdBlockStatePayload adBlockState;
++    bool adBlockFrameReported = false;
++    bool adBlockFrameBlocked = false;
++    std::string adBlockFrameJson;
++    bool adBlockResolveReported = false;
++    std::string adBlockResolveJson;
++
++    // The followed-window stage: the page in the nested frame reporting that a
++    // real click reached it and that it asked for a window, and the two ways the
++    // host can answer that -- by following it, or by killing the renderer.
++    bool popupArmed = false;
++    bool popupOpened = false;
++    bool popupNestedOpened = false;
++    std::string popupOpenedJson;
++    bool popupRendererCrashed = false;
++    bool popupSurfaceFailed = false;
++    std::string popupSurfaceDetail;
++    // The live-site stage's own switch, and the surface id it uses.
++    g_liveSite.surface = kLiveSiteSurface;
  
      const auto dispatch = [&](const Message& aMessage) {
          std::cerr << "stage=message type=" << static_cast<int>(aMessage.type) << "\n";
          switch (aMessage.type)
          {
          case MessageType::SurfaceCreated: created = true; break;
-@@ -642,24 +758,53 @@ undeclared.src = 'web/secret.svg';
+         case MessageType::SurfaceReady: ready = true; break;
++        case MessageType::AdBlockState:
++        {
++            // The host's receipt. It is the only thing that separates "the rules
++            // were sent" from "the rules are in force", which is why the stage
++            // below waits for it rather than trusting the send's return value.
++            AdBlockStatePayload state;
++            if (DecodePayload(aMessage, state))
++            {
++                adBlockReceipt = true;
++                adBlockState = std::move(state);
++                std::cerr << "stage=adblock_receipt revision=" << adBlockState.revision
++                          << " hosts=" << adBlockState.hostRules
++                          << " tokens=" << adBlockState.tokenRules
++                          << " compiled=" << adBlockState.compiledRules
++                          << " refused=" << adBlockState.refused.size() << '\n';
++            }
++            break;
++        }
+         case MessageType::FrameReady:
+         {
+             FrameReadyPayload frame;
+             if (DecodePayload(aMessage, frame) && frame.surface == 1)
+             {
+                 finalFrame = frame.frameSequence;
+                 invokeFrame = invokeSeen && finalFrame > frameAtInvoke;
              }
              break;
          }
          case MessageType::JsToLuaEvent:
++            // The live-site stage reads its own surface's events and hands
++            // everything else to the branches below, unchanged.
++            if (g_liveSite.enabled && g_liveSite.Record(aMessage)) break;
          {
              WebEventPayload event;
 -            if (DecodePayload(aMessage, event) && event.surface == 1)
@@ -177,16 +632,21 @@ index 68da2a3a..5f1993fa 100644
 -                    event.json.find(expectedOpening) != std::string::npos &&
 -                    event.json.find("\"hidden\":false") != std::string::npos)
 +                if (event.surface == 1)
-                 {
--                    if (event.name == "test:received") openingReceived = true;
--                    else openingRendered = true;
++                {
 +                    if (event.name == "ui:ready") readyEvent = true;
-+                    if ((event.name == "test:received" || event.name == "test:rendered") &&
-+                        event.json.find(expectedOpening) != std::string::npos &&
-+                        event.json.find("\"hidden\":false") != std::string::npos)
++                    if (!expectedOpening.empty() &&
++                        (event.name == "test:received" || event.name == "test:rendered") &&
++                        event.json.find(expectedOpening) != std::string::npos)
 +                    {
-+                        if (event.name == "test:received") openingReceived = true;
-+                        else openingRendered = true;
++                        // Both acks must come from a page that reports itself
++                        // visible: an ack that says otherwise is the reveal
++                        // arriving late, not the reveal working.
++                        if (event.json.find("\"hidden\":false") != std::string::npos)
++                        {
++                            if (event.name == "test:received") openingReceived = true;
++                            else openingRendered = true;
++                        }
++                        else ++revealWhileHidden;
 +                    }
 +                    if (event.name == "vfs:undeclared" && event.json.find("true") != std::string::npos)
 +                        undeclaredBlocked = true;
@@ -200,11 +660,28 @@ index 68da2a3a..5f1993fa 100644
 +                        resolveReported = true;
 +                        resolveJson = event.json;
 +                    }
++                    if (event.surface == kAdBlockResolveSurface)
++                    {
++                        adBlockResolveReported = true;
++                        adBlockResolveJson = event.json;
++                    }
 +                }
 +                if (event.name == "frame:probe")
 +                {
 +                    std::cerr << "stage=frame_probe surface=" << event.surface << " json=" << event.json << '\n';
-+                    if (event.surface == kFrameProbeMediaSurface)
++                    if (event.surface == kAdBlockProbeSurface)
++                    {
++                        // The operator's rule is in force, so this frame must not
++                        // have loaded. `load:false` is the user-visible fact -- a
++                        // blank panel where the advertising was -- and the note
++                        // says whether the browser answered with a policy
++                        // violation or simply never finished, both of which are
++                        // refusals and neither of which is "it loaded".
++                        adBlockFrameReported = true;
++                        adBlockFrameBlocked = event.json.find("\"load\":true") == std::string::npos;
++                        adBlockFrameJson = event.json;
++                    }
++                    else if (event.surface == kFrameProbeMediaSurface)
 +                    {
 +                        mediaFrameReported = true;
 +                        mediaFrameFramed = event.json.find("\"violation\":\"\"") != std::string::npos &&
@@ -216,6 +693,25 @@ index 68da2a3a..5f1993fa 100644
 +                        strictFrameRefused = event.json.find("\"violation\":\"frame-src\"") != std::string::npos &&
 +                            event.json.find("\"load\":false") != std::string::npos;
 +                    }
++                }
++                if (event.surface == kPopupFollowSurface && event.name.rfind("popup:", 0) == 0)
+                 {
+-                    if (event.name == "test:received") openingReceived = true;
+-                    else openingRendered = true;
++                    // Every event this stage's page sends is printed, including
++                    // the click reports: a failure has to say whether the click
++                    // never arrived, whether it arrived somewhere else on the
++                    // page, or whether it arrived and the popup path then did
++                    // something unexpected.
++                    std::cerr << "stage=popup_event name=" << event.name << " json=" << event.json << '\n';
++                    if (event.name == "popup:armed") popupArmed = true;
++                    if (event.name == "popup:opened")
++                    {
++                        popupOpened = true;
++                        popupOpenedJson = event.json;
++                        if (event.json.find("\"where\":\"parent\"") == std::string::npos)
++                            popupNestedOpened = true;
++                    }
                  }
 -                if (event.name == "vfs:undeclared" && event.json.find("true") != std::string::npos)
 -                    undeclaredBlocked = true;
@@ -225,7 +721,108 @@ index 68da2a3a..5f1993fa 100644
          case MessageType::JsInvoke:
          {
              WebEventPayload invoke;
-@@ -1103,12 +1248,108 @@ undeclared.src = 'web/secret.svg';
+@@ -668,20 +1248,55 @@ undeclared.src = 'web/secret.svg';
+                 invokeSeen = true;
+                 frameAtInvoke = finalFrame;
+                 WebEventPayload reply{invoke.surface, invoke.generation, invoke.request,
+                                       invoke.name, R"({"text":"bridge operational"})", true};
+                 if (!SendPayload(connection, MessageType::InvokeResult, sequence++, reply, error)) passed = false;
+             }
++            // The ad-blocklist stage's page asking which link it should resolve
++            // -- the same shape the television resource uses to hand a page its
++            // URL, and the reason this probe has no race with its own load.
++            if (DecodePayload(aMessage, invoke) && invoke.name == "resolve:target")
++            {
++                WebEventPayload reply{invoke.surface, invoke.generation, invoke.request,
++                                      invoke.name, R"({"url":"https://example.com/"})", true};
++                if (!SendPayload(connection, MessageType::InvokeResult, sequence++, reply, error)) passed = false;
++            }
+             break;
+         }
+         case MessageType::SurfaceFailed:
+         {
+             SurfaceStatePayload failed;
+             static_cast<void>(DecodePayload(aMessage, failed));
+             std::cerr << "surface failed: " << failed.detail << '\n';
+             surfaceFailed = true;
++            if (failed.surface == kPopupFollowSurface)
++            {
++                popupSurfaceFailed = true;
++                popupSurfaceDetail = failed.detail;
++            }
++            break;
++        }
++        case MessageType::RendererCrashed:
++            if (g_liveSite.enabled)
++            {
++                SurfaceStatePayload liveCrash;
++                if (DecodePayload(aMessage, liveCrash) && liveCrash.surface == kLiveSiteSurface)
++                {
++                    g_liveSite.crashed = true;
++                    g_liveSite.crashDetail = liveCrash.detail;
++                }
++            }
++        {
++            // The fact this stage was written for. A terminated renderer is not
++            // an error code on a page: it is Chromium's crash card painted where
++            // the page was, which is the picture a player described.
++            SurfaceStatePayload crashed;
++            static_cast<void>(DecodePayload(aMessage, crashed));
++            std::cerr << "stage=renderer_crashed surface=" << crashed.surface
++                      << " detail=" << crashed.detail << '\n';
++            if (crashed.surface == kPopupFollowSurface) popupRendererCrashed = true;
+             break;
+         }
+         case MessageType::SurfaceGpuRing:
+         {
+             SurfaceGpuRingPayload ring;
+             if (DecodePayload(aMessage, ring) && ring.surface == 1 && !ringOffered)
+@@ -1072,43 +1700,607 @@ undeclared.src = 'web/secret.svg';
+                         {
+                             const std::string json = "{\"text\":\"async CPU\",\"background\":\"rgb(" +
+                                 std::to_string(burst == 7 ? red : 10 + burst) + ",120,60)\"}";
+                             passed = SendPayload(connection, MessageType::LuaToJsEvent, sequence++,
+                                 WebEventPayload{1, 1, 0, "test:set", json, true}, error);
+                         }
+-                        passed = passed && pump([&] {
++                        // The pump's own subject IS the colour, so a failure here
++                        // names a check that ran. `Check(passed, ...)` named the
++                        // colour for whatever the burst had already taken.
++                        const bool converged = passed && pump([&] {
+                             FrameView view;
+                             return frames.ReadLatest(0, view, error) && view.pixels.size() >= 4 &&
+                                 std::equal(expected.begin(), expected.end(), view.pixels.begin());
+                         }, std::chrono::seconds(5));
+-                        passed = Check(passed, "async CPU did not converge to final burst color");
++                        passed = passed && Check(converged, "async CPU did not converge to final burst color");
+                     }
+                     // Resize while repaint/readback work may still be pending.
+                     // Old delayed completions must never write to the new map.
+                     SharedFrameBuffer resizedFrames;
+                     const auto resizedName = mappingName + L".CpuResize";
+-                    passed = passed && resizedFrames.Create(resizedName, 640, 360, error, true) &&
++                    // Mapping the new surface and sending the resize are their own
++                    // check. Through `Check(passed, ...)` below, a failed map or a
++                    // failed write was reported as a pixel that never converged --
++                    // the message the audit read as a resize timing failure.
++                    const bool resizeSent = passed &&
++                        resizedFrames.Create(resizedName, 640, 360, error, true) &&
+                         SendPayload(connection, MessageType::ResizeSurface, sequence++,
+                             SurfaceResizePayload{1, 1, Utf8(resizedName), 640, 360, 640, 360, 1.0F}, error) &&
+                         SendPayload(connection, MessageType::LuaToJsEvent, sequence++,
+                             WebEventPayload{1, 1, 0, "test:set",
+                                 R"JSON({"text":"resized CPU","background":"rgb(11,22,33)"})JSON", true}, error);
+-                    passed = passed && pump([&] {
++                    const bool resizePublished = resizeSent && pump([&] {
+                         FrameView view;
+                         const std::array<uint8_t, 4> expected{33, 22, 11, 255};
+                         return resizedFrames.ReadLatest(0, view, error) && view.width == 640 &&
+                             view.height == 360 && view.pixels.size() >= 4 &&
+                             std::equal(expected.begin(), expected.end(), view.pixels.begin());
+                     }, std::chrono::seconds(5));
+-                    passed = Check(passed, "async CPU resize did not publish exact pixels");
++                    passed = passed &&
++                        Check(resizePublished, "async CPU resize did not publish exact pixels");
                      std::cerr << "stage=async_cpu_burst_resize ok=" << passed << "\n";
                  }
              }
@@ -328,9 +925,529 @@ index 68da2a3a..5f1993fa 100644
 +        probeFrames.push_back(std::move(mapping));
 +    }
 +
++    // --- 6. The operator's ad-blocklist layer --------------------------------
++    //
++    // Everything above measured what the build refuses. This measures what a
++    // SERVER can add, which is the whole point of the feature: a popup network
++    // that registers a domain on Tuesday must not have to wait for a build, a
++    // signed catalog and every client updating.
++    //
++    // The control is the first probe surface above: a media surface framed
++    // `https://example.com/` and reported `load:true`. The rule pushed here names
++    // exactly that origin -- which the compiled list does NOT refuse, so the
++    // only thing that can have changed between the two runs is this message. The
++    // third surface is the same page, under the same policy, with the operator's
++    // layer in force.
++    //
++    // Then the receipt, because "sent" and "in force" are different facts and
++    // only one of them is visible to the server that pushed.
++    {
++        AdBlockPolicyPayload policy;
++        policy.revision = 1;
++        policy.source = "open77_webhost_test@loopback";
++        policy.hosts = {"example.com"};
++        policy.tokens = {};
++        const auto compiled = static_cast<uint32_t>(op77::WebUI::Ads::RuleCount());
++        passed = passed && SendPayload(connection, MessageType::AdBlockPolicy, sequence++, policy, error) &&
++            pump([&] { return adBlockReceipt; }, std::chrono::seconds(10));
++        passed = passed && Check(adBlockReceipt,
++            "the host did not answer the operator's blocklist with a receipt");
++        passed = passed && Check(adBlockState.hostRules == 1 && adBlockState.tokenRules == 0,
++            "the host took " + std::to_string(adBlockState.hostRules) + " host rules and " +
++                std::to_string(adBlockState.tokenRules) + " tokens from a one-host policy");
++        passed = passed && Check(adBlockState.compiledRules == compiled,
++            "the receipt must report the compiled list as well: the operator's layer only ever "
++            "adds to it, and a count that moved would mean it did not");
++        passed = passed && Check(adBlockState.refused.empty(),
++            "a valid rule was refused: " + (adBlockState.refused.empty()
++                ? std::string("none") : adBlockState.refused.front()));
++        passed = passed && Check(op77::WebUI::Ads::IsBlocked("https://example.com/") == false,
++            "example.com is in the compiled list, so this stage would be measuring the build "
++            "instead of the operator's layer");
++
++        const auto name = mappingName + L".AdBlock";
++        auto mapping = std::make_unique<SharedFrameBuffer>();
++        passed = passed && mapping->Create(name, pixelWidth, pixelHeight, error);
++        auto blocked = create;
++        blocked.surface = kAdBlockProbeSurface;
++        blocked.origin = "r-adblock-probe-g-1.cym-ui";
++        blocked.entry = "web/frame-probe.html";
++        blocked.allowedFiles = {"web/frame-probe.html"};
++        blocked.frameMapping = Utf8(name);
++        blocked.pagePolicy = WebPagePolicy::Media;
++        blocked.visible = true;
++        blocked.framesPerSecond = 12;
++        passed = passed && SendPayload(connection, MessageType::CreateSurface, sequence++, blocked, error) &&
++            pump([&] { return adBlockFrameReported; }, std::chrono::seconds(25));
++        passed = passed && Check(adBlockFrameReported,
++            "the page never reported whether the operator's rule stopped its frame");
++        passed = passed && Check(adBlockFrameBlocked,
++            "a rule the server pushed did not stop the frame the control run loaded: " +
++                adBlockFrameJson);
++        std::cerr << "stage=adblock_frame blocked=" << adBlockFrameBlocked
++                  << " json=" << adBlockFrameJson << '\n';
++        probeFrames.push_back(std::move(mapping));
++
++        // ...and the same rule through the resolver, which is the path the
++        // television page takes BEFORE framing anything. That verdict is its own
++        // name (`blocked`), and it is the one difference between "the ad does not
++        // show because the browser refused a frame" and "the ad does not show
++        // because we never asked the origin about it at all".
++        const auto resolveName = mappingName + L".AdBlockResolve";
++        auto resolveMapping = std::make_unique<SharedFrameBuffer>();
++        passed = passed && resolveMapping->Create(resolveName, pixelWidth, pixelHeight, error);
++        auto blockedResolve = create;
++        blockedResolve.surface = kAdBlockResolveSurface;
++        blockedResolve.origin = "r-adblock-resolve-g-1.cym-ui";
++        blockedResolve.entry = "web/adblock-resolve.html";
++        blockedResolve.allowedFiles = {"web/adblock-resolve.html"};
++        blockedResolve.frameMapping = Utf8(resolveName);
++        blockedResolve.pagePolicy = WebPagePolicy::Media;
++        blockedResolve.visible = true;
++        blockedResolve.framesPerSecond = 12;
++        passed = passed && SendPayload(connection, MessageType::CreateSurface, sequence++, blockedResolve, error) &&
++            pump([&] { return adBlockResolveReported; }, std::chrono::seconds(25));
++        passed = passed && Check(adBlockResolveReported,
++            "the resolver probe never reported an answer for the operator-blocked origin");
++        passed = passed && Check(adBlockResolveJson.find("\"violation\":\"blocked\"") != std::string::npos &&
++                                    adBlockResolveJson.find("\"best\":\"http") == std::string::npos,
++            "the frame resolver did not refuse the operator's rule, so the television page would "
++            "probe an origin it is going to be stopped from framing: " + adBlockResolveJson);
++        std::cerr << "stage=adblock_resolve json=" << adBlockResolveJson << '\n';
++        probeFrames.push_back(std::move(resolveMapping));
++    }
++
++    // Each television keeps its own cookie jar: a directory under the host's
++    // data root named for the resource and the surface, beside the host's
++    // profile rather than inside it, and distinct from every other television's.
++    //
++    // This is the host's half of the property. The other half -- that CEF then
++    // keeps each surface's cookies in the partition its `cache_path` names -- is
++    // CEF's contract for that field, and is what a sign-in on one television and
++    // a second sign-in on another are separated by.
++    {
++        const auto jarOne = op77::WebUI::CookieJar::PathFor(data, "open77_webhost_test", 1);
++        const auto jarTwo = op77::WebUI::CookieJar::PathFor(data, "open77_webhost_test", 2);
++        passed = passed &&
++            Check(std::filesystem::exists(jarOne),
++                  "the first surface must have been given its own cookie jar") &&
++            Check(std::filesystem::exists(jarTwo),
++                  "a companion surface must have been given its own cookie jar") &&
++            Check(jarOne != jarTwo,
++                  "two televisions in one world must not share a cookie jar") &&
++            Check(jarOne.parent_path() == op77::WebUI::CookieJar::RootFor(data),
++                  "a jar must live beside the host's profile, never inside it");
++        std::cerr << "stage=cookie_jars one=" << jarOne.filename().string()
++                  << " two=" << jarTwo.filename().string() << '\n';
++    }
++
++    // --- 7. A followed window, and the renderer that must survive it ----------
++    //
++    // `Follow` used to be `aFrame->LoadURL(url)`, and CEF documents what that
++    // call does on a frame that has not navigated to the request origin -- which
++    // a followed window never has, by definition: the browser terminates the
++    // renderer, and Chromium paints its crash card inside that frame. On screen
++    // that is a grey box with a sad face, which is what a player reported seeing
++    // every time they pressed play on a framed site. Their own host trace shows
++    // the arithmetic: five `popup:follow` decisions and five renderer
++    // terminations in one session, two and two in the next.
++    //
++    // Everything here is the real thing: the click travels over the same input
++    // messages the client sends, the policy is the media surface's, the
++    // navigation is CEF's. Reverting `FollowInFrame` to `LoadURL` makes this
++    // stage fail, which is the mutation control -- without it the stage would be
++    // a description of the fix rather than a test of it.
++    {
++        const auto name = mappingName + L".PopupFollow";
++        auto mapping = std::make_unique<SharedFrameBuffer>();
++        passed = passed && mapping->Create(name, pixelWidth, pixelHeight, error);
++        auto popup = create;
++        popup.surface = kPopupFollowSurface;
++        popup.origin = "r-popup-follow-g-1.cym-ui";
++        popup.entry = "web/popup-parent.html";
++        popup.allowedFiles = {"web/popup-parent.html", "web/popup-opener.html"};
++        popup.frameMapping = Utf8(name);
++        popup.pagePolicy = WebPagePolicy::Media;
++        popup.visible = true;
++        popup.framesPerSecond = 12;
++        passed = passed && SendPayload(connection, MessageType::CreateSurface, sequence++, popup, error);
++
++        // Then the resize the client sends the moment a surface appears. It is
++        // not decoration: it is what gives the browser a widget with a size, and
++        // a click sent before it has nothing to land on.
++        const auto resizedName = mappingName + L".PopupFollowResize";
++        auto resized = std::make_unique<SharedFrameBuffer>();
++        passed = passed && resized->Create(resizedName, pixelWidth, pixelHeight, error) &&
++            SendPayload(connection, MessageType::ResizeSurface, sequence++,
++                SurfaceResizePayload{kPopupFollowSurface, popup.generation, Utf8(resizedName),
++                                     viewWidth, viewHeight, pixelWidth, pixelHeight,
++                                     popup.deviceScaleFactor}, error);
++
++        // Focus, exactly as the client does when a player takes a screen. The
++        // input below is the real path's, in the order the real path sends it.
++        const SurfaceFocusPayload focus{kPopupFollowSurface, popup.generation, true, true};
++        passed = passed && SendPayload(connection, MessageType::SetFocus, sequence++, focus, error);
++
++        // A pump's result is deliberately NOT folded into `passed`: a timeout
++        // here is the failure the `Check` below names, and an `&&` chain would
++        // swallow the reason and report the stage as failed with no message.
++        static_cast<void>(pump([&] { return popupArmed; }, std::chrono::seconds(25)));
++        passed = passed && Check(popupArmed,
++            "the nested frame never reported itself armed, so nothing could ask for a window "
++            "and this stage would be measuring the popup policy without a popup");
++
++        // A real left button press and release on the button that fills the
++        // frame. CEF gives the page the user gesture the policy asks about -- a
++        // window asked for without one is dropped rather than followed, and this
++        // stage would then pass for the wrong reason.
++        // A quarter of the way across, which is inside the nested frame: half of
++        // the surface's width is the frame's right edge, so the midpoint itself
++        // belongs to the surface's own document.
++        const int32_t nestedX = static_cast<int32_t>(viewWidth / 4);
++        const int32_t centreY = static_cast<int32_t>(viewHeight / 2);
++        const MouseMovePayload hover{kPopupFollowSurface, nestedX, centreY, 0, false};
++        const MouseButtonPayload press{kPopupFollowSurface, nestedX, centreY, 0, 0, false, 1};
++        const MouseButtonPayload release{kPopupFollowSurface, nestedX, centreY, 0, 0, true, 1};
++        passed = passed && SendPayload(connection, MessageType::InputMouseMove, sequence++, hover, error);
++        passed = passed &&
++            SendPayload(connection, MessageType::InputMouseButton, sequence++, press, error) &&
++            SendPayload(connection, MessageType::InputMouseButton, sequence++, release, error);
++        static_cast<void>(pump([&] { return popupOpened || popupRendererCrashed; }, std::chrono::seconds(20)));
++        // If nothing was asked for by the nested frame, ask the same question in
++        // the other geometry before concluding anything: the parent's own click
++        // is the same policy decision made by the surface's document instead of
++        // by a frame inside it.
++        if (!popupOpened && !popupRendererCrashed)
++        {
++            const MouseMovePayload hoverOwn{kPopupFollowSurface, static_cast<int32_t>(viewWidth * 3 / 4),
++                                            static_cast<int32_t>(viewHeight / 2), 0, false};
++            const MouseButtonPayload pressOwn{kPopupFollowSurface, static_cast<int32_t>(viewWidth * 3 / 4),
++                                              static_cast<int32_t>(viewHeight / 2), 0, 0, false, 1};
++            const MouseButtonPayload releaseOwn{kPopupFollowSurface, static_cast<int32_t>(viewWidth * 3 / 4),
++                                                static_cast<int32_t>(viewHeight / 2), 0, 0, true, 1};
++            passed = passed && SendPayload(connection, MessageType::InputMouseMove, sequence++, hoverOwn, error);
++            passed = passed &&
++                SendPayload(connection, MessageType::InputMouseButton, sequence++, pressOwn, error) &&
++                SendPayload(connection, MessageType::InputMouseButton, sequence++, releaseOwn, error);
++            static_cast<void>(pump([&] { return popupOpened || popupRendererCrashed; }, std::chrono::seconds(20)));
++        }
++        // A followed window is a navigation: give it the moment it takes, so a
++        // kill that arrives after the click is still counted.
++        static_cast<void>(pump([&] { return false; }, std::chrono::milliseconds(1500)));
++
++        // The crash is asserted first because it is the more specific fact: when
++        // the renderer is killed the page's own report never arrives, and a stage
++        // that spoke of the missing report first would blame the click for it.
++        passed = passed && Check(!popupRendererCrashed,
++            "following a window killed the frame's renderer (CEF's bad IPC reason 213, which "
++            "the host reports as RESULT_CODE_KILLED_BAD_MESSAGE). Chromium paints that as its "
++            "crash card -- a grey box with a sad face -- where the page was");
++        passed = passed && Check(popupOpened && popupNestedOpened &&
++                                     popupOpenedJson.find("\"asked\":true") != std::string::npos,
++            "the window was not asked for by the nested frame, which is the geometry the real "
++            "one came from, so the case that failed is still unexercised: " +
++                (popupOpenedJson.empty() ? std::string("the page never reported a click")
++                                         : popupOpenedJson));
++        passed = passed && Check(!popupSurfaceFailed,
++            "the surface was failed after a followed window: " + popupSurfaceDetail);
++        std::cerr << "stage=popup_follow armed=" << popupArmed << " nested=" << popupNestedOpened
++                  << " opened=" << popupOpened << " renderer_crashed=" << popupRendererCrashed
++                  << " json=" << popupOpenedJson << '\n';
++        probeFrames.push_back(std::move(resized));
++        probeFrames.push_back(std::move(mapping));
++    }
++
++    // --- The real site, end to end ------------------------------------------
++    //
++    // Every stage above runs against a fixture this file wrote to a temporary
++    // directory. This one runs against the real internet, and it is the only
++    // stage that can answer the question a player actually asked: not "is the
++    // popup policy correct?" but "does the film play?". Its shape is the real
++    // one -- the real television page is the surface, the site URL arrives over
++    // the same bridge the client's Lua uses, the clicks are real input messages,
++    // and the film is whatever the site's own player fetched, decoded by the
++    // host's decoder -- because a version that stubbed any of those would be a
++    // description of the feature rather than a test of it.
++    if (g_liveSite.enabled)
++    {
++        const auto liveMappingName = mappingName + L".LiveSite";
++        auto liveMapping = std::make_unique<SharedFrameBuffer>();
++        passed = passed && liveMapping->Create(liveMappingName, pixelWidth, pixelHeight, error);
++        auto live = create;
++        live.surface = kLiveSiteSurface;
++        live.resource = "open77_media";
++        live.resourceRoot = Utf8(g_liveSite.resourceRoot.wstring());
++        live.entry = "web/tv.html";
++        live.allowedFiles = {"web/tv.html", "web/tv.js", "web/tv.css"};
++        live.origin = "r-live-site-g-1.cym-ui";
++        live.frameMapping = Utf8(liveMappingName);
++        live.pagePolicy = WebPagePolicy::Media;
++        live.visible = true;
++        live.framesPerSecond = 12;
++        passed = passed && SendPayload(connection, MessageType::CreateSurface, sequence++, live, error);
++
++        const auto liveResizeName = liveMappingName + L".Resize";
++        auto liveResized = std::make_unique<SharedFrameBuffer>();
++        passed = passed && liveResized->Create(liveResizeName, pixelWidth, pixelHeight, error) &&
++            SendPayload(connection, MessageType::ResizeSurface, sequence++,
++                SurfaceResizePayload{kLiveSiteSurface, live.generation, Utf8(liveResizeName),
++                                     viewWidth, viewHeight, pixelWidth, pixelHeight,
++                                     live.deviceScaleFactor}, error);
++        passed = passed && SendPayload(connection, MessageType::SetFocus, sequence++,
++            SurfaceFocusPayload{kLiveSiteSurface, live.generation, true, true}, error);
++
++        // The URL arrives the way it does in the game: as a `media:state` from
++        // the client's Lua half. The page decides what to do with it -- probe,
++        // resolve, frame -- and every decision it makes is printed.
++        std::string liveState = "{\"url\":\"";
++        for (const char character : g_liveSite.url)
++        {
++            if (character == '"' || character == '\\') liveState.push_back('\\');
++            liveState.push_back(character);
++        }
++        liveState += "\",\"volume\":75,\"muted\":false,\"paused\":false,"
++                     "\"label\":\"live site\",\"border\":\"#c8102e\",\"curtain\":\"open\"}";
++        // Sent until the page acts on it, and that is the same fact production
++        // observes from the other end. A dispatch is an `ExecuteJavaScript` into
++        // the page, so a state sent before the document's own listener is
++        // registered reaches nothing -- which is why the client's Lua waits for
++        // `media:ready`. This stage has no Lua half to hear that, so it repeats
++        // the send until the page stops answering `idle`; the first run of this
++        // stage framed nothing at all for exactly that reason.
++        bool pageAnswered = false;
++        for (int attempt = 0; attempt < 25 && !pageAnswered; ++attempt)
++        {
++            passed = passed && SendPayload(connection, MessageType::LuaToJsEvent, sequence++,
++                WebEventPayload{kLiveSiteSurface, live.generation, 0, "media:state", liveState, true},
++                error);
++            static_cast<void>(pump([] { return false; }, std::chrono::milliseconds(1000)));
++            for (const auto& report : g_liveSite.reports)
++            {
++                if (report.find("idle") == std::string::npos &&
++                    report.find("playback") == std::string::npos)
++                    pageAnswered = true;
++            }
++        }
++        std::cerr << "stage=live_page answered=" << pageAnswered << "\n";
++
++        // The page resolves the link and frames it, which is network work plus a
++        // document load. Then the site's player needs a click: these players open
++        // their stream on one, which is also the only reason the popup policy
++        // sees a gesture at all.
++        static_cast<void>(pump([] { return false; }, std::chrono::seconds(12)));
++        const auto liveClick = [&](const int32_t aX, const int32_t aY) {
++            passed = passed &&
++                SendPayload(connection, MessageType::InputMouseMove, sequence++,
++                    MouseMovePayload{kLiveSiteSurface, aX, aY, 0, false}, error) &&
++                SendPayload(connection, MessageType::InputMouseButton, sequence++,
++                    MouseButtonPayload{kLiveSiteSurface, aX, aY, 0, 0, false, 1}, error) &&
++                SendPayload(connection, MessageType::InputMouseButton, sequence++,
++                    MouseButtonPayload{kLiveSiteSurface, aX, aY, 0, 0, true, 1}, error);
++        };
++        const int32_t liveCentreX = static_cast<int32_t>(viewWidth / 2);
++        const int32_t liveCentreY = static_cast<int32_t>(viewHeight / 2);
++        // Several targets because a real player's play button is somewhere in the
++        // middle of somebody else's design, and this host cannot read their DOM.
++        const std::pair<int32_t, int32_t> liveTargets[] = {
++            {liveCentreX, liveCentreY},
++            {liveCentreX, static_cast<int32_t>(viewHeight * 3 / 4)},
++            {static_cast<int32_t>(viewWidth * 3 / 4), liveCentreY},
++            {static_cast<int32_t>(viewWidth / 2), static_cast<int32_t>(viewHeight / 3)},
++        };
++        for (const auto& [targetX, targetY] : liveTargets)
++        {
++            liveClick(targetX, targetY);
++            static_cast<void>(pump([] { return false; }, std::chrono::seconds(6)));
++        }
++
++        // Then let it run, asking the page what its player is doing the whole
++        // time. Two samples that differ are the evidence: `readyState` says a
++        // video element has data, and a `currentTime` that moves says it is
++        // playing rather than paused on a poster.
++        // Long enough for the page's own fallback to run its course: the site's
++        // player needs a click to ask for its stream, and the page then watches
++        // the host's record for a bounded window (`SITE_WATCH_TICKS` at 1.5 s in
++        // `tv.js`). Sampling for less than that window would end the stage in the
++        // middle of the very mechanism it exists to observe.
++        for (int sampleIndex = 0; sampleIndex < 20; ++sampleIndex)
++        {
++            passed = passed && SendPayload(connection, MessageType::LuaToJsEvent, sequence++,
++                WebEventPayload{kLiveSiteSurface, live.generation, 0, "media:sample", "{}", true},
++                error);
++            static_cast<void>(pump([] { return false; }, std::chrono::seconds(3)));
++        }
++
++        // What the host itself saw, from its own trace: the followed windows,
++        // the live streams it watched somebody else's player request, and the
++        // requests its blocklist refused.
++        std::string trace;
++        {
++            std::ifstream traceFile(data / L"open77-webhost.log", std::ios::binary);
++            trace.assign(std::istreambuf_iterator<char>(traceFile),
++                         std::istreambuf_iterator<char>());
++        }
++        const auto countIn = [&trace](const std::string& aNeedle) {
++            int total = 0;
++            for (auto at = trace.find(aNeedle); at != std::string::npos;
++                 at = trace.find(aNeedle, at + aNeedle.size()))
++                ++total;
++            return total;
++        };
++        // The host's own trace, printed as it stands. When the film does not
++        // play, the reason is in here -- a refused frame, a blocked request, a
++        // challenge the page could not pass -- and printing the lines is the
++        // difference between naming the mechanism and guessing at it.
++        for (const char* const interesting : {"browser_create_url:", "web_frame:", "popup:",
++                 "media_found:", "media_probe:", "media_stream:", "adblock:request",
++                 "browser_before_browse:", "browser_load_error:", "browser_console:",
++                 "renderer_crashed", "surface_failed"})
++        {
++            std::size_t at = 0;
++            int printed = 0;
++            while (printed < 8)
++            {
++                at = trace.find(interesting, at);
++                if (at == std::string::npos) break;
++                auto lineEnd = trace.find('\n', at);
++                if (lineEnd == std::string::npos) lineEnd = trace.size();
++                const std::string line = trace.substr(at, std::min<std::size_t>(lineEnd - at, 220U));
++                std::cerr << "stage=live_trace " << line << '\n';
++                at = lineEnd;
++                ++printed;
++            }
++        }
++
++        g_liveSite.popupsFollowed = countIn("popup:follow");
++        g_liveSite.popupsDropped = countIn("popup:drop");
++        g_liveSite.adsBlocked = countIn("adblock:request");
++        // `media_found:forgotten` is the same needle with the opposite meaning --
++        // the surface dropping a stream it had found -- so counting the prefix
++        // alone reported one stream for a run that found none, which is exactly
++        // the kind of number that makes a failing run read as a passing one.
++        g_liveSite.streamsFound = countIn("media_found:") - countIn("media_found:forgotten");
++        const auto found = trace.rfind("media_found:");
++        if (found != std::string::npos)
++        {
++            const auto lineEnd = trace.find('\n', found);
++            g_liveSite.foundStream = trace.substr(found, lineEnd - found);
++            const auto kindStart = g_liveSite.foundStream.find(':');
++            const auto kindEnd = g_liveSite.foundStream.find(' ', kindStart + 1);
++            g_liveSite.foundKind = g_liveSite.foundStream.substr(kindStart + 1, kindEnd - kindStart - 1);
++        }
++        const double liveReady = LiveSiteEvidence::NumberField(g_liveSite.BestPlayback(), "readyState");
++        const double liveTime = LiveSiteEvidence::NumberField(g_liveSite.BestPlayback(), "currentTime");
++
++        std::cerr << "stage=live_site url=" << g_liveSite.url
++                  << " reports=" << g_liveSite.reports.size()
++                  << " followed=" << g_liveSite.popupsFollowed
++                  << " dropped=" << g_liveSite.popupsDropped
++                  << " ads_blocked=" << g_liveSite.adsBlocked
++                  << " streams_found=" << g_liveSite.streamsFound
++                  << " kind=" << (g_liveSite.foundKind.empty() ? "<none>" : g_liveSite.foundKind)
++                  << " renderer_crashed=" << g_liveSite.crashed
++                  << " best_readyState=" << liveReady << " best_currentTime=" << liveTime << '\n';
++        std::cerr << "stage=live_best " << g_liveSite.BestPlayback() << '\n';
++        std::cerr << "stage=live_last " << g_liveSite.LastReport() << '\n';
++        // Every report the page made, in order. `best` and `last` answer "did it
++        // play" and "what did it say at the end"; neither says whether the page's
++        // own fallback ran, gave up, or never started, and those are the three
++        // different faults a run like this has to tell apart.
++        for (std::size_t index = 0; index < g_liveSite.reports.size(); ++index)
++            std::cerr << "stage=live_report[" << index << "] " << g_liveSite.reports[index] << '\n';
++        if (!g_liveSite.foundStream.empty()) std::cerr << "stage=live_stream " << g_liveSite.foundStream << '\n';
++
++        // The crash is asserted first, and for the same reason the popup stage
++        // asserts it first: when the renderer dies, everything the page would
++        // have said never arrives, and a stage that spoke of the missing reports
++        // first would blame the site for the host's fault.
++        passed = passed && Check(!g_liveSite.crashed,
++            "the renderer was terminated while the real site was driven (" + g_liveSite.crashDetail +
++            "). Chromium paints that as its crash card where the page was");
++        // The verdict is the video element, not the host's view of the network. A
++        // page may play a stream this host resolved and served it
++        // (`/op77/media/stream`), in which case the site's player never fetches
++        // anything and `media_found:` is legitimately absent -- measured, in the
++        // H.264 control run, whose element played to `readyState 4, currentTime
++        // 52.17` while this host saw nothing. What cannot be argued with is a
++        // video element that has data and whose clock is moving, so that is what
++        // this asserts, with the host's own count kept as the diagnostic that
++        // says whether the site's player ever fetched anything at all.
++        passed = passed && Check(liveReady >= 3.0 && liveTime > 0.0,
++            "no video element advanced on the real site: best sample was " + g_liveSite.BestPlayback() +
++            ". The host saw " + std::to_string(g_liveSite.streamsFound) +
++            " of the site's own media fetches (" + std::to_string(g_liveSite.popupsFollowed) +
++            " popup:follow, " + std::to_string(g_liveSite.adsBlocked) + " adblock:request, " +
++            std::to_string(g_liveSite.reports.size()) + " page reports). The page's last word was: " +
++            g_liveSite.LastReport());
++
++        probeFrames.push_back(std::move(liveResized));
++        probeFrames.push_back(std::move(liveMapping));
++    }
++
      static_cast<void>(Send(connection, MessageType::Shutdown, sequence++, {}, error));
      std::cerr << "stage=shutdown_sent passed=" << passed << " gpuSkipped=" << gpuSkipped << "\n";
      const DWORD wait = WaitForSingleObject(process.hProcess, 10000);
      if (wait != WAIT_OBJECT_0)
      {
          TerminateProcess(process.hProcess, 98);
+@@ -1128,14 +2320,59 @@ undeclared.src = 'web/secret.svg';
+     {
+         std::error_code traceError;
+         std::filesystem::copy_file(data / L"open77-webhost.log",
+             std::filesystem::current_path() / L"webhost-last-failure.log",
+             std::filesystem::copy_options::overwrite_existing, traceError);
+     }
++
++    // The host's own trace, read after it has exited, for the two lines the
++    // stage above can only observe from the outside: that the policy was applied
++    // as a policy (`adblock_policy:` says the counts it stored), and that the
++    // frame it then refused was refused by the blocklist rather than by anything
++    // else that could blank a panel -- a network failure, a sandbox refusal, a
++    // site that went away. Those are the same picture on screen.
++    {
++        std::ifstream trace(data / L"open77-webhost.log", std::ios::binary);
++        const std::string contents((std::istreambuf_iterator<char>(trace)),
++                                   std::istreambuf_iterator<char>());
++        passed = passed && Check(contents.find("adblock_policy:1:") != std::string::npos,
++            "the host's trace never recorded applying the operator's policy");
++        passed = passed && Check(contents.find("adblock:navigation https://example.com/") != std::string::npos,
++            "the refused frame is not in the trace as a blocklist refusal, so whatever "
++            "stopped it was something else");
++        // The followed window, in the host's own words. The first line is that
++        // the policy decided to follow; the second is that the URL actually went
++        // somewhere -- the renderer surviving is not the same fact as the window
++        // arriving, and only the pair together is the behaviour a player sees.
++        passed = passed && Check(contents.find("popup:follow " + std::string(kPopupFollowTarget)) != std::string::npos,
++            "the host's trace never recorded following the window the page asked for, so this "
++            "run did not exercise the path it exists to measure");
++        passed = passed && Check(contents.find("browser_before_browse:same=no:" + std::string(kPopupFollowTarget)) != std::string::npos,
++            "the followed window never navigated, so nothing arrived on the screen: surviving "
++            "is not the same fact as the URL landing");
++        std::cerr << "stage=popup_trace followed="
++                  << (contents.find("popup:follow " + std::string(kPopupFollowTarget)) != std::string::npos)
++                  << " navigated="
++                  << (contents.find("browser_before_browse:same=no:" + std::string(kPopupFollowTarget)) != std::string::npos)
++                  << " renderer_crashed="
++                  << (contents.find("ui_message:54") != std::string::npos) << '\n';
++    }
+     cleanup();
+ 
+-    if (!Check(passed, "WebHost IPC/OSR/JS integration failed: " + error)) return 1;
++    // Printed unconditionally rather than through `Check`: `Check` speaks only
++    // for the first failure, and the first failure is precisely what this line
++    // exists to repeat. Through `Check` it went silent exactly when it mattered
++    // -- a run that had already named its failing check exited non-zero with no
++    // summary at all.
++    if (!passed)
++    {
++        std::cerr << "WebHost IPC/OSR/JS integration failed: "
++                  << (firstFailure.empty()
++                          ? "a stage failed without naming a check (see stage= above)"
++                          : firstFailure) << '\n';
++        return 1;
++    }
+     std::cout << "Open77 WebHost IPC/OSR/JS integration passed"
+               << (gpuSkipped ? " (GPU ring skipped)" : refuseRing ? " (GPU refusal fallback verified)" :
+                   " (GPU ring verified)") << "\n";
+     return 0;
+ }
