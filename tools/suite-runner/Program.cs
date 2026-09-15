@@ -1,7 +1,9 @@
 using System.Text;
+using System.Text.RegularExpressions;
 using KeraLua;
 
-// The four open77_media suites, run with no Lua interpreter installed.
+// The four open77_media suites, and the vendored alias snapshot they are checked
+// against, run with no Lua interpreter installed.
 //
 // The suites are pure Lua, and the monorepo runs them through a real `lua5.4`:
 // `tools/lua-test/run.lua` and `tools/run-suite.py` both need one on PATH, and so
@@ -14,6 +16,12 @@ using KeraLua;
 // that runs wherever `dotnet` does. It is deliberately not a second definition of
 // the suite: it preloads exactly what `tools/run-suite.py` preloads, in the same
 // order, and reads the same `TestResult` table.
+//
+// It also writes and checks that snapshot, because the snapshot is generated and
+// a generated file that nobody regenerates is a lie with a date on it. The tool
+// writes the bytes `tools/run-suite.py` writes -- including the CRLF endings
+// `.gitattributes` pins with `* -text` -- so the two agree on one canonical form
+// rather than each producing a subtly different file.
 //
 // One state per suite, which is what `tests/MediaRecordsTests.cs` does -- the
 // monorepo's own C# harness. `tools/run-suite.py` shares a single state instead,
@@ -43,6 +51,13 @@ internal static class Program
     private const string AdminConfig = "resources/system/open77_admin/shared/config.lua";
 
     /// <summary>
+    /// The repository's own hunk of the file the snapshot is a copy of. This is the
+    /// only statement of the alias list that lives in this repository, so it is
+    /// what `--check-fixture` can hold the snapshot against without a checkout.
+    /// </summary>
+    private const string AdminConfigPatch = "patches/resources__system__open77_admin__shared__config.lua.diff";
+
+    /// <summary>
     /// The four suites, in the order they are authored for.
     ///
     /// The catalogue suite comes first because it is the only one that needs the
@@ -66,6 +81,8 @@ internal static class Program
     {
         string? repo = null;
         string? from = null;
+        var refresh = false;
+        var check = false;
 
         for (var i = 0; i < args.Length; i++)
         {
@@ -79,6 +96,12 @@ internal static class Program
                     if (++i >= args.Length) return Fail("--from needs a path to an open77-base checkout");
                     from = args[i];
                     break;
+                case "--refresh-fixture":
+                    refresh = true;
+                    break;
+                case "--check-fixture":
+                    check = true;
+                    break;
                 case "-h":
                 case "--help":
                     Usage(Console.Out);
@@ -90,9 +113,16 @@ internal static class Program
             }
         }
 
+        if (refresh && check)
+        {
+            return Fail("--refresh-fixture and --check-fixture are different jobs; pass one");
+        }
+
         try
         {
-            return Run(repo, from);
+            var root = FindRepository(repo);
+            if (refresh) return RefreshFixture(root, from);
+            return check ? CheckFixture(root, from) : RunSuites(root);
         }
         catch (SuiteRunnerException error)
         {
@@ -101,10 +131,9 @@ internal static class Program
         }
     }
 
-    private static int Run(string? repoPath, string? checkout)
+    private static int RunSuites(string repo)
     {
-        var repo = FindRepository(repoPath);
-        var admin = ResolveAdminConfig(repo, checkout);
+        var admin = ResolveAdminConfig(repo, checkout: null);
 
         // The client suite resolves the resource through `OPEN77_REPO_ROOT` (the
         // monorepo layout, `resources/system/open77_media/...`). This repository is
@@ -158,7 +187,7 @@ internal static class Program
     private static (int Passed, int Failed, List<string> Failures) Execute(
         string admin, Suite suite, string repo, string staged)
     {
-        using var lua = new Lua(true) { Encoding = Encoding.UTF8 };
+        using var lua = NewLua();
         try
         {
             Run(lua, admin);
@@ -202,6 +231,322 @@ internal static class Program
             return (0, 1, [error.Message]);
         }
     }
+
+    // ---------------------------------------------------------------------
+    // The vendored snapshot
+    // ---------------------------------------------------------------------
+
+    /// <summary>
+    /// Rewrites <c>tests/fixtures/open77_admin-props-models.lua</c> from a live
+    /// open77-base checkout. Needs `--from`: a refresh with no source would be a
+    /// snapshot of the snapshot.
+    /// </summary>
+    private static int RefreshFixture(string repo, string? checkout)
+    {
+        if (checkout is null)
+        {
+            return Fail("--refresh-fixture needs --from <checkout>: the snapshot has to come from a live admin config");
+        }
+
+        var live = ResolveAdminConfig(repo, checkout);
+        var models = ReadModels(live);
+        var rendered = Render(models);
+        var fixture = Path.Combine(repo, Fixture);
+
+        var current = File.Exists(fixture) ? File.ReadAllBytes(fixture) : [];
+        if (current.AsSpan().SequenceEqual(rendered))
+        {
+            Console.WriteLine($"{Fixture} already matches {checkout} at {models.Count} aliases; nothing written");
+            return 0;
+        }
+
+        File.WriteAllBytes(fixture, rendered);
+        Console.WriteLine($"wrote {Fixture} with {models.Count} aliases from {checkout}");
+        return 0;
+    }
+
+    /// <summary>
+    /// Checks the snapshot without needing a Lua interpreter, and without needing
+    /// a checkout -- which is the only reason CI can run any part of this.
+    ///
+    /// With `--from <checkout>` it is the whole check: the snapshot must equal what
+    /// the live admin config renders, byte for byte. Without one it checks the
+    /// three things that are decidable from this repository alone:
+    ///
+    ///   * the file is exactly what the generator writes for the list it contains,
+    ///     so a hand-edited alias, a declared count that no longer matches the list,
+    ///     a lost line ending or a truncated file all fail here rather than in the
+    ///     records suite's messages;
+    ///   * no alias is listed twice;
+    ///   * every alias this repository's own `open77_admin` hunk adds to that list
+    ///     is in the snapshot.
+    ///
+    /// What it cannot see without a checkout is an alias that upstream grew and
+    /// this repository's hunks do not carry -- that is what `--from` is for, and
+    /// why the README says the snapshot can only ever be as fresh as its last
+    /// regeneration.
+    /// </summary>
+    private static int CheckFixture(string repo, string? checkout)
+    {
+        var fixture = Path.Combine(repo, Fixture);
+        if (!File.Exists(fixture))
+        {
+            throw new SuiteRunnerException($"{fixture} is missing. Vendor it with:\n" +
+                "  dotnet run --project tools/suite-runner -- --refresh-fixture --from <checkout>");
+        }
+
+        var bytes = File.ReadAllBytes(fixture);
+        var models = ReadModels(fixture);
+        var problems = new List<string>();
+
+        var canonical = Render(models);
+        if (!bytes.AsSpan().SequenceEqual(canonical))
+        {
+            problems.Add(Describe(Relative(repo, fixture), bytes, canonical));
+        }
+
+        var duplicates = models
+            .GroupBy(name => name, StringComparer.Ordinal)
+            .Where(group => group.Count() > 1)
+            .Select(group => group.Key)
+            .ToList();
+        if (duplicates.Count > 0)
+        {
+            problems.Add($"listed more than once: {string.Join(", ", duplicates)}");
+        }
+
+        var fromPatches = PatchAliases(repo);
+        var missing = fromPatches.Where(alias => !models.Contains(alias, StringComparer.Ordinal)).ToList();
+        if (missing.Count > 0)
+        {
+            problems.Add($"{missing.Count} alias(es) {AdminConfigPatch} adds are not in the snapshot: "
+                + string.Join(", ", missing));
+        }
+
+        if (checkout is not null)
+        {
+            var live = ReadModels(ResolveAdminConfig(repo, checkout));
+            if (!live.SequenceEqual(models, StringComparer.Ordinal))
+            {
+                problems.Add(DescribeLive(checkout, live, models));
+            }
+        }
+
+        var scope = checkout is null
+            ? $"{models.Count} aliases, {fromPatches.Count} alias(es) declared by {AdminConfigPatch}"
+            : $"{models.Count} aliases, matching {checkout}";
+        if (problems.Count == 0)
+        {
+            Console.WriteLine($"{Fixture}: OK ({scope})");
+            return 0;
+        }
+
+        Console.Error.WriteLine($"{Fixture}: STALE ({scope})");
+        foreach (var problem in problems) Console.Error.WriteLine($"  {problem}");
+        Console.Error.WriteLine(checkout is null
+            ? "  regenerate it from a tree that carries the work: --refresh-fixture --from <checkout>"
+            : "  regenerate it: --refresh-fixture --from <checkout>");
+        return 1;
+    }
+
+    /// <summary>
+    /// The aliases this repository's own hunk of the admin config adds. The guard
+    /// on the count is deliberate: if the patch is regenerated in a way this parse
+    /// stops understanding, it says so instead of quietly checking nothing.
+    /// </summary>
+    private static List<string> PatchAliases(string repo)
+    {
+        var patch = Path.Combine(repo, AdminConfigPatch);
+        if (!File.Exists(patch))
+        {
+            throw new SuiteRunnerException(
+                $"{AdminConfigPatch} is missing; it is what tells the snapshot which aliases this repository adds");
+        }
+
+        var aliases = new List<string>();
+        foreach (var line in File.ReadAllLines(patch))
+        {
+            // Additions only: context lines describe what the checkout already had,
+            // and `+++`/`---` are the diff header.
+            if (!line.StartsWith('+') || line.StartsWith("+++", StringComparison.Ordinal)) continue;
+            if (line.TrimStart('+').TrimStart().StartsWith("--", StringComparison.Ordinal)) continue;
+
+            foreach (Match match in LiteralPattern.Matches(line))
+            {
+                aliases.Add(match.Groups[1].Value);
+            }
+        }
+
+        if (aliases.Count == 0)
+        {
+            throw new SuiteRunnerException(
+                $"{AdminConfigPatch} yielded no aliases; the parse has stopped understanding it, which would make "
+                + "this check pass by finding nothing");
+        }
+
+        return aliases;
+    }
+
+    /// <summary>
+    /// Reads `Open77AdminConfig.props.models` out of a Lua file, in the order the
+    /// list declares. Works on the live config and on the snapshot alike, because
+    /// the snapshot is that same table written to disk.
+    /// </summary>
+    private static List<string> ReadModels(string path)
+    {
+        if (!File.Exists(path))
+        {
+            throw new SuiteRunnerException($"{path} does not exist");
+        }
+
+        using var lua = NewLua();
+        Run(lua, path);
+
+        if (lua.GetGlobal("Open77AdminConfig") != LuaType.Table)
+        {
+            throw new SuiteRunnerException($"{path} does not define Open77AdminConfig");
+        }
+
+        if (lua.GetField(-1, "props") != LuaType.Table)
+        {
+            throw new SuiteRunnerException($"{path}: Open77AdminConfig.props is missing or not a table");
+        }
+
+        if (lua.GetField(-1, "models") != LuaType.Table)
+        {
+            throw new SuiteRunnerException($"{path}: Open77AdminConfig.props.models is missing or not a table");
+        }
+
+        var count = lua.RawLen(-1);
+        if (count == 0)
+        {
+            throw new SuiteRunnerException($"{path}: Open77AdminConfig.props.models is empty");
+        }
+
+        var models = new List<string>(count);
+        for (var i = 1; i <= count; i++)
+        {
+            lua.RawGetInteger(-1, i);
+            models.Add(lua.ToString(-1) ?? throw new SuiteRunnerException($"{path}: model {i} is not a string"));
+            lua.Pop(1);
+        }
+
+        return models;
+    }
+
+    /// <summary>
+    /// The file the generator writes, byte for byte -- the same header, order and
+    /// CRLF endings `tools/run-suite.py` produces, because two tools writing one
+    /// generated file have to agree on what it looks like or the freshness check
+    /// becomes a diff of formatting.
+    /// </summary>
+    private static byte[] Render(List<string> models)
+    {
+        var text = new StringBuilder();
+        text.Append("-- A SNAPSHOT of the prop-model aliases that `open77_admin` publishes as\r\n");
+        text.Append("-- `Open77AdminConfig.props.models`.\r\n");
+        text.Append("--\r\n");
+        text.Append("-- The open77_media suite cross-checks every record's `model` against this\r\n");
+        text.Append("-- list, so a television can never name a model that does not exist. This\r\n");
+        text.Append("-- file exists only so that check can run without an open77-base checkout;\r\n");
+        text.Append("-- regenerate it from a real tree with:\r\n");
+        text.Append("--\r\n");
+        text.Append("--   python tools/run-suite.py --refresh-fixture --from <checkout>\r\n");
+        text.Append("--\r\n");
+        text.Append($"-- {models.Count} aliases, vendored as-is; nothing here is hand-edited.\r\n");
+        text.Append("Open77AdminConfig = {\r\n");
+        text.Append("  props = {\r\n");
+        text.Append("    models = {\r\n");
+        foreach (var model in models)
+        {
+            text.Append($"      \"{model}\",\r\n");
+        }
+        text.Append("    },\r\n");
+        text.Append("  },\r\n");
+        text.Append("}\r\n");
+        return Encoding.UTF8.GetBytes(text.ToString());
+    }
+
+    /// <summary>
+    /// The first line that differs, with both sides, rather than a byte offset: the
+    /// likely causes are one hand-edited alias, a count line left behind or a file
+    /// that lost its CRLF endings, and each of those reads off the line.
+    ///
+    /// Line endings are reported as their own case and not as "line 1 differs".
+    /// They are a real cause here -- `.gitattributes` pins `* -text`, so an editor
+    /// or a script that normalises them rewrites every byte of the file -- and a
+    /// comparison that split on CRLF would describe that as a whole-file
+    /// difference, which helps nobody.
+    /// </summary>
+    private static string Describe(string path, byte[] actual, byte[] expected)
+    {
+        var got = Lines(actual);
+        var want = Lines(expected);
+        var sameContent = got.Length == want.Length
+            && got.Zip(want).All(pair => pair.First.TrimEnd('\r') == pair.Second.TrimEnd('\r'));
+
+        if (sameContent)
+        {
+            return $"{path} has {LineEnding(actual)} line endings where the generated form has CRLF, "
+                + "so every line of the file is a different byte (`.gitattributes` pins `* -text`)";
+        }
+
+        for (var i = 0; i < Math.Max(got.Length, want.Length); i++)
+        {
+            var left = i < got.Length ? got[i].TrimEnd('\r') : "(no more lines)";
+            var right = i < want.Length ? want[i].TrimEnd('\r') : "(no more lines)";
+            if (!string.Equals(left, right, StringComparison.Ordinal))
+            {
+                return $"{path} is not the generated form: line {i + 1} is '{Small(left)}' but should be '{Small(right)}' "
+                    + "(the alias count, the order and the line endings are all part of the generated form)";
+            }
+        }
+
+        return $"{path} is not the generated form";
+    }
+
+    private static string Small(string line) =>
+        line.Length <= 120 ? line : line[..117] + "...";
+
+    private static string LineEnding(byte[] bytes)
+    {
+        var text = Encoding.UTF8.GetString(bytes);
+        var crlf = text.Contains("\r\n", StringComparison.Ordinal);
+        var bareLf = text.Replace("\r\n", string.Empty, StringComparison.Ordinal).Contains('\n');
+        return crlf && bareLf ? "mixed" : crlf ? "CRLF" : bareLf ? "LF" : "no";
+    }
+
+    private static string DescribeLive(string checkout, List<string> live, List<string> snapshot)
+    {
+        var added = live.Except(snapshot, StringComparer.Ordinal).ToList();
+        var removed = snapshot.Except(live, StringComparer.Ordinal).ToList();
+        var parts = new List<string>();
+        if (added.Count > 0) parts.Add($"{added.Count} alias(es) upstream that the snapshot lacks: {Preview(added)}");
+        if (removed.Count > 0) parts.Add($"{removed.Count} alias(es) the snapshot has that upstream does not: {Preview(removed)}");
+        if (parts.Count == 0) parts.Add("the same aliases in a different order");
+
+        return $"{checkout} does not match the snapshot ({live.Count} aliases live, {snapshot.Count} vendored): "
+            + string.Join("; ", parts);
+    }
+
+    private static string Preview(List<string> names) =>
+        string.Join(", ", names.Take(5)) + (names.Count > 5 ? $", ... (+{names.Count - 5})" : string.Empty);
+
+    /// <summary>Split on LF and keep any CR, so a CRLF/LF difference is visible as content-plus-ending rather than as one enormous line.</summary>
+    private static string[] Lines(byte[] bytes) =>
+        Encoding.UTF8.GetString(bytes).Split('\n', StringSplitOptions.None);
+
+    private static string Relative(string repo, string path) =>
+        Path.GetRelativePath(repo, path).Replace(Path.DirectorySeparatorChar, '/');
+
+    /// <summary>A quoted Lua string literal on a patch line: `"electronics.tv.16x9"`.</summary>
+    private static readonly Regex LiteralPattern = new("\"([^\"]+)\"", RegexOptions.Compiled);
+
+    // ---------------------------------------------------------------------
+    // Plumbing
+    // ---------------------------------------------------------------------
+
+    private static Lua NewLua() => new(true) { Encoding = Encoding.UTF8 };
 
     private static double ReadNumber(Lua lua, string field)
     {
@@ -288,7 +633,7 @@ internal static class Program
         {
             throw new SuiteRunnerException(
                 $"{fixture} is missing. Vendor it with:\n" +
-                "  python tools/run-suite.py --refresh-fixture --from <checkout>");
+                "  dotnet run --project tools/suite-runner -- --refresh-fixture --from <checkout>");
         }
 
         Console.WriteLine("preloading the vendored admin-model snapshot (pass --from <checkout> for the live list)");
@@ -326,15 +671,23 @@ internal static class Program
 
     private static void Usage(TextWriter writer)
     {
-        writer.WriteLine("Runs the four open77_media Lua suites with no Lua interpreter installed.");
+        writer.WriteLine("Runs the four open77_media Lua suites with no Lua interpreter installed,");
+        writer.WriteLine("and maintains the vendored prop-model snapshot they are checked against.");
         writer.WriteLine();
         writer.WriteLine("usage:");
         writer.WriteLine("  dotnet run --project tools/suite-runner [-- --repo <path>] [--from <checkout>]");
+        writer.WriteLine("  dotnet run --project tools/suite-runner -- --refresh-fixture --from <checkout>");
+        writer.WriteLine("  dotnet run --project tools/suite-runner -- [--repo <path>] --check-fixture [--from <checkout>]");
         writer.WriteLine();
         writer.WriteLine("  --repo <path>     the checkout to run against (default: the nearest");
         writer.WriteLine("                    ancestor of the working directory holding open77_media)");
-        writer.WriteLine("  --from <checkout> preload the live open77_admin prop-model list from an");
+        writer.WriteLine("  --from <checkout> use the live open77_admin prop-model list from an");
         writer.WriteLine("                    open77-base checkout instead of the vendored snapshot");
+        writer.WriteLine("  --refresh-fixture rewrite the snapshot from --from (needs one)");
+        writer.WriteLine("  --check-fixture   fail if the snapshot is stale: not in generated form,");
+        writer.WriteLine("                    listing an alias twice, missing an alias this repository's");
+        writer.WriteLine("                    own open77_admin hunk adds, or (with --from) differing");
+        writer.WriteLine("                    from the live list");
     }
 
     private sealed record Suite(string Name, string[] Preload, string File, bool NeedsRepoRoot);

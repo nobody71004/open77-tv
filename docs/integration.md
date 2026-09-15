@@ -365,10 +365,13 @@ And two C# ones:
 interpreter and no monorepo: it carries Lua 5.4 through KeraLua, preloads the
 vendored alias snapshot (or a live checkout with `--from`), stages the resource
 in a temp directory for the client suite's `OPEN77_REPO_ROOT`, and fails if any
-suite reports zero assertions as well as if one fails. `tools/run-suite.py` does
-the same through a real `lua5.4` and is where the snapshot refresh lives; CI
-(`.github/workflows/ci.yml`) runs the .NET one on Linux and Windows, since that
-is the only one of the two a stock runner can execute.
+suite reports zero assertions as well as if one fails. It also owns the snapshot
+itself: `--refresh-fixture` writes it, and `--check-fixture` fails when it is not
+in the form the generator writes, lists an alias twice, or is missing one this
+repository's own `open77_admin` hunk in `patches/` adds — which is what CI gates
+on before it runs the suites. `tools/run-suite.py` does the same through a real
+`lua5.4`; CI (`.github/workflows/ci.yml`) runs the .NET one on Linux and Windows,
+since that is the only one of the two a stock runner can execute.
 
 Four C++ suites live here too, and each one exists because its subject fails
 silently in game: `tests/ScreenQuadTests.cpp` (the quad arithmetic and the

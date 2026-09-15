@@ -65,9 +65,9 @@ tests/
                                 probe, pinned across the three languages it spans
   fixtures/                     a snapshot of open77_admin's prop-model aliases
 tools/
-  suite-runner/          run the four Lua suites with no Lua interpreter (KeraLua)
-  run-suite.py           the same four suites through a real lua5.4, and the
-                         snapshot refresh
+  suite-runner/          run the four Lua suites and maintain the vendored
+                         snapshot, with no Lua interpreter (KeraLua)
+  run-suite.py           the same four suites through a real lua5.4
   extract-tv-patches.py  regenerate patches/ from a checkout
 ```
 
@@ -368,9 +368,8 @@ four suites run anywhere `dotnet` does — and CI runs them on Linux and Windows
 gate rather than something somebody remembers to run.
 
 `tools/run-suite.py` runs the same four files through a real `lua5.4` (pass
-`--lua /path/to/lua` if it is not on `PATH`). It is also where
-`--refresh-fixture --from <checkout>` lives, so keep it for rewriting
-`tests/fixtures/open77_admin-props-models.lua` from a live checkout.
+`--lua /path/to/lua` if it is not on `PATH`). It refreshes the snapshot too. Both
+runners write it byte for byte, so the file does not depend on which one you used.
 
 The suite cross-checks every record's `model` against the prop-model aliases that
 `open77_admin` publishes — the list the prop-host build above emits — which is why
@@ -381,6 +380,36 @@ pointed at a checkout that predates this work, the records suite fails, because
 6 `frame`) that such a checkout does not publish. The snapshot is the list the
 catalogue was written against; `--from` is how you find out whether a given
 server can spawn these sets at all.
+
+### The snapshot is generated, so it is checked
+
+```bash
+dotnet run --project tools/suite-runner -- --check-fixture
+dotnet run --project tools/suite-runner -- --check-fixture --from /path/to/open77-base
+dotnet run --project tools/suite-runner -- --refresh-fixture --from /path/to/open77-base
+```
+
+A generated file is only as good as its last regeneration, and the records suite
+cannot tell you whether it is current: it proves the snapshot is *big enough* —
+no record names an alias the list lacks — and never that it is *up to date*.
+`--check-fixture` is that second question. It fails when the file is not in the
+form the generator writes (a hand-edited alias, a count line left behind, a lost
+CRLF ending, a truncated list), when an alias is listed twice, when it is missing
+an alias this repository's own `open77_admin` hunk in `patches/` adds, and —
+with `--from` — when it differs from the live list, naming both directions of the
+difference. CI runs the first form on every push, before the suites, so a
+malformed snapshot reports as a malformed snapshot.
+
+The snapshot cannot be fresher than the tree it was taken from, and refreshing
+from a tree that predates the television work is destructive rather than
+informative: pointed at such a checkout today, `--refresh-fixture` would write the
+185 aliases it has and drop the 37 it does not, after which every television
+record fails its cross-check. Refresh from a tree that carries the work.
+
+CI cannot see upstream growth by itself, because that needs a checkout of a
+private repository: the snapshot is only ever as fresh as its last regeneration
+from a tree that carries the work. `--check-fixture --from <checkout>` is how you
+ask that question when you have one.
 
 ## Installing it into a server
 

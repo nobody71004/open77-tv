@@ -32,8 +32,26 @@ jobs:
 
       # No Lua interpreter is installed on either runner, and nothing here installs
       # one: `tools/suite-runner` carries Lua 5.4 through KeraLua, the same binding
-      # and the same pinned version the monorepo's own tests use. The suites run
-      # against the vendored `tests/fixtures` snapshot, since CI has no open77-base
+      # and the same pinned version the monorepo's own tests use.
+      #
+      # First, the snapshot, because it is generated and a generated file can be
+      # stale in a way the suites cannot see: the records suite proves the snapshot
+      # is *big enough* (no record names an alias the list lacks) and never proves
+      # it is *current*. This check does, against the only statement of the alias
+      # list that lives in this repository -- the `open77_admin` hunk in
+      # `patches/` -- plus the generated form itself, so a hand-edited alias, a
+      # count line left behind, a lost CRLF ending or a duplicated entry all fail
+      # here, by name, instead of surfacing as records-suite messages.
+      #
+      # It runs before the suites deliberately: a malformed snapshot should report
+      # as a malformed snapshot. What it cannot see without an open77-base checkout
+      # is an alias upstream grew that this repository's hunks do not carry; that is
+      # what the tool's `--check-fixture --from <checkout>` is for, and it needs a
+      # token this workflow does not assume it has.
+      - name: Check the vendored snapshot is not stale
+        run: dotnet run --project tools/suite-runner --configuration Release -- --check-fixture
+
+      # The suites run against the vendored snapshot, since CI has no open77-base
       # checkout to take the live prop-model list from.
       - name: Run the four open77_media suites
         run: dotnet run --project tools/suite-runner --configuration Release
