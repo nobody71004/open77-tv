@@ -2,10 +2,10 @@
 # tools/extract-tv-patches.py. Apply by hand: this is not a patch
 # series, and the surrounding file has other unreleased work in it.
 diff --git a/webhost/CMakeLists.txt b/webhost/CMakeLists.txt
-index 21f27872..e70cdb0f 100644
+index 21f27872..b158cceb 100644
 --- a/webhost/CMakeLists.txt
 +++ b/webhost/CMakeLists.txt
-@@ -5,12 +5,14 @@ endif()
+@@ -5,12 +5,19 @@ endif()
  add_library(Open77.WebHost SHARED)
  
  target_sources(
@@ -14,6 +14,11 @@ index 21f27872..e70cdb0f 100644
          src/Main.cpp
 +        src/AudioSink.cpp
 +        src/AudioSink.hpp
++        # The one route whose answer comes from somebody else's server, so its
++        # network half lives in the host process and its judging half lives in
++        # `op77/WebUI/FramePolicy.hpp`, where a game-free test can reach it.
++        src/FrameResolver.cpp
++        src/FrameResolver.hpp
          src/HostRuntime.cpp
          src/HostRuntime.hpp
          src/InteropSelfTest.cpp

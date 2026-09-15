@@ -225,6 +225,181 @@ for _ = 1, 4 do
 end
 check(near(heading, 37.0), "four quarter turns return the heading")
 
+-- =============================================================================
+-- The rectangle's own front, and the yaw that turns it on the player
+-- =============================================================================
+-- `QuadFront` and `FacingYaw` are what `facingPlacement` in server/main.lua uses
+-- to set a screen down facing the person who spawned it. They are pinned here for
+-- the same reason the nudge axes are: a wrong answer is not a crash and not a log
+-- line. It is a monitor spawned edge-on, which in game reads as no screen at all
+-- -- because a panel presented along the viewer's own line of sight is a sliver a
+-- few pixels wide -- and the only instrument that can see it is a person standing
+-- in front of it.
+
+local function quadOf(right, up)
+    return {
+        offset = { 0.0, 0.0, 0.0 },
+        right = right,
+        up = up,
+        width = 1.0,
+        height = 1.0,
+    }
+end
+
+-- The axis, for both conventions the catalogue holds.
+local tvFrontX, tvFrontY, tvFrontZ = Open77MediaPlacement.QuadFront(
+    quadOf({ 1.0, 0.0, 0.0 }, { 0.0, 0.0, 1.0 }))
+check(tvFrontX ~= nil and near(tvFrontX, 0.0) and near(tvFrontY, 1.0) and near(tvFrontZ, 0.0),
+    string.format("a right=+X up=+Z rectangle faces +Y (got %s, %s, %s)",
+        tostring(tvFrontX), tostring(tvFrontY), tostring(tvFrontZ)))
+
+local monitorFrontX, monitorFrontY = Open77MediaPlacement.QuadFront(
+    quadOf({ 0.0, 1.0, 0.0 }, { 0.0, 0.0, 1.0 }))
+check(monitorFrontX ~= nil and near(monitorFrontX, -1.0) and near(monitorFrontY, 0.0),
+    string.format("a right=+Y up=+Z rectangle faces -X (got %s, %s)",
+        tostring(monitorFrontX), tostring(monitorFrontY)))
+
+check(Open77MediaPlacement.QuadFront(nil) == nil, "no quad has no front")
+check(Open77MediaPlacement.QuadFront({}) == nil, "a quad with no axes has no front")
+check(Open77MediaPlacement.QuadFront(quadOf({ 0.0, 0.0, 0.0 }, { 0.0, 0.0, 0.0 })) == nil,
+    "a degenerate rectangle has no front")
+-- A hand-authored record may write a raw direction rather than a unit one.
+local rawFrontX, rawFrontY = Open77MediaPlacement.QuadFront(
+    quadOf({ 0.0, 3.0, 0.0 }, { 0.0, 0.0, 5.0 }))
+check(near(rawFrontX, -1.0) and near(rawFrontY, 0.0),
+    string.format("a raw (un-normalised) pair of axes still gives a unit front (got %s, %s)",
+        tostring(rawFrontX), tostring(rawFrontY)))
+
+-- The yaw each family needs. A caller at heading 0 looks along +Y and the set is
+-- put down 1.1 m along that, so the glass has to point back at -Y.
+local function yawFor(right, up, heading)
+    local fx, fy = Open77MediaPlacement.QuadFront(quadOf(right, up))
+    return Open77MediaPlacement.FacingYaw(fx, fy, heading)
+end
+
+check(near(yawFor({ 1.0, 0.0, 0.0 }, { 0.0, 0.0, 1.0 }, 0.0), 180.0),
+    "a +Y-facing television is turned half a turn to face the caller")
+check(near(yawFor({ 0.0, 1.0, 0.0 }, { 0.0, 0.0, 1.0 }, 0.0), 90.0),
+    "a -X-facing monitor is turned a quarter turn to face the caller")
+check(near(yawFor({ 0.0, -1.0, 0.0 }, { 0.0, 0.0, 1.0 }, 0.0), 270.0),
+    "a +X-facing panel is turned the other quarter turn")
+check(near(yawFor({ -1.0, 0.0, 0.0 }, { 0.0, 0.0, 1.0 }, 0.0), 0.0),
+    "a +Y-facing rectangle needs no turn at all")
+
+-- The caller's own heading is carried through, which is the property that makes
+-- this usable: a set spawned while facing north is placed the same way relative to
+-- the player as one spawned facing east.
+for _, heading in ipairs({ 0.0, 37.0, 90.0, 180.0, 271.5, 359.0 }) do
+    local tv = yawFor({ 1.0, 0.0, 0.0 }, { 0.0, 0.0, 1.0 }, heading)
+    local monitor = yawFor({ 0.0, 1.0, 0.0 }, { 0.0, 0.0, 1.0 }, heading)
+    check(near(tv, Open77MediaPlacement.Wrap(heading + 180.0)),
+        string.format("at heading %s the television takes the half turn (got %s)",
+            tostring(heading), tostring(tv)))
+    check(near(monitor, Open77MediaPlacement.Wrap(heading + 90.0)),
+        string.format("at heading %s the monitor takes the quarter turn (got %s)",
+            tostring(heading), tostring(monitor)))
+end
+
+-- And the property the two halves have to satisfy together: after the turn, the
+-- front really does look back down the caller's forward. Checked by rotating the
+-- front by the yaw the way `FacingYaw` says and comparing with the caller's own
+-- forward, negated -- so a sign error anywhere in the chain fails here rather than
+-- in game.
+for _, heading in ipairs({ 0.0, 45.0, 120.0, 300.0 }) do
+    local radians = math.rad(heading)
+    local wantX, wantY = math.sin(radians), -math.cos(radians)
+    for _, axes in ipairs({ { { 1.0, 0.0, 0.0 }, { 0.0, 0.0, 1.0 } },
+                            { { 0.0, 1.0, 0.0 }, { 0.0, 0.0, 1.0 } } }) do
+        local fx, fy = Open77MediaPlacement.QuadFront(quadOf(axes[1], axes[2]))
+        local yaw = Open77MediaPlacement.FacingYaw(fx, fy, heading)
+        local turned = math.rad(yaw)
+        local outX = fx * math.cos(turned) - fy * math.sin(turned)
+        local outY = fx * math.sin(turned) + fy * math.cos(turned)
+        check(near(outX, wantX, 1.0e-6) and near(outY, wantY, 1.0e-6),
+            string.format("at heading %s a turned front looks back at the caller (got %.6f, %.6f; want %.6f, %.6f)",
+                tostring(heading), outX, outY, wantX, wantY))
+    end
+end
+
+-- A front with no horizontal component is a panel standing on its side, and one
+-- that is not a direction at all cannot be answered: both say so rather than
+-- returning a number that would turn the prop somewhere arbitrary.
+check(Open77MediaPlacement.FacingYaw(0.0, 0.0, 0.0) == nil, "a vertical front has no yaw")
+check(Open77MediaPlacement.FacingYaw(nil, 1.0, 0.0) == nil, "a missing front has no yaw")
+check(Open77MediaPlacement.FacingYaw(1.0, nil, 0.0) == nil, "a half-stated front has no yaw")
+
+-- Diagonal fronts, so the arithmetic is not only ever asked about the axes.
+check(near(Open77MediaPlacement.FacingYaw(1.0, 1.0, 0.0), 225.0),
+    "a front at 45 degrees is turned 225 degrees onto a caller at heading 0")
+
+-- =============================================================================
+-- The stand-off: how far in front of the caller a screen is set down
+-- =============================================================================
+-- A fixed distance was right for as long as the catalogue was furniture, and it
+-- stopped being right the day it grew a 100 ft screen: the picture sits `offset`
+-- in FRONT of the prop's origin -- the catalogue is emphatic that the origin is
+-- behind the glass, it is where the body would be -- and the panel is
+-- `quad.height` tall. At the old 1.1 m the cinema's centre would be 1.9 m BEHIND
+-- the person who spawned it, so they would be standing inside their own screen.
+--
+-- The rule is one screen-height in front of the picture's own centre, floored at
+-- the old distance, and the two things that can go wrong with it are both
+-- silent: a floor that shifted the furniture by half a metre, and a height term
+-- that a cinema record can miss. Both are pinned below against the catalogue's
+-- own measured numbers.
+check(Open77MediaPlacement.MinimumStandoff == 1.1,
+    "the stand-off floor is still the 1.1 m the furniture family was tuned to")
+
+-- Nothing to measure: no quad, or a quad with no height, is the floor rather
+-- than an error -- the caller is placing a prop and the prop does not care.
+check(near(Open77MediaPlacement.FacingDistance(nil, 0.0, 1.0, 0.0), 1.1),
+    "a record with no quad is set down at the floor")
+check(near(Open77MediaPlacement.FacingDistance({ height = 0.0, offset = { 0, 1, 0 } }, 0.0, 1.0, 0.0), 1.1),
+    "a quad with no height is set down at the floor")
+
+-- The worked cases, from the catalogue as it is: `depth + height`, floored.
+-- Every furniture record is below the floor, which is the point -- this rule
+-- moves nothing that already fitted in a room.
+local standoffs = {
+    -- id,             height,   offset along the front,  expected metres
+    { "tv.large",      1.0146,   0.111389,              1.1260 },
+    { "tv.16x9",       0.6600,   0.115394,              1.1000 },
+    { "monitor.c",     0.5970,   0.104400,              1.1000 },
+    { "surveillance",  0.3774,   0.168836,              1.1000 },
+    { "cinema.100ft",  17.3421,  3.032077,             20.3742 },
+    { "cinema.150ft",  26.0131,  4.548115,             30.5612 },
+}
+for _, case in ipairs(standoffs) do
+    local id, height, depth, expected = case[1], case[2], case[3], case[4]
+    -- Composed through the module rather than read from a record: the test states
+    -- the two terms and the answer, so a change to either term fails here.
+    local quad = {
+        height = height,
+        offset = { 0.0, depth, 0.5 },
+    }
+    local got = Open77MediaPlacement.FacingDistance(quad, 0.0, 1.0, 0.0)
+    check(near(got, expected, 1.0e-3),
+        string.format("record '%s' is set down %.4f m ahead (got %.4f): one screen height in front of the picture, floored at 1.1", id, expected, got))
+end
+
+-- Monotonic where it matters: the bigger the picture, the further away, so no
+-- panel in the catalogue can be spawned closer than a smaller one.
+local small = Open77MediaPlacement.FacingDistance({ height = 1.0, offset = { 0, 0.1, 0 } }, 0.0, 1.0, 0.0)
+local big = Open77MediaPlacement.FacingDistance({ height = 20.0, offset = { 0, 3.0, 0 } }, 0.0, 1.0, 0.0)
+check(big > small, "a taller panel is set down further away than a shorter one")
+
+-- Glass behind the origin cannot pull the stand-off under the floor. The cinema
+-- records are the ones that could have done it -- their offsets are metres long --
+-- so the clamp is checked rather than assumed.
+check(near(Open77MediaPlacement.FacingDistance({ height = 0.5, offset = { 0, -5.0, 0 } }, 0.0, 1.0, 0.0), 1.1),
+    "a picture behind the prop's origin does not pull the stand-off below the floor")
+
+-- Without a front there is no depth term to take, and the height term still
+-- stands: this is what a record with degenerate axes gets, and it must not fall
+-- back to the floor and put a 17 m panel on the caller.
+check(near(Open77MediaPlacement.FacingDistance({ height = 2.0, offset = { 0, 9.0, 0 } }, nil, nil, nil), 2.0),
+    "a front that cannot be read drops the depth term and keeps the height term")
+
 TestResult = {
     passed = passed,
     failed = #failures,

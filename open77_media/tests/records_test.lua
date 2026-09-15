@@ -116,14 +116,25 @@ local function axisIsUsable(record, name)
     return axis
 end
 
+-- The size sanity bounds are per the record's OWN scale. 0.05..5 m is "a panel
+-- a person could carry", which is what every furniture record is, and the reason
+-- the bound exists is to catch a quad written in the wrong unit (mm, cm, feet) or
+-- with a decimal in the wrong place. The cinema records are 26x and 39x that by
+-- design, so the bound follows the declared scale instead of being widened for
+-- everyone -- widening it would retire the check for the 36 records it was
+-- written for in order to admit two.
 for _, record in ipairs(catalogue) do
     local quad = record.quad
-    check(finite(quad.width) and quad.width >= 0.05 and quad.width <= 5.0,
-        string.format("record '%s': width is 0.05..5 m (got %s)",
-            record.id, tostring(quad.width)))
-    check(finite(quad.height) and quad.height >= 0.05 and quad.height <= 5.0,
-        string.format("record '%s': height is 0.05..5 m (got %s)",
-            record.id, tostring(quad.height)))
+    local scale = tonumber(record.scale) or 1.0
+    check(finite(scale) and scale >= 0.01 and scale <= 100.0,
+        string.format("record '%s': scale is 0.01..100 (got %s)",
+            record.id, tostring(record.scale)))
+    check(finite(quad.width) and quad.width >= 0.05 * scale and quad.width <= 5.0 * scale,
+        string.format("record '%s': width is 0.05..5 m at its own scale %.6f, i.e. %.3f..%.3f m (got %s)",
+            record.id, scale, 0.05 * scale, 5.0 * scale, tostring(quad.width)))
+    check(finite(quad.height) and quad.height >= 0.05 * scale and quad.height <= 5.0 * scale,
+        string.format("record '%s': height is 0.05..5 m at its own scale %.6f, i.e. %.3f..%.3f m (got %s)",
+            record.id, scale, 0.05 * scale, 5.0 * scale, tostring(quad.height)))
 
     local offset = axisIsUsable(record, "offset")
     local right = axisIsUsable(record, "right")
@@ -131,9 +142,15 @@ for _, record in ipairs(catalogue) do
 
     if offset ~= nil then
         for component = 1, 3 do
-            check(math.abs(offset[component]) <= 10.0,
-                string.format("record '%s': quad.offset[%d] is within 10 m of the prop",
-                    record.id, component))
+            -- Also scaled: the offset is where the glass sits relative to the
+            -- prop origin, so scaling the prop is scaling this. 10 m of reach is
+            -- the bound at scale 1; the reason for a bound at all is that the
+            -- origin is where the body would be and nothing in this catalogue
+            -- hangs its picture metres away from that without also being metres
+            -- across.
+            check(math.abs(offset[component]) <= 10.0 * scale,
+                string.format("record '%s': quad.offset[%d] is within 10 m of the prop at its own scale (limit %.3f)",
+                    record.id, component, 10.0 * scale))
         end
     end
 
@@ -283,6 +300,38 @@ local declaredFronts = {
     ["tv.large"] = { 0.0, 1.0, 0.0 },
     ["tv.screen.16x9"] = { 0.0, 1.0, 0.0 },
     ["tv.screen.21x9"] = { 0.0, 1.0, 0.0 },
+
+    -- The monitor family: the glass of every one of these meshes lies entirely
+    -- to -X of the mesh's own origin, so the picture faces -X. The numbers are
+    -- in the block below.
+    ["monitor.a"] = { -1.0, 0.0, 0.0 },
+    ["monitor.a.vertical"] = { -1.0, 0.0, 0.0 },
+    ["monitor.b"] = { -1.0, 0.0, 0.0 },
+    ["monitor.b.vertical"] = { -1.0, 0.0, 0.0 },
+    ["monitor.c"] = { -1.0, 0.0, 0.0 },
+    ["monitor.c.vertical"] = { -1.0, 0.0, 0.0 },
+    ["monitor.d"] = { -1.0, 0.0, 0.0 },
+    ["monitor.d.vertical"] = { -1.0, 0.0, 0.0 },
+
+    -- The housed monitors, whose glass is at the -X end of their own housing.
+    -- These are the records that had the page on the cabinet's back face.
+    ["device.a"] = { -1.0, 0.0, 0.0 },
+    ["device.b"] = { -1.0, 0.0, 0.0 },
+    ["device.c"] = { -1.0, 0.0, 0.0 },
+    ["device.d"] = { -1.0, 0.0, 0.0 },
+    ["device.e"] = { -1.0, 0.0, 0.0 },
+
+    -- Declared on the family's measurement rather than its own mesh -- its
+    -- housing is symmetric about X. The one entry in this table that is a
+    -- convention, and it says so in shared/records.lua.
+    ["surveillance"] = { -1.0, 0.0, 0.0 },
+
+    -- The cinema screens: the same panel and the same measured glass as
+    -- `tv.screen.16x9` above, on a prop scaled up. Declared here for the same
+    -- reason the record declares it -- a 30 m panel painted from both sides would
+    -- show the film to whoever is standing behind it.
+    ["cinema.100ft"] = { 0.0, 1.0, 0.0 },
+    ["cinema.150ft"] = { 0.0, 1.0, 0.0 },
 }
 
 local gated = 0
@@ -330,7 +379,89 @@ for _, record in ipairs(catalogue) do
         end
     end
 end
-check(gated == 5, string.format("exactly the five measured television records declare a front (got %d)", gated))
+-- Twenty-one: the five television records, the eight bare monitors, the five
+-- housed monitors, the security monitor, and the two cinema screens. Every other
+-- record in the catalogue is deliberately undeclared, and the loop above fails on
+-- any that is not listed here -- so a new record cannot gain or lose a front
+-- quietly.
+check(gated == 21, string.format("exactly the twenty-one measured records declare a front (got %d)", gated))
+
+-- -----------------------------------------------------------------------------
+-- A SCALED RECORD'S QUAD IS ITS BASE'S, TIMES THE SAME FACTOR
+-- -----------------------------------------------------------------------------
+-- The one rule the cinema screens rest on, and the one thing that can go wrong
+-- silently: `scale` multiplies the MESH in the engine, and the `quad` is metres in
+-- the prop's own frame that nothing scales -- it is our own arithmetic. Raise one
+-- and not the other and the picture hangs at 1.16 m on a 30 m panel, which is a
+-- coaster in the middle of a cinema and looks exactly like the feature not
+-- working.
+--
+-- So the invariant is not written as three numbers to check; it is derived. A
+-- record that declares a scale must share its `model` with a record that declares
+-- none -- that is what the scale is relative to -- and then every number in its
+-- quad must be that base record's number times the scale. A future edit to either
+-- half, or to the base, fails here rather than on a 100 ft screen in front of an
+-- audience.
+local scaled = 0
+for _, record in ipairs(catalogue) do
+    local scale = tonumber(record.scale)
+    if scale ~= nil and scale ~= 1.0 then
+        scaled = scaled + 1
+        local base = nil
+        for _, other in ipairs(catalogue) do
+            if other.model == record.model and (tonumber(other.scale) or 1.0) == 1.0 then
+                base = other
+                break
+            end
+        end
+        check(base ~= nil,
+            string.format("record '%s' scales its prop, so a record for the same mesh at " ..
+                "scale 1 must exist to be its base (model '%s')", record.id, record.model))
+        if base ~= nil then
+            local tolerance = 1.0e-4
+            check(math.abs(record.quad.width - base.quad.width * scale) <= tolerance * record.quad.width,
+                string.format("record '%s': width is the base record's %.6f x scale %.6f = %.6f (got %.6f)",
+                    record.id, base.quad.width, scale, base.quad.width * scale, record.quad.width))
+            check(math.abs(record.quad.height - base.quad.height * scale) <= tolerance * record.quad.height,
+                string.format("record '%s': height is the base record's %.6f x scale %.6f = %.6f (got %.6f)",
+                    record.id, base.quad.height, scale, base.quad.height * scale, record.quad.height))
+            for component = 1, 3 do
+                local expected = base.quad.offset[component] * scale
+                check(math.abs(record.quad.offset[component] - expected) <= 1.0e-6 + tolerance * math.abs(expected),
+                    string.format("record '%s': offset[%d] is the base record's %.6f x scale %.6f = %.6f (got %.6f)",
+                        record.id, component, base.quad.offset[component], scale, expected,
+                        record.quad.offset[component]))
+            end
+        end
+    end
+end
+check(scaled == 2,
+    string.format("exactly the two cinema records scale their prop (got %d)", scaled))
+
+-- The property that ties the render gate to the spawn placement: a declared
+-- front has to be the rectangle's own front, `up` crossed into `right`. The two
+-- halves ask different questions of the same panel -- the gate asks "is the eye
+-- on the picture's side", the placement asks "which way do I turn this so the
+-- glass looks at the player" -- and they only agree if `faces` is the quad's own
+-- normal. Where they disagreed, a set was spawned presenting one side and
+-- drawing its picture on the other.
+for _, record in ipairs(catalogue) do
+    local faces = record.quad.faces
+    if type(faces) == "table" then
+        local rx, ry, rz = record.quad.right[1], record.quad.right[2], record.quad.right[3]
+        local ux, uy, uz = record.quad.up[1], record.quad.up[2], record.quad.up[3]
+        local nx, ny, nz = uy * rz - uz * ry, uz * rx - ux * rz, ux * ry - uy * rx
+        local length = math.sqrt(nx * nx + ny * ny + nz * nz)
+        check(length > 0.0,
+            string.format("record '%s': the rectangle has a normal at all", record.id))
+        if length > 0.0 then
+            local dot = (faces[1] * nx + faces[2] * ny + faces[3] * nz) / length
+            check(dot > 0.999,
+                string.format("record '%s': the declared front is the quad's own normal " ..
+                    "(up x right), so the placement and the gate agree (dot %.6f)", record.id, dot))
+        end
+    end
+end
 
 -- The measurement behind those declarations, as numbers, so the claim above can be
 -- checked rather than believed. Every figure is from the 2.31 mesh data, the same
@@ -372,6 +503,63 @@ for _, measured in ipairs(pictureSide) do
         check(plane - measured.bodyMin >= 0.05,
             string.format("record '%s': there is body behind the glass for the gate to hide (%.6f m)",
                 measured.id, plane - measured.bodyMin))
+    end
+end
+
+-- The same measurement for the families that face -X, which is the half of the
+-- catalogue the +Y reading never covered. A bare monitor screen keeps the body's
+-- own origin, so the glass stands in front of it along -X; a housed one sits at
+-- the -X end of its housing, recessed behind the bezel.
+local glassSide = {
+    -- id, the glass mesh's own X range
+    { id = "monitor.a", glassMin = -0.075430, glassMax = -0.066314 },
+    { id = "monitor.a.vertical", glassMin = -0.075500, glassMax = -0.066300 },
+    { id = "monitor.b", glassMin = -0.114000, glassMax = -0.100200 },
+    { id = "monitor.b.vertical", glassMin = -0.114000, glassMax = -0.100200 },
+    { id = "monitor.c", glassMin = -0.114900, glassMax = -0.093800 },
+    { id = "monitor.c.vertical", glassMin = -0.114900, glassMax = -0.093800 },
+    { id = "monitor.d", glassMin = -0.080400, glassMax = -0.065600 },
+    { id = "monitor.d.vertical", glassMin = -0.080400, glassMax = -0.065600 },
+}
+for _, measured in ipairs(glassSide) do
+    local record = Open77MediaRecord(measured.id)
+    check(record ~= nil, "the catalogue still has " .. measured.id)
+    if record ~= nil and type(record.quad.offset) == "table" then
+        local plane = record.quad.offset[1]
+        check(plane <= measured.glassMax + 0.01 and plane >= measured.glassMin - 0.01,
+            string.format("record '%s': the rectangle is the measured glass box (%.6f in %.6f..%.6f)",
+                measured.id, plane, measured.glassMin, measured.glassMax))
+        check(plane < -0.01,
+            string.format("record '%s': the glass is on the -X side of the mesh origin (%.6f), " ..
+                "which is what the declared -X rests on", measured.id, plane))
+    end
+end
+
+-- The housed family, where the choice is between two faces of one mesh and the
+-- mesh settles it: the glass is at the -X end, so a page put on the +X face --
+-- the housing's maximum, which is what these records used to carry -- was drawn
+-- on the back of the cabinet.
+local housedGlass = {
+    { id = "device.a", housingMin = -0.071400, housingMax = 0.002900, glassMax = -0.067600 },
+    { id = "device.b", housingMin = -0.108800, housingMax = 0.003000, glassMax = -0.101600 },
+    { id = "device.c", housingMin = -0.109500, housingMax = 0.002300, glassMax = -0.095000 },
+    { id = "device.d", housingMin = -0.076300, housingMax = 0.006100, glassMax = -0.066800 },
+    { id = "device.e", housingMin = -0.109500, housingMax = 0.002300, glassMax = -0.095900 },
+}
+for _, measured in ipairs(housedGlass) do
+    local record = Open77MediaRecord(measured.id)
+    check(record ~= nil, "the catalogue still has " .. measured.id)
+    if record ~= nil and type(record.quad.offset) == "table" then
+        local plane = record.quad.offset[1]
+        check(plane >= measured.housingMin - 0.002 and plane <= measured.glassMax + 0.01,
+            string.format("record '%s': the rectangle is at the housing's -X end (%.6f in %.6f..%.6f), " ..
+                "not on its back face", measured.id, plane, measured.housingMin, measured.glassMax))
+        check(measured.housingMax - plane >= 0.05,
+            string.format("record '%s': there is housing behind the glass for the gate to hide (%.6f m)",
+                measured.id, measured.housingMax - plane))
+        check(math.abs(plane - measured.housingMax) > 0.05,
+            string.format("record '%s': the rectangle is NOT on the housing's +X face (%.6f from it)",
+                measured.id, math.abs(plane - measured.housingMax)))
     end
 end
 

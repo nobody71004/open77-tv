@@ -2,7 +2,7 @@
 # tools/extract-tv-patches.py. Apply by hand: this is not a patch
 # series, and the surrounding file has other unreleased work in it.
 diff --git a/webhost/src/SurfaceClient.hpp b/webhost/src/SurfaceClient.hpp
-index e83feac1..1171e02a 100644
+index e83feac1..e6e69f85 100644
 --- a/webhost/src/SurfaceClient.hpp
 +++ b/webhost/src/SurfaceClient.hpp
 @@ -1,22 +1,25 @@
@@ -61,7 +61,53 @@ index e83feac1..1171e02a 100644
                                    CefRefPtr<CefProcessMessage> aMessage) override;
      void GetViewRect(CefRefPtr<CefBrowser> aBrowser, CefRect& aRect) override;
      bool GetScreenInfo(CefRefPtr<CefBrowser> aBrowser, CefScreenInfo& aScreenInfo) override;
-@@ -155,12 +176,17 @@ private:
+@@ -80,12 +101,26 @@ public:
+                  const RectList& aDirtyRects, const void* aBuffer, int aWidth, int aHeight) override;
+     void OnAcceleratedPaint(CefRefPtr<CefBrowser> aBrowser, PaintElementType aType,
+                             const RectList& aDirtyRects,
+                             const CefAcceleratedPaintInfo& aInfo) override;
+     void OnAfterCreated(CefRefPtr<CefBrowser> aBrowser) override;
+     void OnBeforeClose(CefRefPtr<CefBrowser> aBrowser) override;
++    /// A framed page asking for a window.
++    ///
++    /// This is the whole of the popup problem: a site that pays for itself with
++    /// popups opens five of them on load, CEF would draw each as an overlay on
++    /// the same television -- `OnPopupShow`/`OnPopupSize` are exactly how this
++    /// host paints one -- and there is no title bar, no tab and no close button
++    /// to get out of them, so the page behind becomes unreachable. The policy is
++    /// in `op77/WebUI/AdBlock.hpp`; this is where it is applied.
++    bool OnBeforePopup(CefRefPtr<CefBrowser> aBrowser, CefRefPtr<CefFrame> aFrame, int aPopupId,
++                       const CefString& aTargetUrl, const CefString& aTargetFrameName,
++                       cef_window_open_disposition_t aDisposition, bool aUserGesture,
++                       const CefPopupFeatures& aFeatures, CefWindowInfo& aWindowInfo,
++                       CefRefPtr<CefClient>& aClient, CefBrowserSettings& aSettings,
++                       CefRefPtr<CefDictionaryValue>& aExtraInfo, bool* aNoJavaScriptAccess) override;
+     void OnLoadEnd(CefRefPtr<CefBrowser> aBrowser, CefRefPtr<CefFrame> aFrame, int aHttpStatusCode) override;
+     void OnLoadError(CefRefPtr<CefBrowser> aBrowser, CefRefPtr<CefFrame> aFrame,
+                      ErrorCode aErrorCode, const CefString& aErrorText,
+                      const CefString& aFailedUrl) override;
+     bool OnConsoleMessage(CefRefPtr<CefBrowser> aBrowser, cef_log_severity_t aLevel,
+                           const CefString& aMessage, const CefString& aSource,
+@@ -102,12 +137,18 @@ public:
+     void OnRenderProcessTerminated(CefRefPtr<CefBrowser> aBrowser,
+                                    TerminationStatus aStatus, int aErrorCode,
+                                    const CefString& aErrorString) override;
+     CefRefPtr<CefResourceHandler> GetResourceHandler(CefRefPtr<CefBrowser> aBrowser,
+                                                      CefRefPtr<CefFrame> aFrame,
+                                                      CefRefPtr<CefRequest> aRequest) override;
++    /// Every request a framed page makes passes through here, which is what makes
++    /// a host-level blocklist possible at all: a script refused its window keeps
++    /// trying, and a script that never loads cannot.
++    cef_return_value_t OnBeforeResourceLoad(CefRefPtr<CefBrowser> aBrowser, CefRefPtr<CefFrame> aFrame,
++                                            CefRefPtr<CefRequest> aRequest,
++                                            CefRefPtr<CefCallback> aCallback) override;
+     void OnProtocolExecution(CefRefPtr<CefBrowser> aBrowser, CefRefPtr<CefFrame> aFrame,
+                              CefRefPtr<CefRequest> aRequest,
+                              bool& aAllowOsExecution) override;
+     bool OnQuery(CefRefPtr<CefBrowser> aBrowser, CefRefPtr<CefFrame> aFrame,
+                  int64_t aQueryId, const CefString& aRequest, bool aPersistent,
+                  CefRefPtr<Callback> aCallback) override;
+@@ -155,12 +196,21 @@ private:
          uint64_t cpuFrames{};
          uint64_t popupFrames{};
      };
@@ -73,13 +119,17 @@ index e83feac1..1171e02a 100644
 +    /// decoder. nullptr when the URL is not one of them, in which case the
 +    /// ordinary file resolution runs.
 +    [[nodiscard]] CefRefPtr<CefResourceHandler> MaybeServeTranscodeRoute(CefRefPtr<CefRequest> aRequest);
++    /// The third same-origin route a media page names (`/op77/web/frame?u=...`),
++    /// which answers whether a link can be framed and which application it wraps
++    /// when it cannot. Answered off the IO thread -- see `FrameResolveHandler`.
++    [[nodiscard]] CefRefPtr<CefResourceHandler> MaybeServeFrameRoute(CefRefPtr<CefRequest> aRequest);
      [[nodiscard]] static std::string MimeType(const std::filesystem::path& aPath);
      [[nodiscard]] static std::string JsonQuote(std::string_view aText);
  
      [[nodiscard]] bool EnsureGpuDevice(HANDLE aSourceHandle,
                                         Microsoft::WRL::ComPtr<ID3D11Texture2D>& aSource);
      [[nodiscard]] bool CreateDeviceOnAdapter(IDXGIAdapter1* aAdapter, std::string& aAdapterName);
-@@ -228,12 +259,18 @@ private:
+@@ -228,16 +283,29 @@ private:
      bool m_sharedTextures{};
      bool m_gpuFallback{};
      bool m_ringFallbackAllowed{};
@@ -98,3 +148,14 @@ index e83feac1..1171e02a 100644
      bool m_sourceOpenFailureLogged{};
      bool m_viewSizeMismatchLogged{};
  
++    // Window and request refusals, counted rather than merely traced: a page that
++    // pays for itself with advertising opens tens of windows a minute, and a
++    // traced line for each would bury the log that has to stay readable. The
++    // first few are named; the total is kept so the count is never lost.
++    std::atomic<uint64_t> m_blockedPopups{};
++    std::atomic<uint64_t> m_blockedRequests{};
++
+     IMPLEMENT_REFCOUNTING(SurfaceClient);
+     DISALLOW_COPY_AND_ASSIGN(SurfaceClient);
+ };
+ } // namespace op77::WebHost

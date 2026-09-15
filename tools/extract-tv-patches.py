@@ -44,7 +44,20 @@ FEATURE = re.compile(
     # whether a website link was framed or thrown away.
     r"|TranscodePlan|Transcode|transcode|Decoder|decoder|ffprobe|ffmpeg"
     r"|media/probe|media/stream|decoderDir"
-    r"|frame-src|embed_framed|embed_unverified|not_media|not_stream_site",
+    r"|frame-src|embed_framed|embed_unverified|not_media|not_stream_site"
+    # The second half of a pasted SITE: a shell that refuses framing has to be
+    # resolved before it is framed, and the page may not navigate itself to an
+    # advertisement. `popup` and `gesture` are the vocabulary that separates the
+    # two, and the blocklist is the same decision written a third time.
+    r"|AdBlock|adblock|blocklist|blockedHost|Framing|frameable|FindEmbeds"
+    r"|EvaluateFraming|FrameResolver|frame_resolve|/op77/web/frame|violation"
+    r"|popup|Popup|OnBeforePopup|gesture"
+    # One pointer instead of two: the panel publishes where its quad landed so
+    # the cursor the player aims with is the cursor the click lands under.
+    r"|ScreenInput|PublishPointerOnScreen|screen input"
+    # The scaled catalogue family: a 100 ft panel is a prop scale and a quad
+    # written twice, and the stand-off that keeps it off the player.
+    r"|cinema|Cinema|StandOff|standoff",
 )
 
 # The seam files. Three kinds are in here and each is treated differently:
@@ -61,6 +74,13 @@ SEAMS = [
     "client/src/api/MediaScreens.hpp",
     "client/src/api/MediaScreens.cpp",
     "client/src/api/ScreenQuad.hpp",
+    # The model aliases the catalogue is authored against: the game's own
+    # televisions and monitors, added so a "Framed panel" is a television rather
+    # than a painting.
+    "client/src/api/Props.cpp",
+    # The debug row that names the world-screen input session, which is the only
+    # input state with no window to look at.
+    "client/src/debug/bridge/ResourceCommands.cpp",
     "client/src/webui/ScreenMotion.hpp",
     "client/src/webui/WorldOverlay.hpp",
     "client/src/webui/WorldOverlay.cpp",
@@ -106,6 +126,10 @@ SEAMS = [
     "tools/lua-test/run.lua",
     "server/tests/Open77.Server.Tests/Resources/MediaRecordsTests.cs",
     "server/tests/Open77.Server.Tests/Resources/MediaPlacementIntegrationTests.cs",
+    # The wire between the page and the host's frame probe: three files, three
+    # languages, and no way to run any of them without a game, so the strings
+    # that join them are pinned where all three are on disk.
+    "server/tests/Open77.Server.Tests/Resources/WebUiAssetTests.cs",
 ]
 
 

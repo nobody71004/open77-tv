@@ -275,15 +275,15 @@ end
 
 ---How far in front of the caller a menu-spawned screen is set down.
 ---
----Clears two things rather than picked for taste: the deepest cabinet in the
----catalogue (the game's televisions measure 0.18 m front to back and `tv.large`
----0.227 m, from their cooked meshes' bounding boxes) and the player's own body,
----which is about 0.35 m in radius. At the old distance of zero the set was
----created through the player and read as "nothing spawned": you are inside it,
----its faces are back-face culled, and the picture -- a screen plane 1 cm inside
----the body's front face -- points the way you happen to be facing rather than at
----you.
-local FACING_DISTANCE = 1.1
+---The arithmetic is `Open77MediaPlacement.FacingDistance` in shared/placement.lua
+----- not a constant here, and not because it is a couple of lines. The catalogue
+---grew a cinema, and a 100 ft panel set down at a flat 1.1 m would put its own
+---centre 1.9 m BEHIND the person who spawned it: they would be standing inside
+---their own screen, looking at the back of it. So the distance follows the panel --
+---one screen-height in front of the picture's own centre, floored at the old 1.1 m
+---so not one furniture record moves -- and it lives in the tested module for the
+---same reason every other placement number does: "the screen landed on me" is a
+---picture, not a log line, and the only instrument that can see it is a person.
 
 ---Where a menu-spawned screen goes, and which way it faces.
 ---
@@ -345,9 +345,16 @@ local function facingPlacement(record, position, heading)
     end
     if yaw == nil then yaw = Open77MediaPlacement.Wrap(heading + 180.0) end
 
+    -- How far ahead of the caller the origin goes, from the size of what is hung
+    -- on it: see the note on `FacingDistance` above. Derived from the same `front`
+    -- this function just turned towards the caller, so the distance and the facing
+    -- cannot disagree about which side of the panel the picture is on.
+    local distance = Open77MediaPlacement.FacingDistance(
+        record ~= nil and record.quad or nil, frontX, frontY, faceZ)
+
     return {
-        x = position.x - math.sin(radians) * FACING_DISTANCE,
-        y = position.y + math.cos(radians) * FACING_DISTANCE,
+        x = position.x - math.sin(radians) * distance,
+        y = position.y + math.cos(radians) * distance,
         z = position.z,
         bucket = position.bucket,
     }, yaw
@@ -362,11 +369,25 @@ local function spawn(recordId, position, yaw, url, source)
     if cleanUrl == nil then return nil, urlError end
 
     local facing = acceptYaw(yaw)
+    -- The record's scale, when it declares one, and a bare `scale` is the whole
+    -- of what the props API needs: `circa 26` is accepted as a number and turned
+    -- into an equal x/y/z by the wrapper, so nothing here has to pick axes for a
+    -- panel that is flat in two of them.
+    --
+    -- It comes from the RECORD and not from a spawn argument on purpose. The quad
+    -- the picture is drawn on is the record's, already multiplied by this same
+    -- factor, and the two are only correct together -- a caller who could pass a
+    -- scale at spawn time could pass one the quad does not know about, which is a
+    -- picture the size of a coaster on a screen the size of a building.
     local prop, propError = Open77.props.create({
         model = record.model,
         position = { x = position.x, y = position.y, z = position.z },
         yaw = facing,
         bucket = position.bucket,
+        scale = record.scale,
+        -- Optional, and only the cinema records set it: a screen watched from
+        -- across a lot must not stop streaming at the prop default.
+        streamingRadius = record.streamingRadius,
         -- No collision, and this is a fix for a specific problem rather than a
         -- preference. A screen put down within arm's reach is one the player can
         -- be pushed out of the world by, or pinned against, with the props

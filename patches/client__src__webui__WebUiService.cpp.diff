@@ -2,10 +2,19 @@
 # tools/extract-tv-patches.py. Apply by hand: this is not a patch
 # series, and the surrounding file has other unreleased work in it.
 diff --git a/client/src/webui/WebUiService.cpp b/client/src/webui/WebUiService.cpp
-index db02375c..4ec39884 100644
+index db02375c..683a66a1 100644
 --- a/client/src/webui/WebUiService.cpp
 +++ b/client/src/webui/WebUiService.cpp
-@@ -136,12 +136,27 @@ struct Surface
+@@ -1,7 +1,8 @@
+ #include "WebUiService.hpp"
++#include "webui/ScreenInput.hpp"
+ 
+ #include <Windows.h>
+ #include <bcrypt.h>
+ #include <d3dcompiler.h>
+ #include <dxgi1_4.h>
+ #include <windowsx.h>
+@@ -136,12 +137,27 @@ struct Surface
      std::atomic_bool closing{};
      std::atomic_bool visible{true};
      // A native lifecycle gate, deliberately separate from `visible`: Lua owns
@@ -33,7 +42,7 @@ index db02375c..4ec39884 100644
      std::atomic_bool gpuUsePending{};
      std::atomic_uint64_t lastUseFence{};
  
-@@ -520,17 +535,23 @@ bool LaunchHost(std::string& aError)
+@@ -520,17 +555,23 @@ bool LaunchHost(std::string& aError)
      if (directoryError)
      {
          aError = "web_data_directory_failed";
@@ -58,7 +67,7 @@ index db02375c..4ec39884 100644
      PROCESS_INFORMATION process{};
      if (!CreateProcessW(s_hostExecutable.c_str(), mutableCommand.data(), nullptr, nullptr, FALSE,
                          CREATE_NO_WINDOW | CREATE_SUSPENDED, nullptr,
-@@ -1820,15 +1841,17 @@ SurfaceId Create(const CreateOptions& aOptions, std::string& aError)
+@@ -1820,15 +1861,17 @@ SurfaceId Create(const CreateOptions& aOptions, std::string& aError)
          .deviceScaleFactor = 1.0F,
          .framesPerSecond = aOptions.framesPerSecond,
          .layer = aOptions.layer,
@@ -76,7 +85,182 @@ index db02375c..4ec39884 100644
      }
      if (s_connected.load(std::memory_order_acquire)) SendCreate(surface);
      return id;
-@@ -2046,13 +2069,21 @@ std::vector<SurfaceStatus> DescribeSurfaces()
+@@ -1939,12 +1982,18 @@ bool SetFocus(const SurfaceId aSurface, const bool aKeyboard, const bool aCursor
+                 s_suppressedFocusKeys.fill(false);
+             }
+         }
+         else if (s_focusSurface == aSurface)
+         {
+             releasedCursor = s_focusCursor;
++            // Losing the focus is losing the screen session, whichever of the
++            // callers above arranged it. Cleared here rather than only in
++            // `ScreenInput::Release` for the same reason the panel derives its
++            // answer from the focus: there is one place that can end focus and
++            // every other path ends up in this branch.
++            s_screenInputSurface.store(0, std::memory_order_release);
+             s_focusSurface = 0;
+             s_focusGeneration = 0;
+             s_focusKeyboard = false;
+             s_focusCursor = false;
+             s_keepGameInput = false;
+             s_suppressedFocusKeys.fill(false);
+@@ -1967,12 +2016,155 @@ bool SendEvent(const SurfaceId aSurface, const std::string_view aName, const std
+     if (!surface || aName.empty() || aName.size() > 128 || aJson.size() > 2U * 1024U * 1024U) return false;
+     return SendPayload(MessageType::LuaToJsEvent,
+                        WebEventPayload{aSurface, surface->definition.generation, 0,
+                                        std::string(aName), std::string(aJson), true});
+ }
+ 
++namespace ScreenInput
++{
++/// The page-pixel position, expressed the way the panel draws it.
++///
++/// A free function here rather than in the header because it needs the surface
++/// type: the pointer is stored as a fraction of the page, the input path works
++/// in the page's view pixels, and this is the one place the two meet.
++void FeedPointer(const Surface& aSurface, const POINT aPoint)
++{
++    if (s_screenInputSurface.load(std::memory_order_relaxed) != aSurface.definition.surface) return;
++    const float width = static_cast<float>(std::max(1U, aSurface.viewWidth.load(std::memory_order_acquire)));
++    const float height = static_cast<float>(std::max(1U, aSurface.viewHeight.load(std::memory_order_acquire)));
++    SetPointer((static_cast<float>(aPoint.x) + 0.5F) / width,
++               (static_cast<float>(aPoint.y) + 0.5F) / height);
++}
++
++State Get()
++{
++    State state{};
++    state.surface = s_screenInputSurface.load(std::memory_order_acquire);
++    if (state.surface == 0) return state;
++    // Derived from the focus rather than tracked beside it. Every existing way a
++    // surface can stop owning input -- hidden, closed, generation replaced, the
++    // resource stopped, the session ended -- already ends with `SetFocus(...,
++    // false, false)`, and a second flag that had to be cleared in all of those
++    // places would be wrong in one of them within a week. A surface that holds no
++    // cursor focus is not being pointed at, whatever this module remembers.
++    SurfaceId focused = 0;
++    bool cursor = false;
++    bool keyboard = false;
++    {
++        const std::scoped_lock lock(s_focusMutex);
++        focused = s_focusSurface;
++        cursor = s_focusCursor;
++        keyboard = s_focusKeyboard;
++    }
++    if (focused != state.surface || !cursor || !keyboard)
++    {
++        return State{};
++    }
++    state.active = true;
++    state.u = s_screenInputU.load(std::memory_order_acquire);
++    state.v = s_screenInputV.load(std::memory_order_acquire);
++    state.pointerOnScreen = s_screenInputPointerOnScreen.load(std::memory_order_acquire);
++    state.screenU = s_screenInputScreenU.load(std::memory_order_acquire);
++    state.screenV = s_screenInputScreenV.load(std::memory_order_acquire);
++    return state;
++}
++
++bool Take(const uint64_t aSurface, const float aU, const float aV)
++{
++    if (aSurface == 0) return false;
++    const auto surface = FindSurface(aSurface);
++    if (!surface || !surface->presentationAllowed.load(std::memory_order_acquire))
++    {
++        return false;
++    }
++    s_screenInputSurface.store(aSurface, std::memory_order_release);
++    s_screenInputU.store(std::clamp(aU, 0.0F, 1.0F), std::memory_order_release);
++    s_screenInputV.store(std::clamp(aV, 0.0F, 1.0F), std::memory_order_release);
++    // Nothing has published a drawn position for this session yet, and the last
++    // one belongs to whoever held the screen before. Until the panel says where
++    // its quad is, the cursor is the raw pointer's, not somebody else's place.
++    ClearPointerOnScreen();
++    // Cursor AND keyboard, and never `keepGameInput`: the whole point of taking a
++    // screen over is that the game stops acting on the same keys.
++    if (!SetFocus(aSurface, true, true, false))
++    {
++        s_screenInputSurface.store(0, std::memory_order_release);
++        return false;
++    }
++    // Seed the page pointer from the crosshair, so the first thing the player
++    // clicks is the thing they were looking at.
++    //
++    // `aU`/`aV` is what the PANEL draws its dot from; the pointer the input path
++    // clicks with is `s_pointerX`/`s_pointerY`, a separate accumulator in
++    // viewport pixels. Both have to start at the same place or the first click of
++    // a session lands wherever the last menu session left the OS pointer -- the
++    // dot would be drawn at the crosshair and the click would arrive somewhere
++    // else entirely, which is the one failure a browser over a television cannot
++    // be debugged from the log afterwards. Written here rather than in the panel
++    // because this is the side that knows how big the page is, and because the
++    // seed has to be in place before the first motion sample is accumulated onto
++    // it.
++    const float clampedU = std::clamp(aU, 0.0F, 1.0F);
++    const float clampedV = std::clamp(aV, 0.0F, 1.0F);
++    const uint32_t viewportWidth = std::max(1U, s_viewportWidth.load(std::memory_order_acquire));
++    const uint32_t viewportHeight = std::max(1U, s_viewportHeight.load(std::memory_order_acquire));
++    s_pointerX.store(static_cast<LONG>(clampedU * static_cast<float>(viewportWidth - 1U)),
++                     std::memory_order_release);
++    s_pointerY.store(static_cast<LONG>(clampedV * static_cast<float>(viewportHeight - 1U)),
++                     std::memory_order_release);
++    s_pointerInitialized.store(true, std::memory_order_release);
++    Log(LogLevel::Info, std::format(
++        "screen input: surface {} taken (pointer at {:.3f}, {:.3f}; page {}x{})", aSurface,
++        static_cast<double>(clampedU), static_cast<double>(clampedV), viewportWidth,
++        viewportHeight));
++    return true;
++}
++
++void Release()
++{
++    const uint64_t surface = s_screenInputSurface.exchange(0, std::memory_order_acq_rel);
++    if (surface == 0) return;
++    s_screenInputU.store(0.5F, std::memory_order_release);
++    s_screenInputV.store(0.5F, std::memory_order_release);
++    ClearPointerOnScreen();
++    // Also the release that hands the cursor back: the overlay stops placing it
++    // on a panel the moment this session ends, so ending the session is what
++    // returns it to the raw pointer -- and what makes the screen stop being the
++    // thing the keyboard is typed into.
++    static_cast<void>(SetFocus(surface, false, false));
++    Log(LogLevel::Info, std::format("screen input: surface {} released", surface));
++}
++
++void SetPointer(const float aU, const float aV)
++{
++    // Cheap enough to call at mouse rate: two relaxed stores, no lock, and the
++    // reader is one frame behind by design (`Get` is polled by the panel).
++    if (s_screenInputSurface.load(std::memory_order_relaxed) == 0) return;
++    s_screenInputU.store(std::clamp(aU, 0.0F, 1.0F), std::memory_order_relaxed);
++    s_screenInputV.store(std::clamp(aV, 0.0F, 1.0F), std::memory_order_relaxed);
++}
++
++void PublishPointerOnScreen(const float aU, const float aV)
++{
++    // The session check is a relaxed read of the one field the panel writes and
++    // the render thread reads: a publish that races a release is harmless (the
++    // session is gone, so nothing reads it), and taking the focus mutex on the
++    // game thread to close that race would put a lock in the frame path for
++    // nothing.
++    if (s_screenInputSurface.load(std::memory_order_relaxed) == 0) return;
++    s_screenInputScreenU.store(std::clamp(aU, 0.0F, 1.0F), std::memory_order_release);
++    s_screenInputScreenV.store(std::clamp(aV, 0.0F, 1.0F), std::memory_order_release);
++    s_screenInputPointerOnScreen.store(true, std::memory_order_release);
++}
++
++void ClearPointerOnScreen()
++{
++    s_screenInputPointerOnScreen.store(false, std::memory_order_release);
++}
++} // namespace ScreenInput
++
+ bool ResolveInvoke(const SurfaceId aSurface, const uint64_t aRequest, const bool aSuccess,
+                    const std::string_view aJson)
+ {
+     auto surface = FindSurface(aSurface);
+     if (!surface || aRequest == 0 || aJson.size() > 2U * 1024U * 1024U) return false;
+     return SendPayload(MessageType::InvokeResult,
+@@ -2046,13 +2238,21 @@ std::vector<SurfaceStatus> DescribeSurfaces()
              status.cpuGraphicsBytes = surface->cpuGraphicsBytes.load(std::memory_order_acquire);
              status.drawPixels = surface->drawPixels.load(std::memory_order_acquire);
              // Exactly the predicate Draw() applies, so `drawn=no` next to the
@@ -98,7 +282,48 @@ index db02375c..4ec39884 100644
      }
      std::ranges::sort(result, [](const SurfaceStatus& aLeft, const SurfaceStatus& aRight) {
          return aLeft.surface < aRight.surface;
-@@ -2470,12 +2501,17 @@ void Draw(const float aViewportWidth, const float aViewportHeight)
+@@ -2379,17 +2579,36 @@ void Draw(const float aViewportWidth, const float aViewportHeight)
+     // two coordinate spaces can differ after WebUI scaling and cause a visible
+     // pointer to disagree with the element that actually receives the click.
+     const bool pageDrawsCursor = focused && focused->first->definition.resource == "open77_shell";
+     io.MouseDrawCursor = cursorInput && !pageDrawsCursor;
+     if (cursorInput)
+     {
+-        // Cyberpunk continuously recentres the Win32 cursor while it owns the
+-        // camera. The WebUI therefore has one authoritative virtual position,
+-        // fed by Raw Input and shared by both CEF and the rendered cursor.
+-        if (s_pointerInitialized.load(std::memory_order_acquire))
++        // One pointer, and it is the cursor. A page shown on a screen in the world
++        // is composited onto a quad, and the raw pointer's viewport position is
++        // nowhere near that quad unless the panel happens to fill the screen -- so
++        // while a screen owns the input, the cursor is placed where the panel's own
++        // arithmetic says the pointed-at page pixel appears, which is the same
++        // place the click lands (see `ScreenInput::PublishPointerOnScreen`). A tick
++        // with no published position -- the prop unstreamed, the quad refused, the
++        // camera behind it -- falls back to the raw pointer, exactly as it is with
++        // no session open at all.
++        const auto session = ScreenInput::Get();
++        const bool onScreen = session.active && session.pointerOnScreen;
++        if (onScreen)
++        {
++            const float width = static_cast<float>(
++                std::max(1U, s_viewportWidth.load(std::memory_order_acquire)));
++            const float height = static_cast<float>(
++                std::max(1U, s_viewportHeight.load(std::memory_order_acquire)));
++            io.MousePos = {session.screenU * width, session.screenV * height};
++        }
++        else if (s_pointerInitialized.load(std::memory_order_acquire))
+         {
++            // Cyberpunk continuously recentres the Win32 cursor while it owns the
++            // camera. The WebUI therefore has one authoritative virtual position,
++            // fed by Raw Input and shared by both CEF and the rendered cursor.
+             io.MousePos = {
+                 static_cast<float>(s_pointerX.load(std::memory_order_acquire)),
+                 static_cast<float>(s_pointerY.load(std::memory_order_acquire))};
+         }
+     }
+     std::vector<std::shared_ptr<Surface>> allSurfaces;
+@@ -2470,12 +2689,17 @@ void Draw(const float aViewportWidth, const float aViewportHeight)
      std::vector<std::shared_ptr<Surface>> surfaces;
      for (const auto& surface : allSurfaces)
      {
@@ -116,3 +341,36 @@ index db02375c..4ec39884 100644
      }
      std::ranges::sort(surfaces, [](const auto& left, const auto& right) {
          if (left->definition.layer != right->definition.layer)
+@@ -2645,12 +2927,18 @@ void HandleRawMouseMotion(HWND aWindow, const RAWMOUSE& aMouse)
+     y = std::clamp(y, 0L, std::max(0L, viewportHeight - 1));
+     s_pointerX.store(x, std::memory_order_release);
+     s_pointerY.store(y, std::memory_order_release);
+     s_pointerInitialized.store(true, std::memory_order_release);
+     s_rawPointerActive.store(true, std::memory_order_release);
+     const POINT cef = ViewportToSurface(*surface, x, y);
++    // If this surface is a world screen under the player's control, the same
++    // page pixel that CEF is about to be told about is also where the pointer
++    // must be DRAWN -- the panel composites the page, and the cursor is part of
++    // the picture only if something paints it there. Fed from here, not from a
++    // second scale of the raw delta, so the dot cannot drift from the click.
++    ScreenInput::FeedPointer(*surface, cef);
+     static_cast<void>(QueueMouseMove(
+         MouseMovePayload{surface->definition.surface, cef.x, cef.y, InputModifiers(), false}));
+ }
+ 
+ void HandleRawMouseButtons(HWND aWindow, const RAWMOUSE& aMouse)
+ {
+@@ -2701,12 +2989,13 @@ void HandleRawMouseButtons(HWND aWindow, const RAWMOUSE& aMouse)
+             y = viewportHeight / 2;
+         }
+     }
+     x = std::clamp(x, 0L, std::max(0L, viewportWidth - 1));
+     y = std::clamp(y, 0L, std::max(0L, viewportHeight - 1));
+     const POINT point = ViewportToSurface(*surface, x, y);
++    ScreenInput::FeedPointer(*surface, point);
+     const uint32_t modifiers = InputModifiers();
+ 
+     struct Mapping
+     {
+         USHORT down;
+         USHORT up;

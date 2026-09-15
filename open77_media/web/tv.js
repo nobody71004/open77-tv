@@ -493,6 +493,99 @@
   /// names no media container. Both end in the same frame, the same sandbox and
   /// the same two log lines -- and the second path is the one that used to end in
   /// "this link is not a playable stream" instead.
+  /// Which handoff a late answer belongs to. The host is asked about a link over
+  /// the network, and the link under the player can change while the question is
+  /// in flight; a stale answer that framed itself would put the previous link's
+  /// shell on the screen with the current link still in the state.
+  let siteToken = 0;
+
+  /// Builds the frame for a page, and says what is being shown.
+  ///
+  /// Split out from `showSite` because the URL is now decided asynchronously --
+  /// by the host, which is the only side that can see a site's framing headers --
+  /// and the frame must not be built until that answer is in.
+  function buildEmbedFrame(src, note) {
+    clearYouTubePlayer();
+    const frame = document.createElement("iframe");
+    frame.setAttribute("allow",
+      "autoplay; fullscreen; encrypted-media; picture-in-picture");
+    frame.setAttribute("referrerpolicy", "no-referrer");
+    // A framed third-party page is the one thing on this screen that is not
+    // ours, so it runs with the few capabilities a player needs and without
+    // the ones that are only useful to something hostile. `allow-scripts` and
+    // `allow-same-origin` are what let a site's own player run at all;
+    // `allow-top-navigation-by-user-activation` keeps a click able to take the
+    // screen to the site's own player URL (some sites play that way, and the
+    // surface's policy permits the navigation) while refusing the silent
+    // redirect that would otherwise hijack the screen and remove the player's
+    // own controls with no click and no way back. Popups are granted here and
+    // refused by the host, which is the only side that can tell a window a click
+    // asked for from the five an advertising script opens on load.
+    frame.setAttribute("sandbox",
+      "allow-scripts allow-same-origin allow-forms allow-popups " +
+      "allow-popups-to-escape-sandbox allow-top-navigation-by-user-activation " +
+      "allow-presentation");
+    frame.src = src;
+    // The one thing this page CAN observe about somebody else's document, and
+    // worth a line because it is the difference between two failures that look
+    // identical on screen: a frame this page's policy refused never navigates
+    // and never fires this, while a site that refuses to be framed
+    // (`X-Frame-Options` / `frame-ancestors`) still arrives as an error page
+    // and does. So `embed_framed` means "a document was allowed to arrive" --
+    // never "there is a picture", which stays unobservable from here.
+    frame.addEventListener("load", () => report("embed_framed", src));
+    elements.embed.appendChild(frame);
+    youTubeFrame = frame;
+    notice(note || "Embedded site. Its own player cannot be controlled from here, and some sites refuse to be framed -- if nothing appears, this link cannot be shown on a television.");
+    // `loading`, not `playing`: whether a framed site shows anything is not this
+    // page's decision and cannot be observed from here.
+    report("embed_unverified", "arbitrary embed");
+    applyVolume();
+    applyPaused();
+  }
+
+  /// Asks the host what this link can be shown as, then shows it.
+  ///
+  /// A pasted link is frequently a shell: a few kilobytes that refuse to be
+  /// framed and wrap the application that actually plays. This side cannot tell
+  /// that apart from a dead site -- an `X-Frame-Options` refusal arrives as an
+  /// error page and is invisible to the embedder -- so the question is asked from
+  /// outside, and the answer says both whether the link may be framed and which
+  /// page to frame instead when it may not. See `/op77/web/frame`, and
+  /// `op77/WebUI/FramePolicy.hpp` for what the host judges.
+  ///
+  /// A `fetch` that fails means there is no host to ask -- this page opened in a
+  /// browser while being developed -- and the link is framed as it is, which is
+  /// exactly what it did before there was anything to ask.
+  function resolveSite(src) {
+    const token = ++siteToken;
+    const frame = (url, note) => {
+      if (token !== siteToken) return;
+      buildEmbedFrame(url, note);
+    };
+    fetch("/op77/web/frame?u=" + encodeURIComponent(src))
+      .then((response) => response.json())
+      .then((answer) => {
+        if (!answer || answer.ok !== true || answer.frameable === true) {
+          frame(src, "");
+          return;
+        }
+        if (answer.via === "embed" && answer.best) {
+          // The link was a shell and the host found the application inside it.
+          report("embed_shell_resolved", answer.best);
+          frame(answer.best,
+            "This link is a shell around another site. The screen is showing that site's own player.");
+          return;
+        }
+        report("embed_refused", answer.violation || "refused");
+        frame(src,
+          "This site refuses to be shown on a television" +
+          (answer.violation ? " (" + answer.violation + ")" : "") +
+          ", and wraps no page that does not.");
+      })
+      .catch(() => frame(src, ""));
+  }
+
   function showSite(src, videoId) {
     const changed = showing.kind !== "embed" || showing.src !== src;
     showOnly("embed");
@@ -521,40 +614,11 @@
     }
 
     if (changed) {
-      clearYouTubePlayer();
-      const frame = document.createElement("iframe");
-      frame.setAttribute("allow",
-        "autoplay; fullscreen; encrypted-media; picture-in-picture");
-      frame.setAttribute("referrerpolicy", "no-referrer");
-      // A framed third-party page is the one thing on this screen that is not
-      // ours, so it runs with the few capabilities a player needs and without
-      // the ones that are only useful to something hostile. `allow-scripts` and
-      // `allow-same-origin` are what let a site's own player run at all;
-      // `allow-top-navigation-by-user-activation` keeps a click able to take the
-      // screen to the site's own player URL (some sites play that way, and the
-      // surface's policy permits the navigation) while refusing the silent
-      // redirect that would otherwise hijack the screen and remove the player's
-      // own controls with no click and no way back.
-      frame.setAttribute("sandbox",
-        "allow-scripts allow-same-origin allow-forms allow-popups " +
-        "allow-popups-to-escape-sandbox allow-top-navigation-by-user-activation " +
-        "allow-presentation");
-      frame.src = src;
-      // The one thing this page CAN observe about somebody else's document, and
-      // worth a line because it is the difference between two failures that look
-      // identical on screen: a frame this page's policy refused never navigates
-      // and never fires this, while a site that refuses to be framed
-      // (`X-Frame-Options` / `frame-ancestors`) still arrives as an error page
-      // and does. So `embed_framed` means "a document was allowed to arrive" --
-      // never "there is a picture", which stays unobservable from here.
-      frame.addEventListener("load", () => report("embed_framed", src));
-      elements.embed.appendChild(frame);
-      youTubeFrame = frame;
+      // The frame is built by `resolveSite` once the host has answered, so the
+      // notice and the `embed_*` lines come from there. Volume and pause state
+      // are applied either way, and again when the frame arrives.
+      resolveSite(src);
     }
-    notice("Embedded site. Its own player cannot be controlled from here, and some sites refuse to be framed -- if nothing appears, this link cannot be shown on a television.");
-    // `loading`, not `playing`: whether a framed site shows anything is not this
-    // page's decision and cannot be observed from here.
-    report("embed_unverified", "arbitrary embed");
     applyVolume();
     applyPaused();
   }

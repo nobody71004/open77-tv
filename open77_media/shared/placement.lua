@@ -267,6 +267,71 @@ function Open77MediaPlacement.FacingYaw(frontX, frontY, heading)
     return Open77MediaPlacement.Wrap(yaw)
 end
 
+---The least distance a menu-spawned screen is ever set down at, in metres.
+---
+---Clears the deepest cabinet in the catalogue (the game's televisions measure
+---0.18 m front to back and `tv.large` 0.227 m, from their cooked meshes' bounding
+---boxes) and the player's own body, about 0.35 m in radius. At zero the set was
+---created through the player and read as "nothing spawned": you are inside it, its
+---faces are back-face culled, and the picture -- a screen plane 1 cm inside the
+---body's front face -- points the way you happen to be facing rather than at you.
+Open77MediaPlacement.MinimumStandoff = 1.1
+
+---How far in front of the caller a record's screen is set down, in metres.
+---
+---The rule, stated so it can be checked against a record: the caller ends up one
+---screen-height in front of the picture's own centre. That is a front row -- the
+---picture fills about 74 degrees of view at every aspect in the catalogue, because
+---the distance grows with the panel -- rather than the middle of a cinema, and it
+---is the smallest distance at which the whole of a big screen is inside one
+---person's view.
+---
+---Two terms, because the picture is not at the prop's origin:
+---
+---   * `depth`, the part of the quad's `offset` that runs along the direction the
+---     picture faces -- how far in front of that origin the glass is. Positive for
+---     every record in this catalogue (the offsets all point out of the face), and
+---     clamped at zero so a hypothetical record with its glass behind its origin
+---     cannot pull the stand-off negative.
+---   * `height`, the panel's own height: the screen the caller must not be
+---     standing in.
+---
+---Worked for the families, which is the whole of why this is safe to apply to all
+---of them: `tv.large` 0.111 + 1.015 = 1.126 m (it was the flat 1.1, and 3 cm is not
+---a change), `monitor.c` 0.169 + 0.597 = 0.766 m (floored to the old 1.1), and
+---`cinema.100ft` 3.032 + 17.342 = 20.37 m. The floor is what keeps the furniture
+---family exactly where it was, so this rule only ever moves a screen that is
+---bigger than a person.
+---@param quad table|nil the rectangle, for its `height` and `offset`
+---@param frontX number|nil the picture's facing direction, in the prop's local frame
+---@param frontY number|nil
+---@param frontZ number|nil
+---@return number metres
+function Open77MediaPlacement.FacingDistance(quad, frontX, frontY, frontZ)
+    local floor = Open77MediaPlacement.MinimumStandoff
+    if type(quad) ~= "table" then return floor end
+    local height = tonumber(quad.height) or 0.0
+    if not (height > 0.0) then return floor end
+
+    local depth = 0.0
+    local offset = quad.offset
+    if type(offset) == "table" and frontX ~= nil then
+        local fx, fy, fz = tonumber(frontX) or 0.0, tonumber(frontY) or 0.0,
+            tonumber(frontZ) or 0.0
+        local length = math.sqrt(fx * fx + fy * fy + fz * fz)
+        if length > 0.0 then
+            local ox, oy, oz = tonumber(offset[1]) or 0.0, tonumber(offset[2]) or 0.0,
+                tonumber(offset[3]) or 0.0
+            depth = (ox * fx + oy * fy + oz * fz) / length
+            if depth < 0.0 then depth = 0.0 end
+        end
+    end
+
+    local wanted = depth + height
+    if wanted < floor then return floor end
+    return wanted
+end
+
 ---The heading a set has after being turned on the spot.
 ---
 ---"left" turns the set's own left, which is a positive rotation in a

@@ -5,14 +5,18 @@
 #include "api/Props.hpp"
 #include "api/WorldQuery.hpp"
 #include "engine/RttiAccess.hpp"
+#include "webui/ScreenInput.hpp"
 #include "webui/WorldOverlay.hpp"
 #include "world/EntityService.hpp"
+
+#include <Windows.h>
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <format>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <string>
 #include <unordered_map>
@@ -390,6 +394,52 @@ bool BuildItem(
     aOut.y = (aOut.corners[1] + aOut.corners[3] + aOut.corners[5] + aOut.corners[7]) * 0.25F;
     aEntry.distance = distance;
     aReason = "drawn";
+
+    // Where the pointer is DRAWN, when this is the screen the player has taken
+    // over.
+    //
+    // CEF rasterises a page into a texture; the HOST paints the cursor. On a
+    // world quad there is no window to paint into, so the position is published
+    // for the overlay's cursor instead of being drawn as a second marker -- and
+    // it is computed from the SAME four world corners the page is composited
+    // with, interpolated in texture space (the orientation is the one `Orient`
+    // just decided, so a mirrored or turned-over panel is not special-cased),
+    // which is the only way the one pointer a player sees and the picture it
+    // points at cannot disagree about where the click will land.
+    const WebUiService::ScreenInput::State input = WebUiService::ScreenInput::Get();
+    if (input.active && input.surface == aEntry.definition.surface)
+    {
+        const auto at = [&](const int aU, const int aV) -> const RED4ext::Vector4& {
+            return world[ScreenQuad::CornerForTexture(aEntry.orientation, aU, aV)];
+        };
+        const auto& topLeft = at(0, 0);
+        const auto& topRight = at(1, 0);
+        const auto& bottomRight = at(1, 1);
+        const auto& bottomLeft = at(0, 1);
+        const float u = std::clamp(input.u, 0.0F, 1.0F);
+        const float v = std::clamp(input.v, 0.0F, 1.0F);
+        const auto lerp = [](const RED4ext::Vector4& aA, const RED4ext::Vector4& aB,
+                             const float aT) {
+            return RED4ext::Vector4{aA.X + (aB.X - aA.X) * aT, aA.Y + (aB.Y - aA.Y) * aT,
+                                    aA.Z + (aB.Z - aA.Z) * aT, 0.0F};
+        };
+        const auto top = lerp(topLeft, topRight, u);
+        const auto bottom = lerp(bottomLeft, bottomRight, u);
+        const auto point = lerp(top, bottom, v);
+
+        RED4ext::Vector4 projectedCursor{};
+        if (Camera::ProjectPoint(point, projectedCursor) == Camera::Status::Ok &&
+            std::isfinite(projectedCursor.X) && std::isfinite(projectedCursor.Y))
+        {
+            const auto relativeCursor = Sub(point, aView.position);
+            const float cursorDepth = Dot(relativeCursor, aView.forward);
+            if (cursorDepth > 0.05F)
+            {
+                WebUiService::ScreenInput::PublishPointerOnScreen(
+                    (projectedCursor.X + 1.0F) * 0.5F, (1.0F - projectedCursor.Y) * 0.5F);
+            }
+        }
+    }
     return true;
 }
 
@@ -516,26 +566,72 @@ Status Unbind(const std::string_view aOwner, const uint64_t aId)
     return Status::Ok;
 }
 
+namespace
+{
+/// Ends the pointer/keyboard session when the screen it was taken for is going
+/// away.
+///
+/// A session is a hold on the focus, and the focus is what suppresses the game's
+/// own input and clips the system cursor. Left behind by a screen that was just
+/// despawned or released, it is a player who cannot look around, with no
+/// television on screen to explain why -- so the session ends with the screen
+/// that owns it. Handed the surfaces that were released rather than searching
+/// the entries, because those are already gone by the time this runs, and called
+/// never under `s_mutex`: `ScreenInput::Get` reads the focus mutex, and taking two
+/// locks to answer one question is how lock-order bugs start.
+void EndSessionFor(const std::vector<uint64_t>& aSurfaces)
+{
+    if (aSurfaces.empty()) return;
+    const WebUiService::ScreenInput::State session = WebUiService::ScreenInput::Get();
+    if (!session.active) return;
+    bool owned = false;
+    for (const uint64_t surface : aSurfaces)
+    {
+        if (surface == session.surface)
+        {
+            owned = true;
+            break;
+        }
+    }
+    if (!owned) return;
+    WebUiService::ScreenInput::Release();
+    LogInfo("screen control released: the screen it was taken for was unbound");
+}
+} // namespace
+
 void Release(const std::string_view aOwner)
 {
     if (aOwner.empty())
     {
         return;
     }
-    const std::scoped_lock lock(s_mutex);
-    std::erase_if(s_entries,
-                  [aOwner](const auto& item) { return item.second.owner == aOwner; });
+    std::vector<uint64_t> released;
+    {
+        const std::scoped_lock lock(s_mutex);
+        for (const auto& [_, entry] : s_entries)
+        {
+            if (entry.owner == aOwner) released.push_back(entry.definition.surface);
+        }
+        std::erase_if(s_entries,
+                      [aOwner](const auto& item) { return item.second.owner == aOwner; });
+    }
     RetireProducer(std::string(aOwner));
+    EndSessionFor(released);
 }
 
 void ReleaseAll()
 {
-    const std::scoped_lock lock(s_mutex);
-    for (const auto& [_, entry] : s_entries)
+    std::vector<uint64_t> released;
     {
-        RetireProducer(entry.owner);
+        const std::scoped_lock lock(s_mutex);
+        for (const auto& [_, entry] : s_entries)
+        {
+            released.push_back(entry.definition.surface);
+            RetireProducer(entry.owner);
+        }
+        s_entries.clear();
     }
-    s_entries.clear();
+    EndSessionFor(released);
 }
 
 std::vector<Snapshot> SnapshotAll(const std::string_view aOwner)
@@ -575,6 +671,195 @@ size_t Count()
 size_t PerOwnerLimit() { return kPerOwnerLimit; }
 size_t GlobalLimit() { return kGlobalLimit; }
 
+namespace
+{
+/// The key that takes a screen, and gives it back.
+///
+/// **F8, and not the F7 this first used.** `ClientResourceHost` binds F7 to the
+/// client's own perspective toggle (`kPerspectiveKeyVirtualKey`, which exists
+/// precisely because `open77_perspective` already claims F6). The two polls are
+/// on different gates -- the perspective one is gated on the web focus, this one
+/// is what TAKES that focus -- so the take press would fall through both: the
+/// camera would flip a frame before the screen took the keyboard. A key that
+/// does two things by construction is a key the player reports as broken, and
+/// the fix is the key, not a gate ordering that happens to work.
+///
+/// F8 is unbound in the base game's control map and unbound by this plugin;
+/// F1/F7/F10 are taken, and F6 belongs to the perspective resource. It is read
+/// here rather than routed through the window hook for a specific reason -- a
+/// GAME-THREAD tick is the only place that can answer "which panel is under the
+/// crosshair" and "is a session already open" without marshalling state across
+/// threads, and every other consumer of a key in this plugin reads it exactly
+/// this way (`Api::VehicleFlight::ReadInput`).
+constexpr int kControlKey = VK_F8;
+bool s_controlKeyHeld{};
+
+/// Nearest screen the ray crosses, and the point on it.
+///
+/// The plane comes from the quad's own four corners, in `ScreenQuad`'s tagged
+/// order, so this agrees with the draw path by construction: right is the mean of
+/// the two `+right` edges, up is the mean of the two `+up` edges, and the hit is
+/// expressed in that frame. A ray that crosses the *bounding* plane outside the
+/// rectangle is not a hit -- a screen is taken by looking at it, not at the wall
+/// it hangs on.
+
+/// The world point on a screen's plane, hit by a ray, as a fraction of the
+/// panel, or `std::nullopt` when the ray misses it.
+struct PlaneHit
+{
+    float u{};
+    float v{};
+    float distance{};
+};
+
+std::optional<PlaneHit> Intersect(
+    const std::vector<RED4ext::Vector4>& aWorld,
+    const float aWidth,
+    const float aHeight,
+    const RED4ext::Vector4& aEye,
+    const RED4ext::Vector4& aDirection)
+{
+    if (aWorld.size() < 4 || aWidth <= 0.0F || aHeight <= 0.0F) return std::nullopt;
+    const auto& pp = aWorld[ScreenQuad::CornerIndex(1, 1)];
+    const auto& np = aWorld[ScreenQuad::CornerIndex(-1, 1)];
+    const auto& nn = aWorld[ScreenQuad::CornerIndex(-1, -1)];
+    const auto& pn = aWorld[ScreenQuad::CornerIndex(1, -1)];
+
+    const auto centre = RED4ext::Vector4{
+        (pp.X + np.X + nn.X + pn.X) * 0.25F,
+        (pp.Y + np.Y + nn.Y + pn.Y) * 0.25F,
+        (pp.Z + np.Z + nn.Z + pn.Z) * 0.25F,
+        0.0F};
+
+    ScreenQuad::Vec3 rightAxis{(pp.X - np.X + (pn.X - nn.X)) * 0.5F,
+                              (pp.Y - np.Y + (pn.Y - nn.Y)) * 0.5F,
+                              (pp.Z - np.Z + (pn.Z - nn.Z)) * 0.5F};
+    ScreenQuad::Vec3 upAxis{(pp.X - pn.X + (np.X - nn.X)) * 0.5F,
+                            (pp.Y - pn.Y + (np.Y - nn.Y)) * 0.5F,
+                            (pp.Z - pn.Z + (np.Z - nn.Z)) * 0.5F};
+    if (!ScreenQuad::Normalise(rightAxis) || !ScreenQuad::Normalise(upAxis)) return std::nullopt;
+
+    // The quad's own normal, from the two edge midlines. `ScreenQuad` keeps only
+    // the arithmetic a screen needs to be drawn (`Rotate`, `Normalise`, `Dot`),
+    // so the cross product is spelled out here rather than added to a module the
+    // pure tests cover.
+    ScreenQuad::Vec3 normal{rightAxis.y * upAxis.z - rightAxis.z * upAxis.y,
+                            rightAxis.z * upAxis.x - rightAxis.x * upAxis.z,
+                            rightAxis.x * upAxis.y - rightAxis.y * upAxis.x};
+    if (!ScreenQuad::Normalise(normal)) return std::nullopt;
+
+    const auto direction = RED4ext::Vector4{aDirection.X, aDirection.Y, aDirection.Z, 0.0F};
+    const float denominator = normal.x * direction.X + normal.y * direction.Y +
+                              normal.z * direction.Z;
+    if (std::abs(denominator) < 1.0e-6F) return std::nullopt;
+    const auto toCentre = RED4ext::Vector4{centre.X - aEye.X, centre.Y - aEye.Y,
+                                           centre.Z - aEye.Z, 0.0F};
+    const float numerator = normal.x * toCentre.X + normal.y * toCentre.Y +
+                            normal.z * toCentre.Z;
+    const float t = numerator / denominator;
+    if (t <= 0.0F) return std::nullopt;
+
+    const auto hit = RED4ext::Vector4{aEye.X + direction.X * t, aEye.Y + direction.Y * t,
+                                      aEye.Z + direction.Z * t, 0.0F};
+    const ScreenQuad::Vec3 local{hit.X - centre.X, hit.Y - centre.Y, hit.Z - centre.Z};
+    const float alongRight = ScreenQuad::Dot(local, rightAxis);
+    const float alongUp = ScreenQuad::Dot(local, upAxis);
+    const float u = alongRight / aWidth + 0.5F;
+    const float v = alongUp / aHeight + 0.5F;
+    if (u < 0.0F || u > 1.0F || v < 0.0F || v > 1.0F) return std::nullopt;
+
+    PlaneHit result{};
+    result.u = u;
+    // The page's own v runs downwards from the top, the panel's up axis runs
+    // upwards: the pointer is seeded in page coordinates, so the flip is here.
+    result.v = 1.0F - v;
+    result.distance = t;
+    return result;
+}
+} // namespace
+
+Status HitTest(
+    const RED4ext::Vector4& aEye,
+    const RED4ext::Vector4& aDirection,
+    Hit& aOut)
+{
+    const std::scoped_lock lock(s_mutex);
+    if (!s_running) return Status::NotFound;
+
+    bool found = false;
+    float nearest = 0.0F;
+    Hit best{};
+    for (const auto& [id, entry] : s_entries)
+    {
+        if (entry.definition.surface == 0) continue;
+        // A panel the eye is behind is not clickable: taking a screen whose
+        // picture is not even drawn would hand the mouse to something the player
+        // cannot see, which is indistinguishable from the feature not working.
+        if (entry.facingKnown && entry.facingAway) continue;
+        const uint64_t entity = Props::ProjectedEntity(entry.definition.prop);
+        if (entity == 0) continue;
+        auto object = EntityService::Lock(Core::EntityId{entity});
+        if (!object) continue;
+        RED4ext::Vector4 position{};
+        RED4ext::Quaternion orientation{};
+        if (!ReadPlacement(object, position, orientation)) continue;
+        std::vector<RED4ext::Vector4> world;
+        if (!ScreenCorners(entry, position, orientation, world)) continue;
+        const ScreenQuad::Quad mapping = MappingFor(entry.definition);
+        const auto hit = Intersect(world, mapping.width, mapping.height, aEye, aDirection);
+        if (!hit) continue;
+        if (found && hit->distance >= nearest) continue;
+        found = true;
+        nearest = hit->distance;
+        best.id = id;
+        best.surface = entry.definition.surface;
+        best.u = hit->u;
+        best.v = hit->v;
+        best.distance = hit->distance;
+    }
+    if (!found) return Status::NotFound;
+    aOut = best;
+    return Status::Ok;
+}
+
+bool ToggleControl()
+{
+    const bool held = (GetAsyncKeyState(kControlKey) & 0x8000) != 0;
+    const bool pressed = held && !s_controlKeyHeld;
+    s_controlKeyHeld = held;
+    if (!pressed) return false;
+
+    if (WebUiService::ScreenInput::Get().active)
+    {
+        WebUiService::ScreenInput::Release();
+        LogInfo("screen control released (F8)");
+        return true;
+    }
+
+    Camera::View view{};
+    if (Camera::Describe(view) != Camera::Status::Ok)
+    {
+        LogInfo("screen control refused: no camera to aim from");
+        return false;
+    }
+    Hit hit{};
+    const Status status = HitTest(view.position, view.forward, hit);
+    if (status != Status::Ok)
+    {
+        LogInfo("screen control refused: nothing under the crosshair (%s)", Describe(status));
+        return false;
+    }
+    if (!WebUiService::ScreenInput::Take(hit.surface, hit.u, hit.v))
+    {
+        LogInfo("screen control refused: surface %llu is not presenting",
+                static_cast<unsigned long long>(hit.surface));
+        return false;
+    }
+    LogInfo("screen control taken: surface %llu at %.2f m (F8 releases, mouse and keyboard go to the page)",
+            static_cast<unsigned long long>(hit.surface), static_cast<double>(hit.distance));
+    return true;
+}
+
 void Initialize(const RED4ext::v1::PluginHandle aHandle, const RED4ext::v1::Sdk* const aSdk)
 {
     const std::scoped_lock lock(s_mutex);
@@ -590,6 +875,17 @@ void OnRunningEnter()
 
 void OnRunningUpdate()
 {
+    // The pointer/keyboard handoff, before anything is projected: taking a screen
+    // is a state change, and the pointer it seeds has to be drawn by the frame
+    // this same pass publishes.
+    static_cast<void>(ToggleControl());
+
+    // One clear for the whole tick, before anything below may publish: where the
+    // pointer is drawn is a per-tick answer, and a screen that stops being built
+    // -- its prop unstreamed, its quad refused, the camera behind it -- must not
+    // keep last tick's place on the wall. Whoever can publish does so below.
+    WebUiService::ScreenInput::ClearPointerOnScreen();
+
     Camera::View view{};
     // One view read for the whole tick, not one per screen: every screen is
     // projected against the same camera, and reading it per screen would put N
@@ -657,6 +953,11 @@ void OnRunningUpdate()
 
 void OnRunningExit()
 {
+    // The world is going away, so no screen can be under the crosshair any more.
+    // Released explicitly rather than left to the WebUI teardown: the focus it
+    // holds suppresses the game's own raw input, and a client that kept that
+    // across a world change would come back with no mouse look.
+    WebUiService::ScreenInput::Release();
     const std::scoped_lock lock(s_mutex);
     s_running = false;
     for (const auto& [_, entry] : s_entries)

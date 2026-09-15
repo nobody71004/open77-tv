@@ -2,10 +2,19 @@
 # tools/extract-tv-patches.py. Apply by hand: this is not a patch
 # series, and the surrounding file has other unreleased work in it.
 diff --git a/webui/tests/WebCoreTests.cpp b/webui/tests/WebCoreTests.cpp
-index f011342f..8cb1d697 100644
+index f011342f..ba0ce24e 100644
 --- a/webui/tests/WebCoreTests.cpp
 +++ b/webui/tests/WebCoreTests.cpp
-@@ -117,12 +117,13 @@ int main()
+@@ -1,6 +1,8 @@
++#include <op77/WebUI/AdBlock.hpp>
++#include <op77/WebUI/FramePolicy.hpp>
+ #include <op77/WebUI/NamedPipe.hpp>
+ #include <op77/WebUI/GpuRing.hpp>
+ #include <op77/WebUI/DrawBounds.hpp>
+ #include <op77/WebUI/SurfaceSizing.hpp>
+ #include <op77/WebUI/Messages.hpp>
+ #include <op77/WebUI/Protocol.hpp>
+@@ -117,12 +119,13 @@ int main()
          .deviceScaleFactor = 2.0F,
          .framesPerSecond = 30,
          .layer = SurfaceLayer::Menu,
@@ -19,7 +28,7 @@ index f011342f..8cb1d697 100644
      {
          return 1;
      }
-@@ -133,18 +134,90 @@ int main()
+@@ -133,18 +136,90 @@ int main()
                     createDecoded.generation == create.generation && createDecoded.entry == create.entry &&
                     createDecoded.allowedFiles == create.allowedFiles &&
                     createDecoded.width == create.width && createDecoded.height == create.height &&
@@ -111,3 +120,162 @@ index f011342f..8cb1d697 100644
          .frameMapping = "Local\\Open77.WebUI.Frame.9.Resize.1",
          .width = 1920,
          .height = 1080,
+@@ -437,9 +512,158 @@ int main()
+                    "fail must return the slot with success=false and deactivate")) return 1;
+         const auto failedEmpty = GpuRingConsumer{}.Fail();
+         if (!Check(failedEmpty.size() == 1 && !failedEmpty[0].success,
+                    "fail on an idle ring still tells the host to fall back")) return 1;
+     }
+ 
++    // -----------------------------------------------------------------------
++    // The television's two quality decisions: what a framed page may open, and
++    // whether it can be framed at all.
++    //
++    // Both are pure functions over strings, and both are the kind of thing that
++    // fails silently in a game: an over-broad blocklist drops a real player's
++    // window and looks exactly like a broken site, and a framing verdict that is
++    // wrong in either direction shows a blank screen with no line to explain it.
++    // Neither needs a browser, a network or a game to pin, which is why they are
++    // tested here rather than in the host integration suite.
++    // -----------------------------------------------------------------------
++    {
++        using namespace op77::WebUI;
++
++        // -- the host a rule is matched against ----------------------------
++        if (!Check(Ads::LowerHost("https://User@Example.COM:8443/a/b") == "example.com",
++                   "host must be lowercased, and go without userinfo or port") ||
++            !Check(Ads::LowerHost("https://[::1]:8080/x") == "[::1]",
++                   "a bracketed IPv6 literal's colon is not a port separator") ||
++            !Check(Ads::LowerHost("not a url").empty(), "a URL without a scheme has no host") ||
++            !Check(Ads::SchemeOf("HTTPS://x") == "https" && Ads::SchemeOf("javascript:x") == "javascript" &&
++                       Ads::SchemeOf("//x").empty(),
++                   "scheme extraction changed")) return 1;
++
++        // -- the blocklist itself ------------------------------------------
++        if (!Check(Ads::RuleCount() >= 40, "the blocklist must not be silently emptied") ||
++            !Check(Ads::IsBlocked("https://focusameneducation.com/ddc0242a/invoke.js"),
++                   "the host measured on the reporting site must be blocked") ||
++            !Check(Ads::IsBlocked("https://cdn.focusameneducation.com/x.js"),
++                   "a rule must cover its own subdomains") ||
++            !Check(Ads::IsBlocked("https://popads-delivery-7.test/invoke.js"),
++                   "a host that calls itself an advertising host is blocked whatever its domain") ||
++            // ...and the two ways a suffix match goes wrong.
++            !Check(!Ads::IsBlocked("https://notfocusameneducation.com/x.js"),
++                   "a host must not match a rule it merely ends with") ||
++            !Check(!Ads::IsBlocked("https://focusameneducation.com.evil.test/x.js"),
++                   "a rule must not cover a host that puts it in front of its own domain") ||
++            // The one false positive that would break the feature this exists for:
++            // YouTube's media origin shares a registrable domain with an ad network.
++            !Check(!Ads::IsBlocked("https://rr3---sn-abc.googlevideo.com/videoplayback?x=1"),
++                   "YouTube's media origin must not be blocked: googlevideo is not googlesyndication") ||
++            !Check(!Ads::IsBlocked("https://i.ytimg.com/vi/x/hq.jpg"), "thumbnails must not be blocked")) return 1;
++
++        // -- what a framed page may open -----------------------------------
++        if (!Check(Ads::DecidePopup("https://focusameneducation.com/x", true) == Ads::PopupAction::Drop,
++                   "a click on an advertisement is still an advertisement") ||
++            !Check(Ads::DecidePopup("https://some-player.test/watch/1", false) == Ads::PopupAction::Drop,
++                   "a window with no click behind it is advertising, whoever serves it") ||
++            !Check(Ads::DecidePopup("https://some-player.test/watch/1", true) == Ads::PopupAction::Follow,
++                   "a window a click asked for must land on the screen, not nowhere") ||
++            !Check(Ads::DecidePopup("javascript:alert(1)", true) == Ads::PopupAction::Drop,
++                   "a javascript: URL is not a window request") ||
++            !Check(Ads::DecidePopup("about:blank", true) == Ads::PopupAction::Drop &&
++                       Ads::DecidePopup("", true) == Ads::PopupAction::Drop,
++                   "empty and about: URLs must be dropped") ||
++            !Check(Ads::Describe(Ads::PopupAction::Follow) == std::string("follow"),
++                   "the policy's name for the trace changed")) return 1;
++    }
++
++    {
++        using namespace op77::WebUI::Framing;
++        const std::string ours = "r-tv-3-g-1.cym-ui";
++        const auto verdict = [&](const std::vector<Header>& aHeaders)
++        {
++            return EvaluateFraming(aHeaders, ours);
++        };
++
++        // -- whether a document may be framed at all ------------------------
++        if (!Check(verdict({}).allowed, "a response with no framing headers may be framed") ||
++            !Check(!verdict({{"X-Frame-Options", "SAMEORIGIN"}}).allowed &&
++                       verdict({{"x-frame-options", "SAMEORIGIN"}}).violation == "x-frame-options",
++                   "SAMEORIGIN refuses a television, which is never the same origin") ||
++            !Check(!verdict({{"X-Frame-Options", "deny"}}).allowed,
++                   "DENY must be read case-insensitively") ||
++            !Check(!verdict({{"X-Frame-Options", "ALLOW-FROM https://tv.test"}}).allowed,
++                   "ALLOW-FROM is not honoured by any browser and must not be read as a grant") ||
++            !Check(!verdict({{"Content-Security-Policy", "default-src 'self'; frame-ancestors 'self'"}}).allowed &&
++                       verdict({{"Content-Security-Policy", "frame-ancestors 'self'"}}).violation == "frame-ancestors",
++                   "frame-ancestors that does not name us refuses us") ||
++            !Check(verdict({{"Content-Security-Policy", "frame-ancestors *"}}).allowed,
++                   "frame-ancestors * permits everybody") ||
++            !Check(verdict({{"Content-Security-Policy", "frame-ancestors " + ours}}).allowed,
++                   "a site may name this surface's origin as an ancestor on purpose") ||
++            // A page's own other directives are its own business: this build frames
++            // the document and lets it run under its own policy, as a tab would.
++            !Check(verdict({{"Content-Security-Policy", "default-src 'none'; script-src https://cdn.x"}}).allowed,
++                   "a policy with no frame-ancestors must not be read as a framing refusal") ||
++            // Two headers mean both apply, which folding them into one value loses.
++            !Check(!verdict({{"Content-Security-Policy", "frame-ancestors *"},
++                             {"Content-Security-Policy", "frame-ancestors 'none'"}}).allowed,
++                   "every Content-Security-Policy header applies, not the first") ||
++            !Check(verdict({{"X-Frame-Options", "SAMEORIGIN, SAMEORIGIN"}}).violation == "x-frame-options",
++                   "a repeated field value is still a refusal")) return 1;
++
++        // -- resolving a reference against the document it was written in ----
++        const std::string document = "https://shell.test/app/page.html";
++        if (!Check(ResolveUrl(document, "player.html") == "https://shell.test/app/player.html",
++                   "a relative reference must resolve against the document's directory") ||
++            !Check(ResolveUrl(document, "/embed/a") == "https://shell.test/embed/a",
++                   "a root-relative reference must keep the authority") ||
++            !Check(ResolveUrl(document, "//cdn.test/a.js") == "https://cdn.test/a.js",
++                   "a scheme-relative reference must inherit the document's scheme") ||
++            !Check(ResolveUrl(document, "?only=query") == "https://shell.test/app/page.html?only=query",
++                   "a query-only reference keeps the path") ||
++            !Check(ResolveUrl(document, "../up.html") == "https://shell.test/up.html",
++                   "dot segments must be removed, or a candidate lands on the wrong path") ||
++            !Check(ResolveUrl(document, "https://other.test/x") == "https://other.test/x",
++                   "an absolute reference is already resolved") ||
++            !Check(ResolveUrl(document, "  https://spaced.test/x  ") == "https://spaced.test/x",
++                   "surrounding whitespace is not part of a URL") ||
++            // Nothing here may be framed, so nothing here is a candidate.
++            !Check(ResolveUrl(document, "javascript:alert(1)").empty() &&
++                       ResolveUrl(document, "data:text/html,x").empty() &&
++                       ResolveUrl(document, "#fragment").empty() &&
++                       ResolveUrl(document, "mailto:a@b.test").empty() &&
++                       ResolveUrl("not-a-url", "x").empty(),
++                   "a reference that cannot be framed must resolve to nothing")) return 1;
++
++        // -- finding the application a shell page wraps ----------------------
++        //
++        // The shape of the page that produced this work, reduced to one line per
++        // finding: a <base> that re-bases the shell's own relative URLs, an
++        // advertising frame that must not be offered as a candidate, and a real
++        // application nested as both an <iframe> and an <object>.
++        const std::string shell =
++            "<html><head><base href='https://app.example.test/embed/'>"
++            "<script src='https://focusameneducation.com/abc/invoke.js'></script></head><body>"
++            "<iframe id='a' src='player.html' frameborder='0'></iframe>"
++            "<iframe id='b' src=\"https://moviestv.example/\"></iframe>"
++            "<iframe id='ad' src='https://ads.pubmatic.com/x'></iframe>"
++            "<object data='https://v3.example.test/?logo=1'></object>"
++            "<frameset cols='1'><frame src='ignored.html'></frameset>"
++            "<iframe src='player.html'></iframe>"
++            "</body></html>";
++        const auto embeds = FindEmbeds(shell, "https://shell.test/");
++        if (!Check(embeds.size() == 4, "a shell's nested documents must be found once each, ads excluded") ||
++            !Check(embeds[0].url == "https://app.example.test/embed/player.html" && embeds[0].kind == "iframe",
++                   "the first nested document must be read through the page's own <base>") ||
++            !Check(embeds[1].url == "https://moviestv.example/" && embeds[2].kind == "object",
++                   "a quoted absolute URL and an <object data> must both be candidates") ||
++            !Check(embeds[3].kind == "frame" && embeds[3].url == "https://app.example.test/embed/ignored.html",
++                   "<frame> must be read without matching <frameset>") ||
++            !Check(std::none_of(embeds.begin(), embeds.end(), [](const Embed& e)
++                       { return e.url.find("pubmatic") != std::string::npos; }),
++                   "an advertising host must not be offered as the page to show") ||
++            !Check(FindEmbeds("<html><body>no frames here</body></html>", "https://a.test/").empty(),
++                   "a page that nests nothing has no candidates")) return 1;
++    }
++
+     std::cout << "Open77 WebCore tests passed\n";
+     return 0;
+ }

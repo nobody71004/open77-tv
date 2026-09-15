@@ -1,0 +1,193 @@
+# TV-relevant hunks only, extracted from a working tree by
+# tools/extract-tv-patches.py. Apply by hand: this is not a patch
+# series, and the surrounding file has other unreleased work in it.
+diff --git a/client/src/api/Props.cpp b/client/src/api/Props.cpp
+index 6759d9bf..3dfa4938 100644
+--- a/client/src/api/Props.cpp
++++ b/client/src/api/Props.cpp
+@@ -306,12 +308,84 @@ constexpr std::pair<std::string_view, std::string_view> kModelAliases[]{
+     {"pipe.medium", "base\\environment\\decoration\\industrial\\pipes\\pipe_medium_01\\pipe_medium_01_a.mesh"},
+     {"pipe.round", "base\\environment\\decoration\\industrial\\pipes\\pipe_round_01\\pipe_round_01_a.mesh"},
+     {"pipe.waste", "base\\environment\\decoration\\public_utility\\construction\\waste_pipe\\waste_pipe_a.mesh"},
+     // electronics
+     {"electronics.monitor", "base\\environment\\decoration\\electronics\\devices\\screen_device\\monitor_a.ent"},
+     {"electronics.monitor.device", "base\\environment\\decoration\\electronics\\devices\\monitor_device\\monitor_device_a.mesh"},
++    // ---------------------------------------------------------------------------
++    // Televisions and monitors.
++    //
++    // These are the game's OWN screens, not stand-ins. Before this block the
++    // catalogue had exactly two, and the media records reached for signage and
++    // decor to fill the rest -- `decor.painting`, `sign.rect.blank`,
++    // `sign.kiosk_frame`, `electronics.vending_machine`, `electronics.arcade`.
++    // Those spawn, and they were honestly labelled, but none of them is a
++    // television: a player picking "Framed panel" got a painting.
++    //
++    // Every path below is from the 2.31 cooked-archive inventory
++    // (`docs/generated/props-2.31.csv`), and the screen rectangles in the media
++    // records are measured from the matching `*screen*` mesh's bounding box
++    // rather than estimated -- the screens are separate authored meshes and one
++    // of them states its own size to the millimetre.
++    //
++    // Two families, chosen because they are the ones the game itself uses:
++    //
++    //   electronics.tv.*       a television: the BODY is the prop and the page
++    //                          lands on the inset screen mesh
++    //   electronics.monitor.*  a monitor or a bare screen panel: the screen mesh
++    //                          is the prop, so the page covers the whole face
++    //
++    // `screen.*` names are panels with no housing, which is what a wall display
++    // is. `smart_frame.*` are the game's picture frames -- a page in one of those
++    // is how Night City advertises.
++    // ---------------------------------------------------------------------------
++    {"electronics.tv.16x9", "base\\environment\\decoration\\electronics\\entertainment\\television\\television_a_16x9.mesh"},
++    {"electronics.tv.21x9", "base\\environment\\decoration\\electronics\\entertainment\\television\\television_a_21x9.mesh"},
++    {"electronics.tv.neokitsch.16x9", "base\\environment\\decoration\\electronics\\entertainment\\television\\television_neokitsch_16x9.mesh"},
++    {"electronics.tv.neokitsch.21x9", "base\\environment\\decoration\\electronics\\entertainment\\television\\television_neokitsch_21x9.mesh"},
++    {"electronics.tv.screen.16x9", "base\\environment\\decoration\\electronics\\entertainment\\television\\television_a_16x9_screen_a.mesh"},
++    {"electronics.tv.screen.21x9", "base\\environment\\decoration\\electronics\\entertainment\\television\\television_a_21x9_screen_a.mesh"},
++    {"electronics.tv.screen.neokitsch.16x9", "base\\environment\\decoration\\electronics\\entertainment\\television\\television_neokitsch_16x9_screen_a.mesh"},
++    {"electronics.tv.screen.neokitsch.21x9", "base\\environment\\decoration\\electronics\\entertainment\\television\\television_neokitsch_21x9_screen_a.mesh"},
++    // The big wall display. No separate screen mesh ships for it, so the media
++    // record puts the page on the measured front face rather than on a screen
++    // submesh -- see `shared/records.lua`.
++    {"electronics.tv.large", "base\\environment\\decoration\\electronics\\entertainment\\television\\tv_large_a.mesh"},
++    {"electronics.monitor.device.a", "base\\environment\\decoration\\electronics\\devices\\monitor_device\\monitor_device_a.mesh"},
++    {"electronics.monitor.device.b", "base\\environment\\decoration\\electronics\\devices\\monitor_device\\monitor_device_b.mesh"},
++    {"electronics.monitor.device.c", "base\\environment\\decoration\\electronics\\devices\\monitor_device\\monitor_device_c.mesh"},
++    {"electronics.monitor.device.d", "base\\environment\\decoration\\electronics\\devices\\monitor_device\\monitor_device_d.mesh"},
++    {"electronics.monitor.device.e", "base\\environment\\decoration\\electronics\\devices\\monitor_device\\monitor_device_e.mesh"},
++    {"electronics.monitor.screen.a", "base\\environment\\decoration\\electronics\\devices\\screen_device\\monitor_a_screen.mesh"},
++    {"electronics.monitor.screen.b", "base\\environment\\decoration\\electronics\\devices\\screen_device\\monitor_b_screen.mesh"},
++    {"electronics.monitor.screen.c", "base\\environment\\decoration\\electronics\\devices\\screen_device\\monitor_c_screen.mesh"},
++    {"electronics.monitor.screen.d", "base\\environment\\decoration\\electronics\\devices\\screen_device\\monitor_d_screen.mesh"},
++    // The portrait mounting of each monitor is a separate authored mesh, not a
++    // rotation of the landscape one: the same panel, turned 90 degrees, in its
++    // own asset. A record that wants a vertical screen needs its own alias.
++    {"electronics.monitor.screen.a.vertical", "base\\environment\\decoration\\electronics\\devices\\screen_device\\monitor_a_screen_vertical.mesh"},
++    {"electronics.monitor.screen.b.vertical", "base\\environment\\decoration\\electronics\\devices\\screen_device\\monitor_b_screen_vertical.mesh"},
++    {"electronics.monitor.screen.c.vertical", "base\\environment\\decoration\\electronics\\devices\\screen_device\\monitor_c_screen_vertical.mesh"},
++    {"electronics.monitor.screen.d.vertical", "base\\environment\\decoration\\electronics\\devices\\screen_device\\monitor_d_screen_vertical.mesh"},
++    {"electronics.screen.21x9", "base\\environment\\decoration\\electronics\\devices\\screen_device\\screen_device_a_21x9.mesh"},
++    {"electronics.screen.16x9", "base\\environment\\decoration\\electronics\\devices\\screen_device\\screen_device_e_16x9.mesh"},
++    {"electronics.screen.4x3", "base\\environment\\decoration\\electronics\\devices\\screen_device\\screen_device_c_4x3.mesh"},
++    {"electronics.screen.3x4", "base\\environment\\decoration\\electronics\\devices\\screen_device\\screen_device_d_3x4.mesh"},
++    {"electronics.screen.9x16", "base\\environment\\decoration\\electronics\\devices\\screen_device\\screen_device_f_9x16.mesh"},
++    {"electronics.screen.9x21", "base\\environment\\decoration\\electronics\\devices\\screen_device\\screen_device_b_9x21.mesh"},
++    // A 2:1 panel with no housing: the plainest screen in the game, and the one
++    // the media catalogue uses as `panel.2x1`.
++    {"electronics.screen.2x1", "base\\environment\\decoration\\electronics\\devices\\screen_device\\tv_screen_01.mesh"},
++    {"electronics.frame.a", "base\\environment\\decoration\\electronics\\devices\\screen_device\\smart_frame_a.mesh"},
++    {"electronics.frame.ab", "base\\environment\\decoration\\electronics\\devices\\screen_device\\smart_frame_ab.mesh"},
++    {"electronics.frame.ac", "base\\environment\\decoration\\electronics\\devices\\screen_device\\smart_frame_ac.mesh"},
++    {"electronics.frame.ad", "base\\environment\\decoration\\electronics\\devices\\screen_device\\smart_frame_ad.mesh"},
++    {"electronics.frame.ae", "base\\environment\\decoration\\electronics\\devices\\screen_device\\smart_frame_ae.mesh"},
++    {"electronics.frame.af", "base\\environment\\decoration\\electronics\\devices\\screen_device\\smart_frame_af.mesh"},
++    {"electronics.monitor.surveillance", "base\\environment\\decoration\\electronics\\security\\monitor\\hardware_surveillance_monitor_c.mesh"},
++    {"furniture.tv_stand", "base\\environment\\decoration\\misc\\various\\tv_stand\\tv_stand_base.mesh"},
+     // Measured 0.31 x 0.19 x 0.23 m as `vending_machine_device_a`: that file is the
+     // interactive device panel, not the machine, and read as nothing when spawned.
+     {"electronics.vending_machine", "base\\environment\\decoration\\electronics\\service\\vending_machine\\vending_machine_b.mesh"},
+     {"electronics.vending_machine.small", "base\\environment\\decoration\\electronics\\service\\vending_machine_small\\vending_machine_small_a.mesh"},
+     {"electronics.vending_machine.drink", "base\\environment\\decoration\\electronics\\service\\vending_machine\\vending_machine_a.mesh"},
+     {"electronics.arcade", "base\\environment\\decoration\\electronics\\entertainment\\game_machine\\game_machine.mesh"},
+@@ -1646,12 +1720,72 @@ Status Update(const std::string_view aOwner, const uint64_t aId, const Patch& aP
+     {
+         found->second.options = previous;
+     }
+     return status;
+ }
+ 
++/// Puts a prop entity where it was asked to be, by writing its root transform.
++///
++/// WHY THIS IS NOT THE AI CHANNEL ANY MORE -- the reason the moving controls did
++/// nothing. A prop used to be moved with `DynamicEntityService::ApplyTransform`,
++/// which queues an `AI::TeleportCommand` inside an `NPCCommandEvent`: the
++/// puppet's own command channel, and the right instrument for a body, because it
++/// asks the body's AI to move itself and so keeps the locomotion controller in
++/// agreement (see NpcReplication.cpp). **A prop has no AI component.** Nothing
++/// consumes the command, and nothing in the chain notices: the queue call
++/// returns true, `SetTransform` returned `Ok`, the resource's entry moved,
++/// `media.list` reported the new coordinates and the client logged "transform
++/// queued" -- while the cabinet stood exactly where it was. Reported, exactly, as
++/// "the moving controls are not working".
++///
++/// It is the same failure `Movement::Teleport` already records for
++/// `gameTeleportationFacility::Teleport`: a call that reports success and changes
++/// nothing. The write that does move an entity is the one that function and
++/// `Doors::Sink` use, and it is here for the same measured reason.
++///
++/// `entEntity::transformComponent` is the entity root, so it has no parent to
++/// compose with and its local transform IS the entity's world placement. Yaw
++/// only, as in `Movement::Teleport`: a prop stands upright and every quad in the
++/// catalogue is a yaw-rotated rectangle.
++[[nodiscard]] bool PlaceEntity(
++    const Core::EntityId aEntity,
++    const float (&aPosition)[3],
++    const float aYaw)
++{
++    auto object = EntityService::Lock(aEntity);
++    auto* const entity = object != nullptr
++        ? static_cast<RED4ext::ent::Entity*>(object.GetPtr())
++        : nullptr;
++    if (entity == nullptr || entity->status != RED4ext::EntityStatus::Attached)
++    {
++        return false;
++    }
++
++    auto* const root = entity->transformComponent;
++    auto* const setPosition = Engine::Rtti::ClassNative("entIPlacedComponent", "SetLocalPosition");
++    auto* const setOrientation = Engine::Rtti::ClassNative("entIPlacedComponent", "SetLocalOrientation");
++    if (root == nullptr || setPosition == nullptr || setOrientation == nullptr ||
++        setPosition->params.size() != 1 || setOrientation->params.size() != 1)
++    {
++        return false;
++    }
++
++    RED4ext::Vector4 position{aPosition[0], aPosition[1], aPosition[2], 1.0F};
++    RED4ext::StackArgs_t positionArgs;
++    positionArgs.emplace_back(nullptr, &position);
++    const bool moved = RED4ext::ExecuteFunction(root, setPosition, nullptr, positionArgs);
++
++    const auto halfYaw = aYaw * 0.5F * 3.14159265358979323846F / 180.0F;
++    RED4ext::Quaternion orientation{0.0F, 0.0F, std::sin(halfYaw), std::cos(halfYaw)};
++    RED4ext::StackArgs_t orientationArgs;
++    orientationArgs.emplace_back(nullptr, &orientation);
++    static_cast<void>(RED4ext::ExecuteFunction(root, setOrientation, nullptr, orientationArgs));
++
++    return moved;
++}
++
+ Status SetTransform(
+     const std::string_view aOwner,
+     const uint64_t aId,
+     const float (&aPosition)[3],
+     const float aYaw)
+ {
+@@ -1679,16 +1813,23 @@ Status SetTransform(
+         return Status::Ok;
+     }
+     if (!GameThreadQueue::IsOnGameThread())
+     {
+         return Status::WorldUnavailable;
+     }
+-    return DynamicEntityService::ApplyTransform(
+-               *found->second.entity, aPosition[0], aPosition[1], aPosition[2], aYaw)
+-        ? Status::Ok
+-        : Status::WorldUnavailable;
++    // `PlaceEntity` reports the write, which is the strongest signal available
++    // synchronously: it is a call the engine performs, not a request it queues.
++    // What actually proves the set moved is the reader above it -- the screen
++    // quad is placed from this entity's transform every frame, so if the cabinet
++    // slides then `MediaScreens` slides with it, and if it does not, the picture
++    // stays behind. That is the observation to trust here.
++    if (!PlaceEntity(*found->second.entity, aPosition, aYaw))
++    {
++        return Status::WorldUnavailable;
++    }
++    return Status::Ok;
+ }
+ 
+ Status Remove(const std::string_view aOwner, const uint64_t aId)
+ {
+     const std::scoped_lock lock(s_mutex);
+     const auto found = s_entries.find(aId);

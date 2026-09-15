@@ -2,17 +2,32 @@
 # tools/extract-tv-patches.py. Apply by hand: this is not a patch
 # series, and the surrounding file has other unreleased work in it.
 diff --git a/webhost/src/SurfaceClient.cpp b/webhost/src/SurfaceClient.cpp
-index d75b7b15..25fea429 100644
+index d75b7b15..bdcf2ad1 100644
 --- a/webhost/src/SurfaceClient.cpp
 +++ b/webhost/src/SurfaceClient.cpp
-@@ -11,12 +11,14 @@
+@@ -1,22 +1,29 @@
+ #include "SurfaceClient.hpp"
+ 
++#include "FrameResolver.hpp"
+ #include "HostRuntime.hpp"
+ 
+ #include <Windows.h>
+ 
+ #include <algorithm>
+ #include <cctype>
+ #include <cmath>
++#include <cstring>
+ #include <fstream>
  #include <sstream>
  #include <format>
++#include <thread>
  
  #include <dxgi1_4.h>
  #include <utility>
  
++#include <op77/WebUI/AdBlock.hpp>
 +#include <op77/WebUI/Decoder.hpp>
++#include <op77/WebUI/FramePolicy.hpp>
 +
  #include "include/base/cef_callback.h"
  #include "include/cef_parser.h"
@@ -20,7 +35,7 @@ index d75b7b15..25fea429 100644
  #include "include/cef_request_context.h"
  #include "include/cef_request_context_handler.h"
  #include "include/cef_stream.h"
-@@ -94,12 +96,111 @@ SurfaceClient::SurfaceClient(std::weak_ptr<HostRuntime> aRuntime, CreateSurfaceP
+@@ -94,12 +108,111 @@ SurfaceClient::SurfaceClient(std::weak_ptr<HostRuntime> aRuntime, CreateSurfaceP
      config.js_query_function = "open77Query";
      config.js_cancel_function = "open77QueryCancel";
      m_router = CefMessageRouterBrowserSide::Create(config);
@@ -132,14 +147,26 @@ index d75b7b15..25fea429 100644
          m_definition.pixelWidth == 0 || m_definition.pixelHeight == 0 ||
          m_definition.width > kMaximumSurfaceDimension ||
          m_definition.height > kMaximumSurfaceDimension ||
-@@ -1289,26 +1400,39 @@ bool SurfaceClient::OnBeforeBrowse(CefRefPtr<CefBrowser> aBrowser, CefRefPtr<Cef
+@@ -1289,26 +1412,111 @@ bool SurfaceClient::OnBeforeBrowse(CefRefPtr<CefBrowser> aBrowser, CefRefPtr<Cef
          runtime->Trace("browser_before_browse:same=" + std::string(sameOrigin ? "yes:" : "no:") + url);
      if (sameOrigin)
      {
          m_router->OnBeforeBrowse(aBrowser, aFrame);
          return false;
      }
--    return true;
++    // A navigation to a blocked host, refused for a media surface. This is the
++    // half of the blocklist a request-level rule cannot cover: the window a
++    // popup policy drops is one the page asked for, but a framed site that
++    // redirects the frame itself needs nothing asked and no click, and the page
++    // behind the advertisement is then simply gone. Menus are untouched -- a
++    // strict surface cannot reach a remote origin in the first place.
++    if (m_definition.pagePolicy == WebPagePolicy::Media && op77::WebUI::Ads::IsBlocked(url))
++    {
++        if (const auto runtime = m_runtime.lock())
++            runtime->Trace("adblock:navigation " + Shorten(url));
++        ++m_blockedRequests;
++        return true;
++    }
 +    // A navigation off the page's own origin, refused -- except for a surface whose
 +    // policy is the one that exists to play somebody else's page. That policy is
 +    // what makes a browser embed reachable at all: this is the request gate, and
@@ -148,14 +175,75 @@ index d75b7b15..25fea429 100644
 +    // `webui/include/op77/WebUI/PagePolicy.hpp` -- the header and this gate are two
 +    // halves of one decision and are deliberately read from the same policy.
 +    return !op77::WebUI::AllowsRemoteContent(m_definition.pagePolicy);
- }
- 
- bool SurfaceClient::OnOpenURLFromTab(CefRefPtr<CefBrowser>, CefRefPtr<CefFrame>, const CefString&,
-                                      cef_window_open_disposition_t, bool)
- {
++}
++
++bool SurfaceClient::OnOpenURLFromTab(CefRefPtr<CefBrowser>, CefRefPtr<CefFrame> aFrame,
++                                     const CefString& aTargetUrl, cef_window_open_disposition_t, bool aUserGesture)
++{
++    // CEF's other spelling of "a window was asked for": a `target="_blank"` link
++    // or a context-menu open. The same policy decides it, and `Follow` still
++    // means the URL lands on the screen instead of nowhere -- a site whose links
++    // are all `_blank` is otherwise unusable on a television, which has no tabs
++    // to open them in.
++    if (m_definition.pagePolicy != WebPagePolicy::Media) return true;
++    const std::string url = aTargetUrl.ToString();
++    if (op77::WebUI::Ads::DecidePopup(url, aUserGesture) != op77::WebUI::Ads::PopupAction::Follow)
++        return true;
++    if (const auto runtime = m_runtime.lock()) runtime->Trace("popup:follow-tab " + Shorten(url));
++    if (aFrame) aFrame->LoadURL(url);
      return true;
  }
  
+-bool SurfaceClient::OnOpenURLFromTab(CefRefPtr<CefBrowser>, CefRefPtr<CefFrame>, const CefString&,
+-                                     cef_window_open_disposition_t, bool)
++bool SurfaceClient::OnBeforePopup(CefRefPtr<CefBrowser>, CefRefPtr<CefFrame> aFrame, const int,
++                                  const CefString& aTargetUrl, const CefString&,
++                                  const cef_window_open_disposition_t, const bool aUserGesture,
++                                  const CefPopupFeatures&, CefWindowInfo&, CefRefPtr<CefClient>&,
++                                  CefBrowserSettings&, CefRefPtr<CefDictionaryValue>&, bool*)
+ {
++    // Menus are left exactly as they were: a strict surface frames nothing and
++    // loads no remote script, so a window from one is a case this work did not
++    // set out to change.
++    if (m_definition.pagePolicy != WebPagePolicy::Media) return false;
++
++    const std::string url = aTargetUrl.ToString();
++    const auto action = op77::WebUI::Ads::DecidePopup(url, aUserGesture);
++    if (action == op77::WebUI::Ads::PopupAction::Follow)
++    {
++        // The one case where a window is refused and the URL is not: a player
++        // that opens its video on a click gets its URL on the screen, in the
++        // frame that asked for it. The window itself is still never created --
++        // there is no window manager here, and a popup CEF draws is an overlay
++        // with no title bar to close it by.
++        if (const auto runtime = m_runtime.lock()) runtime->Trace("popup:follow " + Shorten(url));
++        if (aFrame) aFrame->LoadURL(url);
++        return true;
++    }
++    if (const auto runtime = m_runtime.lock())
++        runtime->Trace("popup:drop gesture=" + std::string(aUserGesture ? "yes" : "no") + " " +
++            Shorten(url) + (op77::WebUI::Ads::IsBlocked(url) ? " (blocked host)" : ""));
++    ++m_blockedPopups;
+     return true;
+ }
+ 
++cef_return_value_t SurfaceClient::OnBeforeResourceLoad(CefRefPtr<CefBrowser>, CefRefPtr<CefFrame>,
++                                                       CefRefPtr<CefRequest> aRequest, CefRefPtr<CefCallback>)
++{
++    // Only a media surface keeps the default handler for third-party requests, so
++    // this is only ever reached for a framed page -- and it is the rule that makes
++    // the blocklist worth having: a popup policy answers a script that already
++    // loaded and ran, while a refused request means the advertising script never
++    // arrives to ask for anything.
++    if (m_definition.pagePolicy != WebPagePolicy::Media) return RV_CONTINUE;
++    const std::string url = aRequest->GetURL().ToString();
++    if (!op77::WebUI::Ads::IsBlocked(url)) return RV_CONTINUE;
++    if (const auto runtime = m_runtime.lock())
++        runtime->Trace("adblock:request " + Shorten(url));
++    ++m_blockedRequests;
++    return RV_CANCEL;
++}
++
  CefRefPtr<CefResourceRequestHandler> SurfaceClient::GetResourceRequestHandler(
      CefRefPtr<CefBrowser>, CefRefPtr<CefFrame>, CefRefPtr<CefRequest>, bool, bool,
      const CefString&, bool& aDisableDefaultHandling)
@@ -174,15 +262,18 @@ index d75b7b15..25fea429 100644
  void SurfaceClient::OnRenderProcessTerminated(CefRefPtr<CefBrowser> aBrowser, TerminationStatus,
                                                 const int aErrorCode, const CefString& aErrorString)
  {
-@@ -1318,20 +1442,31 @@ void SurfaceClient::OnRenderProcessTerminated(CefRefPtr<CefBrowser> aBrowser, Te
+@@ -1318,20 +1526,34 @@ void SurfaceClient::OnRenderProcessTerminated(CefRefPtr<CefBrowser> aBrowser, Te
              std::to_string(aErrorCode) + ":" + aErrorString.ToString()});
  }
  
  CefRefPtr<CefResourceHandler> SurfaceClient::GetResourceHandler(CefRefPtr<CefBrowser>, CefRefPtr<CefFrame>,
                                                                   CefRefPtr<CefRequest> aRequest)
  {
-+    // The transcode routes are same-origin URLs that name no file, so they are
-+    // decided before file resolution and never reach it.
++    // The two route families are same-origin URLs that name no file, so they are
++    // decided before file resolution and never reach it. The frame route answers
++    // a question about a page BEFORE that page is framed; the transcode routes
++    // are asked after a link has been judged unplayable as it is.
++    if (auto route = MaybeServeFrameRoute(aRequest)) return route;
 +    if (auto route = MaybeServeTranscodeRoute(aRequest)) return route;
      std::filesystem::path path;
      if (!ResolveFile(aRequest->GetURL(), path)) return nullptr;
@@ -208,7 +299,7 @@ index d75b7b15..25fea429 100644
      return new CefStreamResourceHandler(200, "OK", MimeType(path), std::move(headers), stream);
  }
  
-@@ -1439,12 +1574,193 @@ std::string SurfaceClient::MimeType(const std::filesystem::path& aPath)
+@@ -1439,12 +1661,352 @@ std::string SurfaceClient::MimeType(const std::filesystem::path& aPath)
      if (extension == ".woff2") return "font/woff2";
      if (extension == ".mp3") return "audio/mpeg";
      if (extension == ".ogg") return "audio/ogg";
@@ -250,6 +341,51 @@ index d75b7b15..25fea429 100644
 +    CefURLParts parts;
 +    if (!CefParseURL(aUrl, parts)) return {};
 +    return CefString(&parts.query).ToString();
++}
++
++/// One `name=value` out of a URL's query, percent-decoded.
++///
++/// Decoded by hand rather than with `CefURIDecode` because the value is itself a
++/// whole URL: decoding a `%2F` here would turn the separator between somebody
++/// else's path segments into a `/`, which changes what is fetched. `+` is left
++/// alone, because `encodeURIComponent` -- which is what writes this query --
++/// spells a space `%20` and never `+`, so a `+` in this position is a `+`.
++std::string RouteQueryParameter(const std::string& aQuery, const std::string_view aName)
++{
++    const auto hex = [](const char aCharacter) -> int
++    {
++        if (aCharacter >= '0' && aCharacter <= '9') return aCharacter - '0';
++        if (aCharacter >= 'a' && aCharacter <= 'f') return aCharacter - 'a' + 10;
++        if (aCharacter >= 'A' && aCharacter <= 'F') return aCharacter - 'A' + 10;
++        return -1;
++    };
++    std::size_t at = 0;
++    for (;;)
++    {
++        const std::size_t end = aQuery.find('&', at);
++        const std::string_view pair(aQuery.data() + at,
++            (end == std::string::npos ? aQuery.size() : end) - at);
++        const std::size_t equals = pair.find('=');
++        if (equals != std::string_view::npos && pair.substr(0, equals) == aName)
++        {
++            std::string value;
++            const std::string_view encoded = pair.substr(equals + 1);
++            for (std::size_t i = 0; i < encoded.size(); ++i)
++            {
++                if (encoded[i] == '%' && i + 2 < encoded.size() && hex(encoded[i + 1]) >= 0 &&
++                    hex(encoded[i + 2]) >= 0)
++                {
++                    value.push_back(static_cast<char>((hex(encoded[i + 1]) << 4) | hex(encoded[i + 2])));
++                    i += 2;
++                }
++                else value.push_back(encoded[i]);
++            }
++            return value;
++        }
++        if (end == std::string::npos) break;
++        at = end + 1;
++    }
++    return {};
 +}
 +
 +/// A pipe-backed CEF reader: the WebM ffmpeg writes arrives as CEF reads it.
@@ -320,6 +456,96 @@ index d75b7b15..25fea429 100644
 +    headers.emplace("Cache-Control", "no-store");
 +    return new CefStreamResourceHandler(200, "OK", aType, std::move(headers), stream);
 +}
++
++/// The third route, and the one that has to be asynchronous.
++///
++/// CEF calls a resource handler's methods on its IO thread -- the same thread
++/// that dispatches every request in the browser process -- and this route's whole
++/// job is to wait on somebody else's server. Doing that inline would queue the
++/// page's own file requests behind an internet round trip, so `Open` hands the
++/// probe to a worker and answers when it comes back, which is the shape CEF's
++/// asynchronous handler contract exists for. (`Open` rather than the deprecated
++/// `ProcessRequest`: same continuation, without the compatibility path.)
++class FrameResolveHandler final : public CefResourceHandler
++{
++public:
++    FrameResolveHandler(std::weak_ptr<HostRuntime> aRuntime, std::string aTarget, std::string aOrigin)
++        : m_runtime(std::move(aRuntime)), m_target(std::move(aTarget)), m_origin(std::move(aOrigin))
++    {
++    }
++
++    bool Open(CefRefPtr<CefRequest>, bool& aHandleRequest, CefRefPtr<CefCallback> aCallback) override
++    {
++        aHandleRequest = false;
++        m_pending = aCallback;
++        auto self = CefRefPtr<FrameResolveHandler>(this);
++        const auto runtime = m_runtime.lock();
++        std::thread([self, runtime]() {
++            const auto answer = op77::WebHost::FrameResolver::Probe(self->m_target, self->m_origin);
++            self->m_body = op77::WebHost::FrameResolver::ToJson(answer);
++            if (runtime)
++                runtime->Trace("web_frame:url=" + Shorten(self->m_target, 120) +
++                    " frameable=" + (answer.frameable ? "yes" : "no") +
++                    (answer.via.empty() ? "" : " via=" + answer.via) +
++                    (answer.violation.empty() ? "" : " violation=" + answer.violation) +
++                    (answer.error.empty() ? "" : " error=" + answer.error) +
++                    " candidates=" + std::to_string(answer.candidates.size()));
++            CefPostTask(TID_IO, base::BindOnce(&FrameResolveHandler::Finish, self));
++        }).detach();
++        return true;
++    }
++
++    void GetResponseHeaders(CefRefPtr<CefResponse> aResponse, int64_t& aResponseLength,
++                            CefString&) override
++    {
++        aResponse->SetStatus(200);
++        aResponse->SetStatusText("OK");
++        aResponse->SetMimeType("application/json");
++        CefResponse::HeaderMap headers;
++        headers.emplace("Cache-Control", "no-store");
++        aResponse->SetHeaderMap(headers);
++        aResponseLength = static_cast<int64_t>(m_body.size());
++    }
++
++    bool Read(void* aDataOut, const int aBytesToRead, int& aBytesReadOut,
++              CefRefPtr<CefResourceReadCallback>) override
++    {
++        const std::size_t remaining = m_body.size() - m_offset;
++        const std::size_t take = std::min<std::size_t>(remaining, static_cast<std::size_t>(aBytesToRead));
++        if (take == 0)
++        {
++            aBytesReadOut = 0;
++            return false; // The body has been read; the response is complete.
++        }
++        memcpy(aDataOut, m_body.data() + m_offset, take);
++        m_offset += take;
++        aBytesReadOut = static_cast<int>(take);
++        return true;
++    }
++
++    void Cancel() override { m_pending = nullptr; }
++
++private:
++    /// The answer has arrived, so the request that was parked in `Open` may
++    /// continue -- on the IO thread it was parked on, which is why this is posted
++    /// rather than called from the worker.
++    void Finish()
++    {
++        auto callback = m_pending;
++        m_pending = nullptr;
++        if (callback) callback->Continue();
++    }
++
++    std::weak_ptr<HostRuntime> m_runtime;
++    std::string m_target;
++    std::string m_origin;
++    CefRefPtr<CefCallback> m_pending;
++    std::string m_body;
++    std::size_t m_offset{};
++
++    IMPLEMENT_REFCOUNTING(FrameResolveHandler);
++    DISALLOW_COPY_AND_ASSIGN(FrameResolveHandler);
++};
 +
 +CefRefPtr<CefResourceHandler> SurfaceClient::MaybeServeTranscodeRoute(CefRefPtr<CefRequest> aRequest)
 +{
@@ -394,6 +620,30 @@ index d75b7b15..25fea429 100644
 +    headers.emplace("Access-Control-Allow-Origin", "*");
 +    return new CefStreamResourceHandler(200, "OK", "video/webm", std::move(headers),
 +        CefStreamReader::CreateForHandler(reader));
++}
++
++CefRefPtr<CefResourceHandler> SurfaceClient::MaybeServeFrameRoute(CefRefPtr<CefRequest> aRequest)
++{
++    const std::string url = aRequest->GetURL().ToString();
++    if (!SameOrigin(url)) return nullptr;
++    if (Lower(RoutePath(url)) != "/op77/web/frame") return nullptr;
++
++    const auto runtime = m_runtime.lock();
++    // The same gate the transcode routes use, and for the same reason: it is the
++    // POLICY, not the page, that decides whether a surface may reach somebody
++    // else's origin at all. A page that cannot frame one has no use for a
++    // question about framing, so it is answered the way a refused frame is.
++    if (m_definition.pagePolicy != WebPagePolicy::Media)
++    {
++        if (runtime)
++            runtime->Trace("web_frame:refused policy=" + std::string(Describe(m_definition.pagePolicy)));
++        return TextAnswer("{\"ok\":false,\"error\":\"surface_policy\"}", "application/json");
++    }
++
++    const std::string target = RouteQueryParameter(RouteQueryPart(url), "u");
++    if (target.empty())
++        return TextAnswer("{\"ok\":false,\"error\":\"missing_url\"}", "application/json");
++    return new FrameResolveHandler(m_runtime, target, m_definition.origin);
 +}
 +
  std::string SurfaceClient::JsonQuote(const std::string_view aText)

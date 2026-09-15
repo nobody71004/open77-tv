@@ -201,6 +201,42 @@ struct Snapshot
     bool facingAway{};
 };
 
+/// The screen a ray crosses, nearest first, and where on it.
+///
+/// This is how a screen is TAKEN: the player looks at a television, presses the
+/// key, and the panel under the crosshair becomes the one that receives the
+/// mouse and the keyboard. `u`/`v` are 0..1 across the panel in its own axes
+/// (right, up), which is where the pointer starts -- the page's own pixel
+/// position is derived from them by the WebUI service, which is the side that
+/// knows how big the page is.
+struct Hit
+{
+    uint64_t id{};
+    uint64_t surface{};
+    float u{0.5F};
+    float v{0.5F};
+    float distance{};
+};
+
+/// Ray against every bound screen's quad. A screen with no surface, or one the
+/// eye is behind, is not a hit: there is nothing to click on.
+[[nodiscard]] Status HitTest(
+    const RED4ext::Vector4& aEye,
+    const RED4ext::Vector4& aDirection,
+    Hit& aOut);
+
+/// Takes the screen under the crosshair for the pointer and the keyboard, or
+/// gives it back if it already has them. Called once per frame from the update
+/// pass and edge-detected against the key itself, so it needs no window hook and
+/// no message this module cannot see from the game thread.
+///
+/// The pointer is drawn by this module -- one `Dot` a few centimetres across the
+/// panel, at the world point the page's own pointer sits on -- because CEF
+/// rasterises a page into a texture and the HOST paints the cursor. A page on a
+/// world quad therefore has no cursor at all until something puts one there, and
+/// a browser you cannot see the pointer in is a browser you cannot click in.
+[[nodiscard]] bool ToggleControl();
+
 /// Registers a screen. The owner string is the resource name, exactly as with
 /// `Api::Props`: one resource can never unbind another's screens, and a resource
 /// stop releases its own.

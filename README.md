@@ -15,14 +15,15 @@ open77_media/          the resource -- this is the television
                          `media.move` / `media.rotate` nudge and turn a set
   client/main.lua        binds a surface to a prop, keeps the quad on it, decides
                          which sets are worth materialising, releases pages on exit
-  shared/records.lua     the catalogue: 36 records -- the game's real televisions,
-                         monitors, panels, frames and a security monitor -- each
-                         with a quad measured from its own mesh (see below)
+  shared/records.lua     the catalogue: 38 records -- the game's real televisions,
+                         monitors, panels, frames, a security monitor, and a
+                         scaled cinema family (a 100 ft and a 150 ft 16:9 panel) --
+                         each with a quad measured from its own mesh (see below)
   shared/placement.lua   where "nudge it left" points, as arithmetic
   web/tv.html|css|js     the page one television shows: YouTube's own player, a
                          framed third-party site, or the host's decode route for a
                          link this CEF build cannot play itself
-  tests/                 three suites: records (1229 assertions), placement (68),
+  tests/                 three suites: records (1572 assertions), placement (114),
                          client (41)
 native/
   MediaScreens.hpp|cpp   the host-side module: bind a surface to a prop, project
@@ -35,6 +36,15 @@ native/
   TranscodePlan.hpp      what to do with a link this build cannot decode: the
                          probe/stream decision and the decoder argv that carries it out
   Decoder.hpp            running the decoder tools: probe, stream, seek, cleanup
+  FramePolicy.hpp        whether a pasted link may be framed at all, and which
+                         page to frame instead when the link is a shell that
+                         refuses framing around the app that really plays
+  FrameResolver.hpp|cpp  the WinHTTP probe that answers that: response headers,
+                         embed discovery, and the best page to frame
+  AdBlock.hpp            the popup/navigation/request policy -- a window with no
+                         click behind it is advertising; a click is followed
+  ScreenInput.hpp        which world screen holds the pointer and keyboard, and
+                         where on that screen the page pointer has landed
   AudioSink.hpp|cpp      browser audio into the game's mixer
 patches/                 TV-only hunks of the host-side seams (see docs/integration.md)
 docs/
@@ -47,6 +57,8 @@ tests/
   ScreenQuadTests.cpp, ScreenMotionTests.cpp   the two pure host modules
   TranscodePlanTests.cpp, DecoderE2ETests.cpp  the decode decision, and the real
                                 decoder over real HTTP (skips if ffmpeg is absent)
+  WebUiAssetTests.cs            the wire between the page and the host's frame
+                                probe, pinned across the three languages it spans
   fixtures/                     a snapshot of open77_admin's prop-model aliases
 tools/
   run-suite.py           run the three Lua suites with no monorepo
@@ -95,6 +107,32 @@ A pasted link auto-detects and plays: the page puts `autoplay=1` on the embed, a
 the CEF host runs `--autoplay-policy=no-user-gesture-required` because the URL is
 set by the *server* and the player looking at the set often cannot click it.
 
+### A scaled screen is one number written twice
+
+The `cinema.*` records are the catalogue's bare 16:9 display plane at a large
+scale rather than a re-authored asset: `cinema.100ft` is 30.48 x 17.34 m and
+`cinema.150ft` is 45.72 x 26.01 m, both exact 16:9, and both are priced the same
+way a prop is -- the engine scales the **mesh**, and nothing scales our **quad**,
+which is our own arithmetic. Write one of them wrong and a 1.16 m picture hangs in
+the middle of a 30 m panel. `records_test.lua` therefore *derives* each scaled
+record's expected quad from the same model's record at scale 1, so an edit to
+either half fails in the suite instead of on a cinema screen in front of an
+audience.
+
+The other half is where it lands. The spawn stand-off used to be a flat 1.1 m in
+front of the player, which for the 100 ft panel puts its centre almost 2 m
+*behind* you -- standing inside your own screen, looking at the back of it. The
+rule is now one screen-height in front of the picture's own centre, floored at the
+old distance, and it lives in the tested placement module: every furniture record
+lands within 3 cm of where it used to (`tv.large` 1.126 m, monitors floored to
+1.100 m), while the cinema lands at 20.4 m and 30.6 m.
+
+`streamingRadius` is set to 300 m and 400 m on those two so a panel that large
+does not stop replicating at the default distance, and the client stops drawing a
+screen past 150 m -- so on a big lot the far end of the audience sees nothing. The
+picture is also 1280 px across 30 m: about DVD, because that is the surface long
+side.
+
 ### A record only spawns once its host entity has been built
 
 This is the part that bites. An alias in `Props.cpp` is not a spawnable prop until
@@ -126,7 +164,7 @@ and the method are in `docs/webui-media-and-audio.md`:
 | plain `.mp4` / `.m4v` / `.mov` | **refused** — no H.264/AAC decoder in this build |
 | `.mp3` / `.m4a` / `.aac` | **decoded by the host** through the transcode route, like `.mp4` |
 | a link this build cannot decode (`.mp4`, `.m4v`, `.mov`, `.m3u8`, `.mpd`, `.ts`, `.flv`, `.mkv`) | **the host decodes it** — `/op77/media/probe` asks `ffprobe` what the link is, and `/op77/media/stream` hands the page the same link re-encoded to VP9/Opus WebM. The page shows the decoder's first picture, and the seek bar disables itself until the stream declares a duration rather than lying. Without the decoder staged the verdict is `disabled` and the screen says which tools are missing. |
-| a site somebody pasted (`hdtoday`-style pages, anything without a media extension) | **framed, and its own player decides** — the media policy frames any `https:` origin, so the site's page is shown in a sandboxed frame and the log says `embed_framed` when a document arrived. Whether its *video* plays is then the site's own business: these sites are JS shells over HLS/MP4 that is H.264 + AAC, the pair this build cannot decode, so a site whose player does no codec detection will show its UI and refuse the stream. Nothing about the site is the problem; the codec is. |
+| a site somebody pasted (`hdtoday`-style pages, anything without a media extension) | **framed, and its own player decides** — the media policy frames any `https:` origin, so the site's page is shown in a sandboxed frame and the log says `embed_framed` when a document arrived. If the link is a shell that refuses framing (`X-Frame-Options` / `frame-ancestors`) the host resolves it first and the *app inside* is framed instead — that is what `123movie-tv.it.com` turned out to be: 5.7 KB that refuses framing, wrapping two apps that do not. Whether its *video* plays is then the site's own business: these sites are JS shells over HLS/MP4 that is H.264 + AAC, the pair this build cannot decode, so a site whose player does no codec detection will show its UI and refuse the stream. Nothing about the site is the problem; the codec is. |
 | Netflix, and any Widevine/PlayReady service | **impossible** — no CDM. A CDM cannot ship inside a process running under EAC, and Netflix additionally gates desktop playback on a hardware signature a CEF host cannot present. |
 
 The refusals are deliberate and visible: the page names the codec and why, on
@@ -215,6 +253,35 @@ each one is in the suites as well as in the code:
   observe about somebody else's document. `webhost/tests/WebHostTests.cpp`
   serves the same page under both policies and asserts the pair — media frames,
   strict refuses — against the real host and real Chromium.
+* **A link that refuses to be framed is resolved instead of given up on**
+  (`native/FramePolicy.hpp`, `native/FrameResolver.cpp`). A pasted site is often a
+  shell: a few kilobytes that send `X-Frame-Options: SAMEORIGIN` and wrap the
+  application that actually plays. The page cannot see that — a refusal arrives
+  as an error page and is invisible to the embedder, which is why the log said
+  `embed_unverified` and the screen stayed empty — so the host is asked, from
+  outside, by `/op77/web/frame`. The answer names both halves: whether the link
+  may be framed, and, when it may not, the embed inside it that may. It is a
+  probe and not a proxy — headers read, markup only when framing was refused,
+  **no cookies sent** — so the app is then framed by CEF with the site's own
+  origin and session. `webhost/tests/WebHostTests.cpp` resolves the real shell
+  over real HTTP and frames what came back.
+* **An advertisement cannot take the screen** (`native/AdBlock.hpp`).
+  `OnBeforePopup` was unimplemented, so every window a page opened was created —
+  and painted as an overlay, because this host implements `OnPopupShow`. The rule
+  that separates an advertisement from a player is the **user gesture**: a window
+  with no click behind it is advertising by definition, a window a click asked
+  for is followed in place (a television has no tabs, and a player that opens its
+  video in a popup has to play somewhere). Ad hosts are also cancelled as
+  requests and refused as navigations, which is what stops the silent redirect
+  that otherwise eats the page with no click and no way back.
+* **One pointer, not two.** A screen session drew *two*: `WebUiService`'s cursor
+  at the raw pointer's viewport coordinates, and a `Style::Dot` item at the
+  projection of the pointed-at page pixel onto the panel. They coincide only when
+  the panel fills the viewport, which a television in the world never does — so
+  you aimed with one and clicked with the other. The panel now publishes where
+  its quad landed (`native/ScreenInput.hpp`) and the cursor is drawn *there*; a
+  tick that publishes nothing (prop unstreamed, camera behind the screen) falls
+  back to the raw pointer, which is what happens with no session open.
 * **A page is no longer mistaken for a dead stream.** The probe is where every
   unknown link goes (ffprobe is the only thing here that knows what a link is),
   and its `nothing` verdict used to be terminal: `probing (https://…/hdtoday/)`

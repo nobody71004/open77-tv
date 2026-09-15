@@ -1,0 +1,73 @@
+# TV-relevant hunks only, extracted from a working tree by
+# tools/extract-tv-patches.py. Apply by hand: this is not a patch
+# series, and the surrounding file has other unreleased work in it.
+diff --git a/server/tests/Open77.Server.Tests/Resources/WebUiAssetTests.cs b/server/tests/Open77.Server.Tests/Resources/WebUiAssetTests.cs
+index d027b0ca..09376861 100644
+--- a/server/tests/Open77.Server.Tests/Resources/WebUiAssetTests.cs
++++ b/server/tests/Open77.Server.Tests/Resources/WebUiAssetTests.cs
+@@ -35,12 +35,65 @@ public sealed class WebUiAssetTests
+             Path.Combine(resources, "system", "open77_admin", "web", "app.js"));
+         StringAssert.Contains(adminHtml, "id=\"cat-makers-menu\"");
+         StringAssert.Contains(adminHtml, "role=\"listbox\"");
+         StringAssert.Contains(adminJs, "wireMakerFacet");
+     }
+ 
++    /// <summary>
++    /// The television asks the web host what a pasted link can be shown as, and
++    /// the host answers. The two halves live in different languages, in different
++    /// processes, and neither can be run without a game -- so the wire between
++    /// them is pinned here, where every one of the three files is on disk.
++    /// </summary>
++    /// <remarks>
++    /// This exists because the failure it prevents is silent in the worst way. A
++    /// link that is a shell around the application that actually plays
++    /// (`123movie-tv.it.com`, and most sites like it) has to be resolved before it
++    /// is framed: if the page stops asking, the screen goes back to showing
++    /// nothing for every one of them, with no error anywhere -- the site refuses
++    /// framing and an embedder cannot observe a refusal. Each assertion names one
++    /// end of that wire, so an edit to either side alone fails here instead of on
++    /// somebody's television.
++    /// </remarks>
++    [TestMethod]
++    public void TelevisionAsksTheHostBeforeFramingASite()
++    {
++        var root = FindRepositoryRoot();
++        var tvJs = File.ReadAllText(
++            Path.Combine(root, "resources", "system", "open77_media", "web", "tv.js"));
++        var surface = File.ReadAllText(Path.Combine(root, "webhost", "src", "SurfaceClient.cpp"));
++        var resolver = File.ReadAllText(Path.Combine(root, "webhost", "src", "FrameResolver.cpp"));
++
++        // The route the host serves and the route the page asks for are one
++        // string written in two places, which is exactly the kind of pair that
++        // drifts.
++        StringAssert.Contains(surface, "\"/op77/web/frame\"");
++        StringAssert.Contains(tvJs, "\"/op77/web/frame?u=\"");
++        StringAssert.Contains(tvJs, "encodeURIComponent(src)");
++
++        // The page must frame the host's answer when the link is a shell, and
++        // must not frame it when the host had nothing better to offer.
++        StringAssert.Contains(tvJs, "answer.via === \"embed\" && answer.best");
++        // The URL that branch picked is the one that reaches the frame, and the
++        // frame is built in exactly one place.
++        StringAssert.Contains(tvJs, "frame(answer.best,");
++        StringAssert.Contains(tvJs, "function buildEmbedFrame(src, note)");
++
++        // The answers those branches read, as the host writes them. The needles
++        // are the C++ source's own escaped literals, which is what makes this a
++        // check on the wire rather than on the C++ file's prose.
++        StringAssert.Contains(resolver, "\\\"best\\\":");
++        StringAssert.Contains(resolver, "\\\"via\\\":");
++        StringAssert.Contains(resolver, "\\\"frameable\\\":");
++
++        // And the judgement behind them must come from the tested header rather
++        // than being re-implemented in the host.
++        StringAssert.Contains(resolver, "WebUI::Framing::EvaluateFraming(document.headers");
++        StringAssert.Contains(resolver, "WebUI::Framing::FindEmbeds(document.body");
++    }
++
+     private static string FindRepositoryRoot()
+     {
+         foreach (var seed in new[] { Environment.CurrentDirectory, AppContext.BaseDirectory })
+         {
+             var directory = new DirectoryInfo(seed);
+             while (directory is not null)

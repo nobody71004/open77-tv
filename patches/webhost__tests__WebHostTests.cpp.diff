@@ -2,10 +2,10 @@
 # tools/extract-tv-patches.py. Apply by hand: this is not a patch
 # series, and the surrounding file has other unreleased work in it.
 diff --git a/webhost/tests/WebHostTests.cpp b/webhost/tests/WebHostTests.cpp
-index 68da2a3a..3a7fecd3 100644
+index 68da2a3a..5f1993fa 100644
 --- a/webhost/tests/WebHostTests.cpp
 +++ b/webhost/tests/WebHostTests.cpp
-@@ -46,12 +47,17 @@
+@@ -46,12 +47,65 @@
  
  namespace
  {
@@ -16,6 +16,54 @@ index 68da2a3a..3a7fecd3 100644
 +/// each policy, so one run contains its own control.
 +constexpr uint64_t kFrameProbeMediaSurface = 18;
 +constexpr uint64_t kFrameProbeStrictSurface = 19;
++/// The shell-link probe: asks the host what a pasted link can be shown as, then
++/// frames the answer.
++constexpr uint64_t kFrameResolveSurface = 20;
++
++/// The page the resolve stage loads. It is the same question the television asks
++/// (`/op77/web/frame?u=...`) about the same link, so the stage exercises the page's
++/// path, the route, the probe and the framing decision rather than a stand-in for
++/// them. The link, and the two applications it wraps, are the ones that produced
++/// the feature -- see `docs/research/webui-media-and-audio.md`.
++constexpr const char* kFrameResolvePage = R"HTML(<!doctype html><html><body><script>
++Open77.ready();
++const target = "https://123movie-tv.it.com/";
++const state = { ok: false, frameable: null, violation: "", via: "", best: "", candidates: 0,
++                bestLoad: false, bestViolation: "", note: "none" };
++let sent = false;
++function report(note) {
++  if (sent) return;
++  sent = true;
++  state.note = note;
++  Open77.emit("frame:resolve", state);
++}
++document.addEventListener("securitypolicyviolation", event => {
++  const directive = String(event.violatedDirective);
++  if (directive.indexOf("frame-src") === 0) state.bestViolation = directive;
++});
++fetch("/op77/web/frame?u=" + encodeURIComponent(target))
++  .then(response => response.json())
++  .then(answer => {
++    state.ok = answer.ok === true;
++    state.frameable = answer.frameable === true;
++    state.violation = String(answer.violation || "");
++    state.via = String(answer.via || "");
++    state.best = String(answer.best || "");
++    state.candidates = (answer.candidates || []).length;
++    if (!state.best) { report("no-best"); return; }
++    const frame = document.createElement("iframe");
++    frame.setAttribute("sandbox", "allow-scripts allow-same-origin allow-forms " +
++      "allow-popups allow-popups-to-escape-sandbox allow-top-navigation-by-user-activation " +
++      "allow-presentation");
++    frame.addEventListener("load", () => { state.bestLoad = true; report("best-load"); });
++    frame.addEventListener("error", () => report("best-error"));
++    frame.src = state.best;
++    document.body.appendChild(frame);
++    setTimeout(() => report("best-timeout"), 12000);
++  })
++  .catch(() => report("fetch-failed"));
++setTimeout(() => report("timeout"), 20000);
++</script></body></html>)HTML";
 +
  bool Check(const bool aCondition, const std::string& aMessage)
  {
@@ -23,7 +71,7 @@ index 68da2a3a..3a7fecd3 100644
      return aCondition;
  }
  
-@@ -453,12 +459,51 @@ undeclared.src = 'web/secret.svg';
+@@ -453,12 +507,61 @@ undeclared.src = 'web/secret.svg';
  
      {
          std::ofstream companion(resource / L"web" / L"companion.html", std::ios::binary | std::ios::trunc);
@@ -69,13 +117,23 @@ index 68da2a3a..3a7fecd3 100644
 +        if (!Check(static_cast<bool>(probe), "frame probe page write failed")) { cleanup(); return 1; }
 +    }
 +
++    // The shell-link page. It asks the host about a link, and then frames what
++    // the host answers with -- so the stage proves the whole path, including the
++    // part that a verdict alone would leave unproven: that the application the
++    // probe picked actually renders.
++    {
++        std::ofstream resolve(resource / L"web" / L"frame-resolve.html", std::ios::binary | std::ios::trunc);
++        resolve << kFrameResolvePage;
++        if (!Check(static_cast<bool>(resolve), "frame resolve page write failed")) { cleanup(); return 1; }
++    }
++
      // The GPU half only runs when this process can be a D3D12 consumer and the
      // operator did not switch the transport off for the host.
      const bool gpuDisabledByEnvironment = GetEnvironmentVariableW(L"OP77_WEBUI_DISABLE_GPU", nullptr, 0) != 0;
      Gpu gpu;
      std::string gpuError;
      const bool gpuAvailable = CreateGpu(gpu, gpuError);
-@@ -619,15 +664,24 @@ undeclared.src = 'web/secret.svg';
+@@ -619,15 +722,28 @@ undeclared.src = 'web/secret.svg';
      bool transportGpuSeen = false;
      bool transportCpuSeen = false;
      std::string transportDetail;
@@ -94,13 +152,17 @@ index 68da2a3a..3a7fecd3 100644
 +    bool mediaFrameFramed = false;
 +    bool strictFrameReported = false;
 +    bool strictFrameRefused = false;
++    // The shell-link probe: what the host answered, verbatim, so a failure says
++    // which of the four things went wrong instead of only that one did.
++    bool resolveReported = false;
++    std::string resolveJson;
  
      const auto dispatch = [&](const Message& aMessage) {
          std::cerr << "stage=message type=" << static_cast<int>(aMessage.type) << "\n";
          switch (aMessage.type)
          {
          case MessageType::SurfaceCreated: created = true; break;
-@@ -642,24 +696,43 @@ undeclared.src = 'web/secret.svg';
+@@ -642,24 +758,53 @@ undeclared.src = 'web/secret.svg';
              }
              break;
          }
@@ -115,7 +177,9 @@ index 68da2a3a..3a7fecd3 100644
 -                    event.json.find(expectedOpening) != std::string::npos &&
 -                    event.json.find("\"hidden\":false") != std::string::npos)
 +                if (event.surface == 1)
-+                {
+                 {
+-                    if (event.name == "test:received") openingReceived = true;
+-                    else openingRendered = true;
 +                    if (event.name == "ui:ready") readyEvent = true;
 +                    if ((event.name == "test:received" || event.name == "test:rendered") &&
 +                        event.json.find(expectedOpening) != std::string::npos &&
@@ -127,10 +191,18 @@ index 68da2a3a..3a7fecd3 100644
 +                    if (event.name == "vfs:undeclared" && event.json.find("true") != std::string::npos)
 +                        undeclaredBlocked = true;
 +                }
++                if (event.name == "frame:resolve")
++                {
++                    std::cerr << "stage=frame_resolve surface=" << event.surface << " json=" << event.json
++                              << '\n';
++                    if (event.surface == kFrameResolveSurface)
++                    {
++                        resolveReported = true;
++                        resolveJson = event.json;
++                    }
++                }
 +                if (event.name == "frame:probe")
-                 {
--                    if (event.name == "test:received") openingReceived = true;
--                    else openingRendered = true;
++                {
 +                    std::cerr << "stage=frame_probe surface=" << event.surface << " json=" << event.json << '\n';
 +                    if (event.surface == kFrameProbeMediaSurface)
 +                    {
@@ -153,7 +225,7 @@ index 68da2a3a..3a7fecd3 100644
          case MessageType::JsInvoke:
          {
              WebEventPayload invoke;
-@@ -1103,12 +1176,64 @@ undeclared.src = 'web/secret.svg';
+@@ -1103,12 +1248,108 @@ undeclared.src = 'web/secret.svg';
                      std::cerr << "stage=async_cpu_burst_resize ok=" << passed << "\n";
                  }
              }
@@ -210,6 +282,50 @@ index 68da2a3a..3a7fecd3 100644
 +            "policy that exists to show somebody else's page");
 +        std::cerr << "stage=frame_grant media_framed=" << mediaFrameFramed << " strict_refused="
 +                  << strictFrameRefused << "\n";
++    }
++
++    // --- 5. A link that is a shell around the application ---------------------
++    //
++    // The frame grant above proves a television may frame somebody else's page.
++    // This proves what a television does when the page it was given refuses to be
++    // one: `https://123movie-tv.it.com/` is 5.7 KB of shell, it answers
++    // `x-frame-options: SAMEORIGIN`, and it wraps two applications that answer
++    // nothing of the sort. From inside a page that is indistinguishable from a
++    // dead site, so the host asks from outside -- and this stage is every link of
++    // that chain at once: the page's own fetch, the route, a real WinHTTP request
++    // to a real origin, the framing verdict, the nested documents read out of the
++    // markup, and then the application it chose actually framed. The last
++    // assertion is the one that matters: a verdict on its own would be a claim
++    // about a page nobody showed.
++    {
++        const auto name = mappingName + L".FrameResolve";
++        auto mapping = std::make_unique<SharedFrameBuffer>();
++        passed = passed && mapping->Create(name, pixelWidth, pixelHeight, error);
++        auto resolve = create;
++        resolve.surface = kFrameResolveSurface;
++        resolve.origin = "r-frame-resolve-g-1.cym-ui";
++        resolve.entry = "web/frame-resolve.html";
++        resolve.allowedFiles = {"web/frame-resolve.html"};
++        resolve.frameMapping = Utf8(name);
++        resolve.pagePolicy = WebPagePolicy::Media;
++        resolve.visible = true;
++        resolve.framesPerSecond = 12;
++        passed = passed && SendPayload(connection, MessageType::CreateSurface, sequence++, resolve, error) &&
++            pump([&] { return resolveReported; }, std::chrono::seconds(60));
++        Check(resolveReported, "the shell-link probe never reported: the page's fetch never came back");
++        passed = passed && Check(resolveJson.find("\"ok\":true") != std::string::npos,
++            "the host could not ask the origin: " + resolveJson);
++        passed = passed && Check(resolveJson.find("\"frameable\":false") != std::string::npos &&
++                                    resolveJson.find("\"violation\":\"x-frame-options\"") != std::string::npos,
++            "the shell page no longer refuses framing, so this stage is measuring something else now: " +
++                resolveJson);
++        passed = passed && Check(resolveJson.find("\"via\":\"embed\"") != std::string::npos &&
++                                    resolveJson.find("\"best\":\"http") != std::string::npos,
++            "no frameable application was found inside the shell page: " + resolveJson);
++        // The one assertion that is about a picture rather than a claim.
++        passed = passed && Check(resolveJson.find("\"bestLoad\":true") != std::string::npos,
++            "the application the probe chose did not frame after all: " + resolveJson);
++        probeFrames.push_back(std::move(mapping));
 +    }
 +
      static_cast<void>(Send(connection, MessageType::Shutdown, sequence++, {}, error));

@@ -1,0 +1,43 @@
+# TV-relevant hunks only, extracted from a working tree by
+# tools/extract-tv-patches.py. Apply by hand: this is not a patch
+# series, and the surrounding file has other unreleased work in it.
+diff --git a/client/src/debug/bridge/ResourceCommands.cpp b/client/src/debug/bridge/ResourceCommands.cpp
+index fca597c2..7d3dcd12 100644
+--- a/client/src/debug/bridge/ResourceCommands.cpp
++++ b/client/src/debug/bridge/ResourceCommands.cpp
+@@ -1,10 +1,11 @@
+ #include "Command.hpp"
+ 
+ #include "scripting/ClientResourceHost.hpp"
+ #include "webui/PreGameBridge.hpp"
++#include "webui/ScreenInput.hpp"
+ #include "webui/WebUiService.hpp"
+ 
+ #include <cstddef>
+ #include <cstdint>
+ #include <sstream>
+ 
+@@ -160,12 +161,23 @@ std::string WebUiCommand(const std::vector<std::string>& aTokens)
+                  << " latched=";
+         if (input.latched.empty()) response << "none";
+         else
+             for (size_t index = 0; index < input.latched.size(); ++index)
+                 response << (index != 0 ? "," : "") << "0x" << std::hex << input.latched[index]
+                          << std::dec;
++        // The world-screen session, when one is open. Handing the pointer and
++        // the keyboard to a television is the one input state with no window to
++        // look at, so this row names the surface it was taken on and where the
++        // page pointer sits -- the two facts a screenshot of a television
++        // cannot settle, and the difference between "the key did nothing" and
++        // "the key worked and the click is landing somewhere else".
++        const auto screen = op77::WebUiService::ScreenInput::Get();
++        if (screen.active)
++        {
++            response << " | screen=#" << screen.surface << " u" << screen.u << " v" << screen.v;
++        }
+         // The perspective key rides along, because "the key does nothing" has
+         // the same four possible causes as it does for the chat and one extra:
+         // the arbiter can accept a press and still refuse the request. Read it
+         // as `presses` (the key was seen) minus `blocked` (the gate refused it)
+         // minus `refused`/`unavailable` (the arbiter did), leaving `toggles` --
+         // the presses that actually asked for a perspective. `lastStatus`

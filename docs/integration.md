@@ -13,7 +13,9 @@ patch series** — apply them by hand, reading each one.
 
 ## 1. The new modules
 
-Five files, all copied whole into `native/`:
+The feature-only files, all copied whole into `native/` (the ones whose seam is
+not the client are named in the section they belong to — the decoder in 6c, the
+page policy and the frame probe in 6a, audio in 6b):
 
 **`client/src/api/MediaScreens.hpp` / `.cpp`**
 
@@ -39,6 +41,28 @@ as the image sliding around on its own cabinet. The module blends the two most
 recent samples, interpolates only (a fraction of 1 reproduces the producer's
 numbers bit for bit), and refuses to blend across a sample older than 250 ms — a
 screen switched back on draws where it is, not sweeping in from where it was.
+
+**`client/src/webui/ScreenInput.hpp`** — which world screen holds the pointer and
+the keyboard, and where on that screen the page pointer has landed. This exists
+because a screen session used to draw **two** pointers: `WebUiService` put its
+overlay cursor at the raw pointer's viewport coordinates, while `MediaScreens`
+published a `Style::Dot` item at the projection of the pointed-at page pixel onto
+the panel. They coincide only when the panel fills the viewport, which a
+television in the world never does, so you aimed with one and clicked with the
+other. The panel now publishes where its quad landed as a viewport fraction
+(`PublishPointerOnScreen`, called from the same arithmetic that placed the dot and
+cleared at the top of every tick, so a screen that stops being built cannot leave
+last tick's cursor on a wall) and `WebUiService` draws its cursor there. A tick
+that publishes nothing — prop unstreamed, quad refused, camera behind it — falls
+back to the raw pointer, which is what happens with no session open.
+
+`WorldOverlay::Style::Dot` stays in the overlay's closed set: nothing produces it
+now, and removing a style a future producer might want is the worse trade.
+
+The debug bridge carries the session as `webui.input`'s `screen=#N u… v…` field,
+because handing the pointer and keyboard to a television is the one input state
+with no window to look at — it is the difference between "the key did nothing" and
+"the key worked and the click is landing somewhere else".
 
 **`client/Plugin.cpp`** is the lifecycle: `MediaScreens::Initialize` at plugin
 load, `OnRunningEnter` / `OnRunningUpdate` / `OnRunningExit` on the game
@@ -193,9 +217,53 @@ which stays unobservable from here.
 `webhost/tests/WebHostTests.cpp` proves the pair inside the real host: the same
 page served to two surfaces, one per policy, each reporting which refusal it hit
 (`{"violation":"","load":true,…}` against
-`{"violation":"frame-src","load":false,…}`). The pair is the point — a probe
-that can only ever answer "blocked" would satisfy a media-only assertion and mean
+`{"violation":"frame-src","load":false,…}`). The pair is the point — a probethat can only ever answer "blocked" would satisfy a media-only assertion and mean
 nothing.
+
+### The link that refuses to be framed, and the popups
+
+**`webui/include/op77/WebUI/FramePolicy.hpp`** and
+**`webhost/src/FrameResolver.{hpp,cpp}`** (both copied whole into `native/`),
+**`webui/include/op77/WebUI/AdBlock.hpp`** (likewise), and their uses in
+**`webhost/src/SurfaceClient.{hpp,cpp}`** and **`resources/system/open77_media/web/tv.js`**
+
+Framing a pasted site is not enough for most pasted sites. The one this was
+written against answers `x-frame-options: SAMEORIGIN` on a 5,770-byte document
+whose entire content is five advertising scripts and **two iframes, both of which
+probe as frameable**. The refusal is the shell, never the content — that is what
+an aggregator *is* — and the embedder cannot observe it: a refusal arrives as an
+error page, so the page's own `load` event fires either way and the screen shows
+nothing with no error to read.
+
+So the question is asked from **outside**, by the host, which is the only side
+that can read response headers. `/op77/web/frame?u=<link>` is a third same-origin
+route beside the transcode ones, and it is answered **off CEF's IO thread** — a
+probe that blocks the thread dispatching the page's own files stalls the browser
+it is answering. It reads headers, and the markup only when framing was refused,
+and it **sends no cookies**. It is a probe and not a proxy: the app it finds is
+then framed directly by CEF with the site's own origin and session. The page asks
+before it builds a frame, and a late answer to a link the player has already
+replaced is dropped rather than framed (`siteToken`).
+
+The ad blocker is the same seam seen from the other side. `OnBeforePopup` was
+unimplemented, so every window a page asked for was created — and painted as an
+overlay, since this host implements `OnPopupShow`/`OnPopupSize`. The rule that
+separates an advertisement from a player is the **user gesture**: a window with no
+click behind it is advertising by definition, while a window a click asked for is
+followed *in place*, because a television has no tabs and a player that opens its
+video in a popup has to play somewhere. The blocklist is enforced twice more
+where a window rule cannot reach — cancelled **requests** and refused
+**navigations**, which is what stops the silent redirect that otherwise eats the
+page.
+
+`webui/tests/WebCoreTests.cpp` pins the framing verdicts (including two CSP
+headers where both apply), the dot-segment URL resolution, and the four popup
+rules — with `googlevideo.com` pinned as **not** blocked while
+`googlesyndication.com` is, because a blocker that eats the stream is worse than
+no blocker. `WebUiAssetTests.cs` pins the wire itself: the route string the host
+serves and the page asks for, the branch that frames the host's answer, and the
+fact that the judgement comes from the tested header rather than being
+re-implemented in the host's C++.
 
 ## 6b. Audio
 
@@ -276,6 +344,14 @@ And two C# ones:
   own report of where the set is. The refusal cases are the control (an invented
   direction and a negative distance must leave the prop exactly where it was),
   and two sets are used so that "the one that moved" is never assumed.
+* `tests/WebUiAssetTests.cs` — the wire between the page and the host's frame
+  probe. Three files in three languages and no way to run any of them without a
+  game, so what is pinned is the pair of strings that has to agree
+  (`/op77/web/frame`), the branch that frames the host's answer, and the fact
+  that the judgement comes from `WebUI::Framing` rather than being re-implemented
+  in the host's C++. This one exists because its failure is silent in the worst
+  way: if the page stops asking, every shell-shaped site goes back to showing
+  nothing, with no error anywhere.
 
 `tools/run-suite.py` in this repository runs all three Lua suites with no
 monorepo: it preloads the vendored alias snapshot (or a live checkout with
@@ -293,6 +369,14 @@ the stream is VP9/Opus WebM, `-ss` seeks). The frame grant is asserted twice on
 purpose — as directives in the policy test, and as behaviour in
 `patches/webhost__tests__WebHostTests.cpp.diff`, where the real host, the real
 header and real Chromium are all in the loop.
+
+Three more live in `patches/` rather than as copies, because their files carry
+other work: the framing verdicts and the four popup rules in
+`webui/tests/WebCoreTests.cpp` (pure — `googlevideo.com` must **not** be blocked
+while `googlesyndication.com` must), the resolve stage in
+`webhost/tests/WebHostTests.cpp` (real WinHTTP to the real origin, then the app it
+found actually framed), and the single-pointer rules in the client's own CTest
+targets.
 
 ---
 

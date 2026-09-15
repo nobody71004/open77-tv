@@ -151,6 +151,14 @@ Open77MediaRecords = {}
 ---@field quad table         screen rectangle in the prop's local frame
 ---@field quad.faces number[] optional front direction; absent = drawn both sides
 ---@field blurb string       one line for the menu
+---@field scale number       optional prop scale, default 1. Multiplies the MESH,
+--  not the quad: the quad is metres in the prop's frame and is our own arithmetic,
+--  so a record that scales its prop has to carry a quad already multiplied by the
+--  same factor or the picture will not cover the panel. See `cinema.100ft`.
+---@field streamingRadius number optional replication radius in metres, default
+--  120. Only worth setting upwards, and only for something watched from far
+--  enough away that the default would take the prop -- and the picture with it --
+--  out of the world for the people watching.
 
 -- -----------------------------------------------------------------------------
 -- Televisions: the set itself, with the page on its own screen
@@ -746,6 +754,75 @@ local records = {
     },
 
     -- -------------------------------------------------------------------------
+    -- Cinema scale
+    -- -------------------------------------------------------------------------
+    -- A screen you watch from a car park, not from a sofa. The mesh is
+    -- `tv.screen.16x9` -- a bare 16:9 panel 1.160 x 0.660 m with a declared
+    -- front, the one shape in this file that is nothing but a picture -- and the
+    -- size comes from the PROP's `scale` rather than from a re-authored asset.
+    --
+    -- **The scale and the quad are one number written twice, and they have to
+    -- agree.** `scale` multiplies the mesh in the engine; the `quad` is metres in
+    -- the prop's own frame and is NOT scaled by anything, because it is our own
+    -- arithmetic. A record that raised one and not the other would hang a
+    -- 1.16 m picture on a 30 m panel -- which is exactly what the picture looked
+    -- like the day the two were written apart. So every number below is the base
+    -- record's own, multiplied by the same factor:
+    --
+    --   tv.screen.16x9       width 1.1600  height 0.6600  offset (0, 0.115394, 0.42)
+    --   cinema.100ft  scale 26.2758621 (30.48 m / 1.16 m)  ->  30.48 x 17.34 m
+    --   cinema.150ft  scale 39.4137931 (45.72 m / 1.16 m)  ->  45.72 x 26.01 m
+    --
+    -- Feet because that is the unit this family is asked for in: 100 ft is
+    -- 30.48 m exactly, and 150 ft is its half again. 16:9 is kept exactly at both
+    -- sizes, so a page is not stretched -- the base panel is 1.7576:1, within
+    -- 1.2% of 16:9, and the quad is computed from the mesh rather than from the
+    -- ideal ratio, which is why the height is 17.3421 m and not 17.145 m.
+    --
+    -- Two things this does NOT get: the picture is 1280 px across 30 m (42 px/m,
+    -- about DVD), because the surface is sized by `Open77MediaSurfaceFor` and
+    -- capped there; and the client stops drawing a screen past 150 m, so the far
+    -- end of a big lot sees nothing. Both are named rather than discovered.
+    {
+        id = "cinema.100ft",
+        label = "Cinema screen, 100 ft",
+        model = "electronics.tv.screen.16x9",
+        blurb = "A 100 ft (30.5 m) 16:9 picture. Spawn it where the audience is.",
+        scale = 26.2758621,
+        -- Replicated further than the prop default: a screen this size is
+        -- watched from across a lot, and a prop that stops streaming at 120 m
+        -- takes the picture with it for everyone past that line.
+        streamingRadius = 300.0,
+        quad = {
+            -- 1.16 m x 26.2758621, and the offset (0, 0.115394, 0.42) by the same
+            -- factor -- the panel keeps the origin of the set it came from, and
+            -- scaling the mesh moves that origin's picture away from it.
+            offset = { 0.0, 3.032077, 11.035862 },
+            right = { 1.0, 0.0, 0.0 },
+            up = { 0.0, 0.0, 1.0 },
+            width = 30.48,
+            height = 17.3421,
+            faces = { 0.0, 1.0, 0.0 },
+        },
+    },
+    {
+        id = "cinema.150ft",
+        label = "Cinema screen, 150 ft",
+        model = "electronics.tv.screen.16x9",
+        blurb = "A 150 ft (45.7 m) 16:9 picture. Half again the 100 ft panel.",
+        scale = 39.4137931,
+        streamingRadius = 400.0,
+        quad = {
+            offset = { 0.0, 4.548115, 16.553793 },
+            right = { 1.0, 0.0, 0.0 },
+            up = { 0.0, 0.0, 1.0 },
+            width = 45.72,
+            height = 26.0131,
+            faces = { 0.0, 1.0, 0.0 },
+        },
+    },
+
+    -- -------------------------------------------------------------------------
     -- One special case
     -- -------------------------------------------------------------------------
     {
@@ -816,6 +893,13 @@ local records = {
 --       records above, which all measure -X and all have this record's own
 --       `right`/`up`. Said plainly here because it is the only declared front in
 --       this file that is a family convention rather than a measurement.
+--
+-- Declared, and at cinema scale (a `scale` above 1 multiplies the `quad` too,
+-- which is why both are written out in full on those two records):
+--
+--   cinema.100ft   cinema.150ft                                     +Y
+--       the same panel and the same measured glass as `tv.screen.16x9`, on a
+--       bigger prop.
 --
 -- Undeclared, deliberately, and why -- each of these still draws from both
 -- sides, and `media.list` reports `facing.source=undeclared` for it:
