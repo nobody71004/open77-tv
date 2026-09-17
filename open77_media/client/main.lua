@@ -28,6 +28,19 @@
 -- There is no polling of server state, no per-frame work, and no accumulation:
 -- `screens` is exactly the set the server last sent.
 
+-- -----------------------------------------------------------------------------
+-- THE PANEL
+-- -----------------------------------------------------------------------------
+-- The UI a player gets at a set belongs to this resource rather than to a
+-- gamemode, for the same reason the screens do: this file already knows which
+-- sets are near and who is standing at one, and a menu that re-implemented
+-- "spawn a television" and "change its volume" was a second copy of both. So
+-- `web/remote.html` is created here, at resource start, and toggled by a key
+-- mapping; this half decides WHICH set it drives -- the nearest one inside
+-- each set's own reach, a distance only a client can measure -- and forwards every
+-- request the panel makes to the server, which is the only writer of a set's
+-- state.
+
 -- A client can receive a newer resource generation before its native plugin has
 -- been restarted. Stay inert on that transition rather than failing the VM on
 -- every screen.
@@ -39,12 +52,42 @@ if type(Open77.media) ~= "table"
 end
 
 -- How many screens may be materialised at once, and how far away a screen may be
--- to be considered. Six, under the eight-surface ceiling, so the resource never
--- spends its last two surfaces on televisions and has none left for anything
--- else it might want. The radius is generous because a screen is legible long
--- before it is close; the count is what actually binds.
+-- to be considered. Six, under the eight-surface ceiling: the resource's own
+-- remote panel takes one of the two that remain and the last is spare, so a
+-- television never spends the surface something else needed. The radius is
+-- generous because a screen is legible long before it is close; the count is what
+-- actually binds.
 local MAX_MATERIALISED = 6
 local MATERIALISE_RADIUS = 90.0
+
+-- The key that opens the panel, until a player rebinds it.
+--
+-- F5, and the name is one variable rather than a literal in three places. The
+-- engine's registry is the real owner -- `RegisterKeyMapping` below declares
+-- this as the DEFAULT, the binding is listed in the pause menu with the rest of
+-- the game's keys, and a rebind is remembered per machine across restarts -- so
+-- this is what a fresh install gets, not the only thing it can be. Everything
+-- that signposts the key (the panel, the idle screen of every set) asks
+-- `remoteKeyName()` for the effective one rather than reading this.
+local REMOTE_KEY = "F5"
+
+-- How close a set has to be for the panel to drive it, which is not the same
+-- question as how far away it is still worth drawing.
+--
+-- It is the SET's reach, computed per record by `Open77MediaPlacement.Reach` and
+-- carried on the wire, because a flat number cannot be right for both a 1.16 m
+-- television and a 150 ft cinema screen: the server sets a screen down
+-- `FacingDistance` ahead of whoever asked for it, which is 1.1 m for furniture
+-- and 30.6 m for that cinema, so a flat fifteen metres refused the one set the
+-- panel had just spawned -- no controls, no move, no remove, measured at 30.6 m
+-- on a spawned cinema screen.
+--
+-- This value is the fallback for a set the server did not describe, and it is
+-- the floor in the shared rule: fifteen metres is arm's length for a television
+-- -- close enough that the picture is legible and that the player is evidently
+-- standing AT the set rather than walking past one -- and a set sixty metres
+-- away is a picture on the skyline, not something anyone is holding a remote for.
+local DEFAULT_REACH = 15.0
 
 -- Above this, the surface is created at a lower frame rate. A distant screen
 -- showing a menu is not worth 30 fps of a compositor this process shares with
@@ -55,6 +98,21 @@ local NEAR_DISTANCE = 25.0
 --              native = <screen id string or nil>, materialised = bool }
 local screens = {}
 local state = { version = 0 }
+
+-- The panel's own state: the page, whether it is open, which set it drives, and
+-- what it was last told. Declared here rather than beside their first use below
+-- because handlers registered earlier in this file -- the collected result, the
+-- catalogue answer -- send to the panel, and a `local` declared further down is
+-- simply not in scope for them.
+local remote = nil
+local remoteOpen = false
+local remoteTarget = nil
+local remoteSignature = ""
+local remoteCatalogue = nil
+local remoteHinted = nil
+-- The closest set whether or not the panel may drive it, so "NO SET IN RANGE"
+-- can say which set and how far. Cleared with the rest of the panel's state.
+local remoteNearest = nil
 
 ---How far away a screen is, or nil when the body cannot be read.
 ---
@@ -82,6 +140,36 @@ local function distanceTo(position)
     return math.sqrt(dx * dx + dy * dy + dz * dz)
 end
 
+---How close the player has to be to drive a given set, in metres.
+---
+---The server's answer, because the server is what placed it: `reach` is
+---`Open77MediaPlacement.Reach` of the set's own rectangle, computed beside the
+---spawn distance it is derived from. A set the server did not describe -- an
+---older server, a payload from before this field -- falls back to `DEFAULT_REACH`
+---rather than to nil, so a missing number is never read as "drive nothing".
+---@param entry table a screen entry
+---@return number metres
+local function entryReach(entry)
+    local reach = tonumber(entry ~= nil and entry.spec ~= nil and entry.spec.reach)
+    if reach == nil or reach <= 0.0 then return DEFAULT_REACH end
+    return reach
+end
+
+---The key that opens the panel, as this player has it bound.
+---
+---Read from the engine's own registry rather than repeating the default this file
+---registers, so a rebind renames the key everywhere it is signposted -- the panel
+---itself and the idle screen of every television in the world. `keyFor` sits
+---behind the same capability as the registration (`input.actions`); a plugin
+---older than it leaves the default in place rather than printing nothing.
+local function remoteKeyName()
+    if type(Open77.input) == "table" and type(Open77.input.keyFor) == "function" then
+        local key = Open77.input.keyFor("media.remote")
+        if type(key) == "string" and key ~= "" then return key end
+    end
+    return REMOTE_KEY
+end
+
 ---What the page is told. The page owns no state of its own: everything it shows
 ---came from the server through here, so two clients watching the same television
 ---cannot disagree about what is playing.
@@ -95,6 +183,10 @@ local function pageState(entry)
         paused = entry.spec.paused,
         border = entry.spec.border,
         curtain = entry.spec.curtain or "open",
+        -- The key that opens the panel, for the idle screen's own hint: the player
+        -- looking at a dead television is the one person who needs to learn it,
+        -- and a hint that says "press the screen key" teaches nobody.
+        key = remoteKeyName(),
     }
 end
 
@@ -113,14 +205,81 @@ end
 -- The alternative -- firing the effects from the snapshot transition -- would put
 -- the explosions on a different clock from the numbers, and would leave a client
 -- that joined mid-countdown watching a silent reveal.
-local REVEAL_VFX = {
+local REVEAL_COLUMNS = {
     -- lateral/forward/z are QUAD-relative, not metres from the prop origin: the
     -- panel's own rectangle is what the effect has to line up with, and the
     -- rectangle is in the prop's local frame (see `panelStage`).
+    --
+    -- The two smoke columns are the one part of the celebration that is placed at
+    -- a FIXED fraction of the panel, and they are the exception on purpose: a
+    -- flare is a column of smoke standing at the edge of the thing being
+    -- revealed, so it belongs where the frame is, whatever size the frame is.
     { effect = "race.flare.smoke", lateral = -0.85, forward = 2.0, z = -0.45, duration = 8.0 },
     { effect = "race.flare.smoke", lateral = 0.85, forward = 2.0, z = -0.45, duration = 8.0 },
-    { effect = "race.firework.burst", lateral = 0.0, forward = 6.0, z = 0.15, duration = 7.5 },
 }
+
+-- How wide ONE burst reads on the panel, in metres, and the most the reveal may
+-- fire at once.
+--
+-- `race.firework.burst` is a fixed-size explosion -- the size a race's start line
+-- wants -- and the reveal used to fire exactly one of them, in the middle of the
+-- panel. On a 1.16 m television that is a celebration; on the cinema's 45.7 m
+-- panel it is a single spark in the middle of a black wall, which is what
+-- "the fireworks are barely visible because of the size of the cinema screen"
+-- was: the effect cannot be scaled through this API (there is no scale on
+-- `WorldVfxOptions`), so the LAYOUT has to carry the size instead.
+--
+-- The spacing is where consecutive bursts still overlap: closer than this they
+-- read as one blurred blob, further apart as unconnected sparkles. The cap is
+-- what keeps a mis-sized record -- a panel someone retuned to two hundred metres
+-- in the catalogue -- from asking one client for a hundred simultaneous effects.
+local BURST_SPAN = 9.0
+local MAX_REVEAL_BURSTS = 9
+
+-- How far out the row's outermost bursts sit, as a fraction of the panel's
+-- HALF-width. Just inside the frame, so the row reads as covering the panel
+-- rather than hanging off its edges.
+local BURST_SPREAD = 0.9
+
+---The burst line: the race start's own explosion, repeated across the panel.
+---
+---One burst per `BURST_SPAN` metres of the panel's width, symmetric about its
+---centre, at alternating heights and stand-offs so a row of identical effects
+---reads as a spread rather than a line of copies. It is still the race's own
+---effect and the race's own sound; only where it is put has changed.
+---
+---A set whose panel is narrower than one span -- every television in the
+---catalogue -- gets exactly one burst, at the centre, which is what it had before.
+---@param stage table the panel's own geometry (`panelStage`)
+---@return table list of placements, in the shape `REVEAL_COLUMNS` uses
+local function revealBursts(stage)
+    local width = tonumber(stage.width) or 0.0
+    local count = 1
+    if width > BURST_SPAN then count = math.floor(width / BURST_SPAN + 0.5) end
+    if count < 1 then count = 1 end
+    if count > MAX_REVEAL_BURSTS then count = MAX_REVEAL_BURSTS end
+
+    local out = {}
+    for index = 1, count do
+        -- Evenly spaced from -SPREAD to +SPREAD, where SPREAD is a fraction of the
+        -- panel's HALF-width -- `placementTransform` multiplies `lateral` by
+        -- `width * 0.5`, and it has to be said because getting it backwards is a
+        -- quiet 20% of the screen: the first version of this row used the outer
+        -- bursts at 0.72 of the half-width while claiming 0.9, and only the
+        -- suite's own "span four fifths of the width" line caught it.
+        local lateral = 0.0
+        if count > 1 then lateral = -BURST_SPREAD + (index - 1) * (2.0 * BURST_SPREAD / (count - 1)) end
+        local layer = (index % 2 == 0) and 1 or 0
+        out[#out + 1] = {
+            effect = "race.firework.burst",
+            lateral = lateral,
+            forward = 4.0 + 2.0 * layer,
+            z = 0.05 + 0.25 * layer,
+            duration = 7.5,
+        }
+    end
+    return out
+end
 
 ---Where the panel is, in world space, and which way it looks.
 ---
@@ -181,16 +340,36 @@ local function playRevealVfx(entry)
     if type(Open77.vfx) ~= "table" or type(Open77.vfx.play) ~= "function" then return end
     local stage = panelStage(entry)
     if stage == nil then return end
-    for _, placement in ipairs(REVEAL_VFX) do
+
+    local bursts = revealBursts(stage)
+    local placements = {}
+    for _, placement in ipairs(REVEAL_COLUMNS) do placements[#placements + 1] = placement end
+    for _, placement in ipairs(bursts) do placements[#placements + 1] = placement end
+
+    local failed = 0
+    for _, placement in ipairs(placements) do
         local transform = placementTransform(stage, placement)
         if transform ~= nil then
             local handle, reason = Open77.vfx.play(placement.effect, transform)
             if handle == nil then
+                failed = failed + 1
                 print(string.format("[open77_media] reveal effect %s failed: %s",
                     placement.effect, tostring(reason)))
             end
         end
     end
+
+    -- Said out loud, because this is the complaint that had no line: when every
+    -- effect succeeded nothing was printed at all, so "the fireworks are barely
+    -- visible" and "the fireworks never fired" were the same silent log. The
+    -- count is what makes the next report about the reveal answerable -- a panel
+    -- of the wrong size in the catalogue is visible here as one burst across forty
+    -- metres.
+    print(string.format(
+        "[open77_media] television %s: reveal fired %d effect(s) over a %.1f m panel " ..
+        "(%d burst(s), %d refused)",
+        tostring(entry.spec.id), #placements, tonumber(stage.width) or 0.0,
+        #bursts, failed))
 end
 
 ---The surface a screen rectangle maps onto, as something comparable.
@@ -429,6 +608,26 @@ local function refreshPage(entry)
     entry.page:send("media:state", pageState(entry))
 end
 
+---Everything the page renders, as one comparable string.
+---
+---The change test below used to name the fields by hand -- url, volume, muted,
+---paused, label -- and `curtain` and `border` were not in the list. So the panel's
+---curtain button changed the SERVER's state and the screen was never told: the
+---curtain was drawn by the page's clock and the page was the one half that did
+---not hear about it. One list, in the same order as `pageState`, is what keeps a
+---field added there from being forgotten here.
+local function presentationSignature(spec)
+    return table.concat({
+        tostring(spec.url),
+        tostring(spec.volume),
+        tostring(spec.muted),
+        tostring(spec.paused),
+        tostring(spec.label),
+        tostring(spec.border),
+        tostring(spec.curtain),
+    }, "\1")
+end
+
 -- =============================================================================
 -- SNAPSHOT
 -- =============================================================================
@@ -460,9 +659,7 @@ local function applySnapshot(snapshot)
         if entry == nil then
             screens[id] = { spec = spec, distance = nil, materialised = false }
         else
-            local changed = entry.spec.url ~= spec.url or entry.spec.volume ~= spec.volume
-                or entry.spec.muted ~= spec.muted or entry.spec.paused ~= spec.paused
-                or entry.spec.label ~= spec.label
+            local changed = presentationSignature(entry.spec) ~= presentationSignature(spec)
             local resized = surfaceSignature(entry.spec.quad) ~= surfaceSignature(spec.quad)
             entry.spec = spec
             if resized then
@@ -576,6 +773,14 @@ RegisterNetEvent("open77:media:snapshot", applySnapshot)
 -- same confirmation twice.
 RegisterNetEvent("open77:media:result", function(ok, detail)
     print(string.format("[open77_media] %s %s", ok and "OK" or "ERR", tostring(detail)))
+    if remote ~= nil then
+        -- The panel hears the answer here because a spawn or a URL it asked for
+        -- is answered HERE and nowhere a player can see: the answer is a net
+        -- event, not a state change, and a refused request leaves the set exactly
+        -- as it was. Without this, the panel of the person who asked would be the
+        -- only surface in the world that did not know what happened.
+        remote:send("remote:result", { ok = ok == true, text = tostring(detail or "") })
+    end
 end)
 
 -- =============================================================================
@@ -639,6 +844,74 @@ end
 ---and a wall of identical lines is not a diagnostic. Failures of the native call
 ---itself are swallowed on purpose: a diagnostic must never be the reason the
 ---render loop stops.
+---How long a bound screen may report no prop before the client asks the server to
+---put it back, how often it may ask, and how close it has to be for the asking to
+---be about a lost projection rather than about streaming.
+---
+---The prop is not always lost: the engine streams props by distance, so a set the
+---player has walked away from legitimately has no prop to draw on. The default
+---replication radius for a prop is 120 m and only the cinema records raise it, so
+---this repair claims screens well inside that default, where "no prop" cannot be
+---the streaming pass doing its job.
+local REISSUE_AFTER_MS = 2000
+local REISSUE_INTERVAL_MS = 5000
+local REISSUE_MAX_DISTANCE = 100.0
+
+---Asks the server to re-issue a set whose prop this client cannot resolve.
+---
+---This is the other half of a failure with no way out of its own. `prop_not_projected`
+---means the native lookup found no entity for the prop the screen is bound to, and
+---that state does not clear by itself: the props resource still believes the prop
+---is projected, so it never re-projects it, and the server still counts the prop
+---as visible, so it never re-sends it. Only a fresh projection repairs it -- and
+---the projection layer's own recovery path, "the local entry went away underneath
+---us", is reached exactly when a projection is attempted. So the screen asks, the
+---server patches the prop at the transform it already holds, and the client
+---projects it again.
+---
+---Logged on both ends of the wait, because a set that needs this is a bug worth
+---seeing, not a retry worth hiding: the first line says how long it had been
+---unresolved and how far away it was, which is also how a genuine streaming case
+---is told apart from this one.
+local function requestReissue(entry, snapshot)
+    -- The repair is the only thing here that needs a clock, and the file already
+    -- tolerates an older plugin whose API is smaller than this resource's. So a
+    -- host without `GetGameTimer` loses the repair and nothing else -- the refusal
+    -- is still reported by the pass below.
+    if type(GetGameTimer) ~= "function" then return end
+    if snapshot.drawn or snapshot.reason ~= "prop_not_projected" then
+        entry.unresolvedSince = nil
+        entry.reissueAt = nil
+        return
+    end
+    -- The native reports the distance with the refusal; the selection pass also
+    -- measures one once a second. Either will do, and the refusal's own number is
+    -- preferred because it belongs to the answer being reasoned about.
+    local distance = tonumber(snapshot.distance) or entry.distance
+    -- Out of range is streaming, not a lost projection.
+    if distance == nil or distance > REISSUE_MAX_DISTANCE then
+        entry.unresolvedSince = nil
+        entry.reissueAt = nil
+        return
+    end
+    local now = GetGameTimer()
+    if entry.unresolvedSince == nil then
+        entry.unresolvedSince = now
+        print(string.format(
+            "[open77_media] television %s: bound but no prop at %.1f m (%s); watching for a lost projection",
+            tostring(entry.spec.id), distance, tostring(snapshot.reason)))
+        return
+    end
+    if (now - entry.unresolvedSince) < REISSUE_AFTER_MS then return end
+    if entry.reissueAt ~= nil and (now - entry.reissueAt) < REISSUE_INTERVAL_MS then return end
+    entry.reissueAt = now
+    print(string.format(
+        "[open77_media] television %s: still no prop %.1f s after the bind, %.1f m away; " ..
+        "asking the server to re-issue it",
+        tostring(entry.spec.id), (now - entry.unresolvedSince) / 1000.0, distance))
+    TriggerServerEvent("open77:media:control", "reissue", { id = entry.spec.id })
+end
+
 local lastDrawnState = {}
 
 local function reportDrawn()
@@ -683,7 +956,11 @@ local function reportDrawn()
     for _, snapshot in ipairs(listed) do
         local entry = byNative[tostring(snapshot.id)]
         if entry ~= nil then
-            -- Keyed by the SET's id, the same number the menu and the server
+            -- A screen with no prop is asked about before it is reported: the
+            -- repair is what turns this state back into a picture, and the log
+            -- line below is what says whether it had to.
+            requestReissue(entry, snapshot)
+            -- Keyed by the SET's id, the same number the panel and the server
             -- console use, not by the native screen id the snapshot carries.
             local key = entry.spec.id
             -- `facing` is part of the state on purpose. "The television is
@@ -700,18 +977,389 @@ local function reportDrawn()
                 tostring(snapshot.reason), facingText)
             if lastDrawnState[key] ~= state then
                 lastDrawnState[key] = state
+                -- The distance is in the refusal itself, not just in the
+                -- materialisation line, because "nothing is drawn" and "nothing
+                -- is drawn from 30 m away" are different findings. The server
+                -- streams a prop to a player by interest radius
+                -- (`PropAuthorityService.Refresh`: distance <= StreamingRadius,
+                -- plus hysteresis once visible), so a set that stops drawing at
+                -- range and a set that stops drawing at arm's length are not the
+                -- same bug -- and the log could not tell them apart. Facing is
+                -- here for the same reason: a panel seen from behind by a record
+                -- that declares no front draws by design, and which side the eye
+                -- is on is the only thing that separates that from a failure.
                 local facingNote = facingText == "undeclared"
-                    and " (this record declares no front: drawn from both sides)"
-                    or (" (facing the picture: " .. facingText .. ")")
-                print(string.format("[open77_media] television %s (%s): %s%s",
+                    and "this record declares no front: drawn from both sides"
+                    or ("eye " .. (facingText == "behind" and "behind" or "in front of")
+                        .. " the panel")
+                print(string.format("[open77_media] television %s (%s): %s (%.1f m away; %s)",
                     tostring(entry.spec.id), tostring(entry.spec.record),
                     snapshot.drawn and "drawing"
                         or ("not drawing -- " .. tostring(snapshot.reason)),
+                    entry.distance or -1.0,
                     facingNote))
             end
         end
     end
 end
+
+-- =============================================================================
+-- THE REMOTE
+-- =============================================================================
+-- The panel, and the only part of it that is this file's business: which set it
+-- drives, when it is open, and what every button it offers turns into.
+--
+-- The page is created ONCE, at resource start, and never created hidden. That is
+-- not tidiness: on this client build a surface created hidden never uploads a
+-- frame once it is shown, so the free-roam menu keeps its own surface
+-- permanently visible with a transparent page and toggles a class in the DOM
+-- instead (see `setMenuOpen` in the freeroam client). The panel does the same,
+-- and the class is the only authority on whether it is on screen.
+--
+-- The distance it is told is quantised to whole metres before it is compared, so
+-- walking towards a set updates the number in the header without turning a
+-- per-frame value into a per-frame message.
+
+---The nearest set inside the control range, or nil when none is.
+---
+---Nil is a real answer and is pushed as one: the panel stays open and shows the
+---spawn list, because a player with no set in range is exactly the player who
+---needs to put one in the world.
+local function nearestScreens()
+    local inReach, inReachDistance = nil, nil
+    local any, anyDistance = nil, nil
+    for _, entry in pairs(screens) do
+        local distance = entry.distance
+        if distance ~= nil then
+            if anyDistance == nil or distance < anyDistance then
+                any, anyDistance = entry, distance
+            end
+            -- Per set, from the set's own reach: the nearest screen is not always
+            -- one the panel may drive -- a cinema set down thirty metres away is
+            -- inside its own reach and a stranger's television might not be
+            -- inside its.
+            if distance <= entryReach(entry) and (inReachDistance == nil or distance < inReachDistance) then
+                inReach, inReachDistance = entry, distance
+            end
+        end
+    end
+    return inReach, any
+end
+
+local function screenCount()
+    local count = 0
+    for _ in pairs(screens) do count = count + 1 end
+    return count
+end
+
+---Every set this client knows about, nearest first.
+---
+---The panel may only DRIVE the nearest set inside its own reach -- that rule is
+---this half's, not the page's -- but "delete the set I spawned and then walked
+---away from" is not a question about reach. Before this list there was no way to
+---name such a set at all: the panel's one subject was the nearest one in range,
+---so a mis-spawned prop outside every reach could not be addressed by any
+---control and stayed in the world for good. The list grants no authority of its
+---own: the `remove` handler below validates any id against this same table.
+local function remoteSetList()
+    local list = {}
+    for _, entry in pairs(screens) do
+        list[#list + 1] = {
+            id = entry.spec.id,
+            label = entry.spec.label,
+            record = entry.spec.record,
+            distance = entry.distance,
+            reach = entryReach(entry),
+            materialised = entry.materialised == true,
+        }
+    end
+    table.sort(list, function(left, right)
+        local leftDistance = tonumber(left.distance) or math.huge
+        local rightDistance = tonumber(right.distance) or math.huge
+        if leftDistance ~= rightDistance then return leftDistance < rightDistance end
+        return (tonumber(left.id) or 0) < (tonumber(right.id) or 0)
+    end)
+    return list
+end
+
+---What the panel is told, whole.
+local function remoteState()
+    local payload = {
+        open = remoteOpen,
+        count = screenCount(),
+        defaultReach = DEFAULT_REACH,
+        -- The effective key, so the panel's own footer can name the key that
+        -- closes it and the idle screen can name the one that opens it.
+        key = remoteKeyName(),
+        -- Every set, for the panel's own list: which ones exist, how far they
+        -- are, and which of them this client may drive right now.
+        sets = remoteSetList(),
+    }
+    local entry = remoteTarget ~= nil and screens[remoteTarget] or nil
+    if entry ~= nil then
+        payload.target = {
+            id = entry.spec.id,
+            label = entry.spec.label,
+            record = entry.spec.record,
+            url = entry.spec.url,
+            volume = entry.spec.volume,
+            muted = entry.spec.muted,
+            paused = entry.spec.paused,
+            curtain = entry.spec.curtain or "open",
+            distance = entry.distance,
+            reach = entryReach(entry),
+            materialised = entry.materialised == true,
+        }
+    elseif remoteNearest ~= nil and remoteNearest.distance ~= nil then
+        -- Nothing is drivable, so the panel is told what IS near and why it is
+        -- not drivable. Without this a player standing six metres from a cinema
+        -- screen reads "NO SET IN RANGE" on a panel whose subject is filling
+        -- their view, and has no way to learn that the number is the reason.
+        payload.nearest = {
+            id = remoteNearest.spec.id,
+            label = remoteNearest.spec.label,
+            record = remoteNearest.spec.record,
+            distance = remoteNearest.distance,
+            reach = entryReach(remoteNearest),
+            materialised = remoteNearest.materialised == true,
+        }
+    end
+    return payload
+end
+
+---Pushes the panel's state when it has changed, or when a caller insists.
+---
+---The signature is what keeps a once-a-second pass from being a once-a-second
+---message: a panel pointed at the same set with the same volume and the same URL
+---has nothing to be told. The compressed distance is in it because the header
+---shows metres, so the one thing that must move while the player walks is the
+---one thing that has to be sent.
+local function pushRemote(force)
+    if remote == nil then return end
+    local payload = remoteState()
+    local target = payload.target or {}
+    local signature = table.concat({
+        tostring(payload.open),
+        tostring(payload.count),
+        tostring(target.id),
+        tostring(target.url),
+        tostring(target.volume),
+        tostring(target.muted),
+        tostring(target.paused),
+        tostring(target.curtain),
+        tostring(math.floor((tonumber(target.distance) or -1.0) + 0.5)),
+        -- The nearest set is part of the panel's answer, so a player walking
+        -- towards a cinema screen from out of reach is told the distance
+        -- closing as they walk. Reach is in it for the same reason: it is
+        -- per set, and it changes when an operator retunes a quad.
+        tostring(math.floor((tonumber(target.reach) or -1.0) + 0.5)),
+        tostring(payload.nearest ~= nil and payload.nearest.id or ""),
+        tostring(math.floor(((payload.nearest ~= nil and tonumber(payload.nearest.distance) or -1.0)) + 0.5)),
+        -- ... and the list of sets, as ids at whole metres: a row appears or
+        -- disappears, or a distance crosses a metre while the player walks, and
+        -- the page has to be told. Without it the list would only refresh on an
+        -- open and would offer sets that are already gone.
+        (function()
+            local parts = {}
+            for _, set in ipairs(payload.sets or {}) do
+                parts[#parts + 1] = string.format("%s@%d", tostring(set.id),
+                    math.floor((tonumber(set.distance) or -1.0) + 0.5))
+            end
+            return table.concat(parts, ",")
+        end)(),
+    }, ":")
+    if not force and signature == remoteSignature then return end
+    remoteSignature = signature
+    remote:send("remote:state", payload)
+end
+
+---Opens or closes the panel, and takes the pointer and keyboard with it.
+local function setRemoteOpen(value, reason)
+    value = value == true
+    if remote == nil then
+        print("[open77_media] no remote panel: " .. tostring(reason or "the page was refused"))
+        return false
+    end
+    if remoteOpen == value then
+        -- Repeated presses are safe, and the state is re-sent rather than
+        -- dropped: a panel opened mid-walk may have been told about a set that
+        -- has since gone.
+        pushRemote(true)
+        return true
+    end
+    remoteOpen = value
+    if value then
+        -- The catalogue is fetched on every open rather than cached forever: the
+        -- records an operator changed are exactly why a spawn would fail, and one
+        -- net event per open is what keeps the list honest.
+        TriggerServerEvent("open77:media:catalogue")
+        local focused, focusReason = remote:setFocus(true, true)
+        print(string.format("[open77_media] remote open (target=%s, focus=%s(%s))",
+            remoteTarget ~= nil and tostring(remoteTarget) or "none",
+            tostring(focused), tostring(focusReason)))
+    else
+        remote:setFocus(false, false)
+        print("[open77_media] remote closed")
+    end
+    pushRemote(true)
+    return true
+end
+
+---Returns whether the panel is open now, so a caller that presses the key knows
+---what it asked for -- and so the suite can tell a toggle that did nothing from one
+---that opened a panel.
+local function toggleRemote()
+    return setRemoteOpen(not remoteOpen)
+end
+
+---Creates the panel surface, once, at resource start.
+local function createRemote()
+    local page, reason = WebUI.create({
+        entry = "web/remote.html",
+        layer = "menu",
+        width = 1920,
+        height = 1080,
+        -- A panel of static text and a pointer, on top of a game the player is
+        -- still standing in: it does not need a screen's rate.
+        fps = 15,
+        zIndex = 700,
+        transparent = true,
+        -- Never false. See the section header: a surface created hidden never
+        -- uploads a frame on this build.
+        visible = true,
+    })
+    if page == nil then
+        print("[open77_media] remote panel failed: " .. tostring(reason) ..
+            " (spawning and driving a set needs this surface)")
+        return
+    end
+    remote = page
+
+    -- The panel announces itself once its document is live; the state goes then
+    -- rather than at creation, because a `send` before the page has run its
+    -- script is delivered to nothing.
+    page:on("remote:ready", function()
+        pushRemote(true)
+    end)
+
+    -- Every request the panel makes, and the one place a set's id is decided.
+    --
+    -- The page never names the set. It shows the nearest one and this half knows
+    -- which that is: a page free to send an id could drive a television on the
+    -- other side of the map while believing it was changing the one in front of
+    -- the player, which is the confusion the old menu's list had to explain in prose.
+    page:on("remote:action", function(payload)
+        if type(payload) ~= "table" or type(payload.action) ~= "string" then return end
+        local action = payload.action
+        if action == "close" then
+            setRemoteOpen(false)
+            return
+        end
+        if action == "catalogue" then
+            TriggerServerEvent("open77:media:catalogue")
+            return
+        end
+        if action == "spawn" then
+            -- The facing is offered, not asserted: the engine publishes a
+            -- player's position and not their heading, so the server clamps
+            -- whatever arrives here.
+            local character = Open77.character.state()
+            TriggerServerEvent("open77:media:spawn", {
+                record = tostring(payload.record or ""),
+                url = payload.url,
+                yaw = type(character) == "table" and character.yaw or nil,
+            })
+            print(string.format("[open77_media] remote asked to spawn %s",
+                tostring(payload.record or "")))
+            return
+        end
+
+        -- `remove` is the one action that may NAME a set, and it must: every
+        -- other control drives the set in front of the player, but a prop that
+        -- was spawned and then walked away from has to be deletable from
+        -- somewhere, and the panel's list is where it is offered. The id is
+        -- checked against this client's own `screens` table, so the page can
+        -- name a set it was shown and nothing else -- a prop this client has
+        -- never heard of is dropped and said out loud.
+        if action == "remove" and payload.id ~= nil then
+            local named = screens[tonumber(payload.id)]
+            if named == nil then
+                print(string.format(
+                    "[open77_media] remote asked to remove set %s, which this client does not know; dropped",
+                    tostring(payload.id)))
+                return
+            end
+            TriggerServerEvent("open77:media:control", "remove", { id = named.spec.id })
+            print(string.format("[open77_media] remote asked set %s for remove",
+                tostring(named.spec.id)))
+            return
+        end
+
+        local entry = remoteTarget ~= nil and screens[remoteTarget] or nil
+        if entry == nil then
+            -- Nothing to drive, so the request is dropped rather than guessed at
+            -- -- and said out loud, because a control that silently changed a set
+            -- nobody was looking at is the failure this file keeps being fixed
+            -- for.
+            print(string.format(
+                "[open77_media] remote asked for %s with no set in range; dropped",
+                tostring(action)))
+            return
+        end
+        local id = entry.spec.id
+        if action == "url" then
+            TriggerServerEvent("open77:media:control", "url", { id = id, url = payload.url })
+        elseif action == "volume" then
+            TriggerServerEvent("open77:media:control", "volume",
+                { id = id, volume = tonumber(payload.volume) })
+        elseif action == "muted" or action == "paused" then
+            TriggerServerEvent("open77:media:control", action,
+                { id = id, value = payload.value == true })
+        elseif action == "curtain" then
+            TriggerServerEvent("open77:media:control", "curtain",
+                { id = id, value = tostring(payload.value or "") })
+        elseif action == "move" then
+            TriggerServerEvent("open77:media:control", "move", { id = id,
+                direction = tostring(payload.direction or ""), metres = tonumber(payload.metres) })
+        elseif action == "rotate" then
+            TriggerServerEvent("open77:media:control", "rotate", { id = id,
+                direction = tostring(payload.direction or ""), degrees = tonumber(payload.degrees) })
+        elseif action == "remove" then
+            TriggerServerEvent("open77:media:control", "remove", { id = id })
+        else
+            -- Named, not swallowed: an action this half does not know is a
+            -- mismatch between the page and the client, and neither end can see
+            -- the other's side of it.
+            print(string.format("[open77_media] remote sent unknown action '%s'", tostring(action)))
+            return
+        end
+        -- The click, on the client that made it, BEFORE the answer arrives. The
+        -- server's answer names the set's new state and never who asked or what
+        -- they touched, so this line is what separates "my click did nothing"
+        -- from "my click worked and you cannot hear it".
+        print(string.format("[open77_media] remote asked set %s for %s", tostring(id), tostring(action)))
+    end)
+end
+
+---The catalogue, answered to whoever asked for it.
+---
+---Kept here rather than broadcast: it is the server's record list, it is only ever
+---wanted by a panel that is about to spawn something, and a client that is not
+---spawning anything has no use for a copy of it.
+RegisterNetEvent("open77:media:catalogue", function(records)
+    remoteCatalogue = type(records) == "table" and records or {}
+    if remote ~= nil then
+        remote:send("remote:catalogue", { catalogue = remoteCatalogue })
+    end
+end)
+
+---A rebind renames the key the panel and every idle screen signpost, so both are
+---told. The engine raises this for the resource that owns the mapping.
+AddEventHandler("open77:keybinds:changed", function()
+    remoteSignature = ""
+    pushRemote(true)
+    for _, entry in pairs(screens) do refreshPage(entry) end
+end)
 
 ---How much closer a screen must be to take the page of one that already has it.
 ---
@@ -776,6 +1424,27 @@ local function reselect()
 
     reportDrawn()
     publishLocal()
+
+    -- Which set the panel drives, recomputed on the pass that measures distance
+    -- and nowhere else: the panel cannot be pointed at a set this client has not
+    -- located, and a set that leaves the range stops being its subject here rather
+    -- than in the UI. The hint is printed once per set entered -- the whole
+    -- discoverability of a key that is otherwise only listed in the pause menu.
+    local nearest, any = nearestScreens()
+    remoteNearest = any
+    remoteTarget = nearest ~= nil and nearest.spec.id or nil
+    -- ... and only when the panel is CLOSED: a player who already has the panel
+    -- open on this set was told to press the key that opened it.
+    if remoteTarget ~= nil and remoteTarget ~= remoteHinted then
+        remoteHinted = remoteTarget
+        if not remoteOpen then
+            print(string.format("[open77_media] set %s is in range: press %s to control it",
+                tostring(remoteTarget), remoteKeyName()))
+        end
+    elseif remoteTarget == nil then
+        remoteHinted = nil
+    end
+    pushRemote(false)
 end
 
 -- =============================================================================
@@ -791,6 +1460,16 @@ local function clearAll()
     -- mismatch between this file's bookkeeping and the native registry would
     -- otherwise survive a resource restart as a picture on a wall.
     Open77.media.clear()
+    -- The panel is bookkeeping like everything else here: the world it was driving
+    -- is gone, so the next session must not inherit an open one. Its PAGE is not
+    -- touched -- this runs on a resource stop too, where the host is already
+    -- tearing that surface down -- and the session-end handler below closes it
+    -- properly while the page is still there to be told.
+    remoteTarget = nil
+    remoteOpen = false
+    remoteSignature = ""
+    remoteHinted = nil
+    remoteNearest = nil
 end
 
 AddEventHandler("onClientResourceStart", function(name)
@@ -798,6 +1477,21 @@ AddEventHandler("onClientResourceStart", function(name)
     clearAll()
     lastLocalSignature = ""
     TriggerServerEvent("open77:media:ready")
+
+    createRemote()
+
+    -- The toggle, registered in the engine's own rebindable registry rather than
+    -- watched by this file: the binding then sits in the pause menu with the rest
+    -- of the game's keys, survives a restart, and can be changed by a player who
+    -- has never heard of Open77's console.
+    if type(RegisterKeyMapping) == "function" then
+        local ok, effective = RegisterKeyMapping("media.remote",
+            "Television: control the nearest set", REMOTE_KEY, toggleRemote)
+        print(string.format("[open77_media] remote key %s (%s)", tostring(effective),
+            ok and "registered" or "refused"))
+    else
+        print("[open77_media] RegisterKeyMapping is unavailable; the panel has no key")
+    end
 
     -- One thread, one second, one job: which screens exist. See the file header
     -- for why this is not a per-frame concern.
@@ -867,30 +1561,36 @@ AddEventHandler("open77:session:ended", function(reason)
             for _ in pairs(screens) do count = count + 1 end
             return count
         end)()))
+    -- Closed before the pages go, because this event is NOT a resource stop: the
+    -- panel's surface outlives the world exactly as a screen's page did, and an
+    -- open panel left standing is a menu on the next loading screen.
+    setRemoteOpen(false)
     clearAll()
 end)
 
 -- =============================================================================
 -- SURFACE FOR GAMEPLAY RESOURCES
 -- =============================================================================
--- The menu asks this resource rather than talking to the server itself, so the
--- catalogue and the spawn path are reachable through one audited doorway.
+-- Other resources drive sets through the server events below rather than through
+-- a function of this one, so the catalogue and the spawn path stay reachable
+-- through a single audited doorway. The panel above is that doorway's first
+-- caller and no longer an external one -- it is this resource's own page -- but
+-- what a gamemode sends is exactly what a console operator sends.
 
--- No exports, and that is a decision rather than an omission. There is no
--- cross-resource export CALL anywhere in this project -- `exports` registers, and
--- nothing invokes another resource's registered function -- so a menu that wanted
--- to drive this feature through an export would be inventing the mechanism first.
--- It does not have to: every mutation is a server event (`open77:media:spawn`,
--- `open77:media:control`) that any resource may send and this one validates, and
--- the current set is pushed locally as `open77:media:local` below. Gameplay
--- resources then talk to the same audited surface a console operator does.
+-- No exports, and that is a decision rather than an omission. This resource makes
+-- no cross-resource export call: `exports` registers a function and nothing here
+-- invokes another resource's, so driving a set through an export would mean
+-- inventing the mechanism first. It does not have to: every mutation is a server
+-- event (`open77:media:spawn`, `open77:media:control`) that any resource may send
+-- and this one validates, and the current set is pushed locally as
+-- `open77:media:local` below.
 
 -- =============================================================================
 -- WHAT THIS CLIENT HAS ON SCREEN, PUSHED LOCALLY
 -- =============================================================================
 -- `open77:media:local` carries the sets this client is rendering, with their
 -- distance and their materialisation state. Local and deliberately so: it
--- describes THIS client, not the server's set, and a menu that showed the
+-- describes THIS client, not the server's set, and a panel that showed the
 -- server's set here would claim six screens on a server holding sixty.
 
 print("open77_media client ready")

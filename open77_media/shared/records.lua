@@ -145,12 +145,12 @@
 Open77MediaRecords = {}
 
 ---@class Open77MediaRecord
----@field id string          shorthand used by commands and the menu
+---@field id string          shorthand used by commands and the panel
 ---@field label string       what the record calls itself
 ---@field model string       prop alias from the props catalogue
 ---@field quad table         screen rectangle in the prop's local frame
 ---@field quad.faces number[] optional front direction; absent = drawn both sides
----@field blurb string       one line for the menu
+---@field blurb string       one line for the panel
 ---@field scale number       optional prop scale, default 1. Multiplies the MESH,
 --  not the quad: the quad is metres in the prop's frame and is our own arithmetic,
 --  so a record that scales its prop has to carry a quad already multiplied by the
@@ -944,7 +944,7 @@ for _, record in ipairs(records) do
     Open77MediaRecords[record.id] = record
 end
 
----The catalogue in a stable order, which is the order the menu lists it in.
+---The catalogue in a stable order, which is the order the panel lists it in.
 ---@return Open77MediaRecord[]
 function Open77MediaCatalogue()
     local out = {}

@@ -146,7 +146,7 @@ local function payload(entry)
         paused = entry.paused,
         -- The frame the panel carries, and the curtain in front of it. Both are
         -- the page's to draw and the server's to own: an operator closes a
-        -- curtain from the menu or the console, every client draws the same
+        -- curtain from the panel or the console, every client draws the same
         -- closed curtain, and a join in the middle of a reveal sees the reveal.
         border = entry.border,
         curtain = entry.curtain,
@@ -157,6 +157,14 @@ local function payload(entry)
         -- screen is not facing north.
         yaw = entry.yaw,
         quad = entry.quad,
+        -- How close a player has to be for their panel to drive this set, from the
+        -- panel's own rectangle. It is on the wire rather than derived on each
+        -- client because it is the SAME number the spawn distance is derived
+        -- from (`Open77MediaPlacement.FacingDistance`), and two copies of that
+        -- rule is how a panel ends up unable to reach the set the server placed
+        -- for the player holding it: measured on this build, a spawned cinema
+        -- screen landed 30.6 m away with a flat fifteen metres of panel range.
+        reach = Open77MediaPlacement.Reach(entry.quad),
         -- The television's world position, so a client can decide which screens
         -- are worth materialising without a second lookup. A client can only
         -- hold a few CEF surfaces (`kMaximumWebSurfaces`, eight per resource),
@@ -544,7 +552,7 @@ local function acceptYaw(value)
     return math.max(-360.0, math.min(360.0, yaw))
 end
 
----How far in front of the caller a menu-spawned screen is set down.
+---How far in front of the caller a panel-spawned screen is set down.
 ---
 ---The arithmetic is `Open77MediaPlacement.FacingDistance` in shared/placement.lua
 ----- not a constant here, and not because it is a couple of lines. The catalogue
@@ -556,7 +564,7 @@ end
 ---same reason every other placement number does: "the screen landed on me" is a
 ---picture, not a log line, and the only instrument that can see it is a person.
 
----Where a menu-spawned screen goes, and which way it faces.
+---Where a panel-spawned screen goes, and which way it faces.
 ---
 ---The heading arrives from the caller (the client's `character.state().yaw`,
 ---clamped), because the server cannot read one. The conversion from heading to a
@@ -565,7 +573,7 @@ end
 ---rotation about Z in degrees.
 ---
 ---The set is turned so the rectangle's own front -- the glass -- looks back at
----the caller, which is what the menu promises. Which yaw that is depends on the
+---the caller, which is what the panel promises. Which yaw that is depends on the
 ---record, because the catalogue holds two axis conventions:
 ---
 ---   * the television family is authored facing its own local +Y (the screen
@@ -662,7 +670,7 @@ local function spawn(recordId, position, yaw, url, source)
         -- No collision by default, and this is a fix for a specific problem
         -- rather than a preference. A screen put down within arm's reach is one
         -- the player can be pushed out of the world by, or pinned against, with
-        -- the props default of static collision -- the menu path sets the set
+        -- the props default of static collision -- the panel path sets the set
         -- down 1.1 m ahead so nothing is ever created *through* the caller, and
         -- this keeps the same promise for the console path, where the operator
         -- names the spot. A screen is not something to stand on, so the honest
@@ -701,7 +709,7 @@ local function spawn(recordId, position, yaw, url, source)
         quad = copyQuad(record.quad),
         position = { x = position.x, y = position.y, z = position.z },
         -- Kept because it is now a placement decision rather than a detail: the
-        -- menu path derives it from the caller's heading (`facingPlacement`),
+        -- panel path derives it from the caller's heading (`facingPlacement`),
         -- and `media.list` reports it so "which way is it pointing" has an
         -- answer that does not need a screenshot.
         yaw = facing,
@@ -720,7 +728,7 @@ local function remove(id)
     -- The prop goes with the screen. A screen without its prop would be dropped
     -- by the next `liveEntries` anyway, but removing the prop is what actually
     -- takes the television out of the world, and doing it here means "remove"
-    -- from the menu does what it says.
+    -- from the panel does what it says.
     Open77.props.remove(tonumber(entry.prop) or entry.prop, "media_removed")
     return true
 end
@@ -1071,7 +1079,7 @@ RegisterNetEvent("open77:media:ready", function()
     pushBlocklist(source)
 end)
 
--- The menu's path to every mutation, so the same validation serves the console
+-- The panel's path to every mutation, so the same validation serves the console
 -- and the UI without one being able to do something the other cannot.
 --
 -- Every branch re-reads the entry from `media` rather than trusting anything in
@@ -1106,7 +1114,7 @@ RegisterNetEvent("open77:media:control", function(action, payload)
     end
 
     if action == "quad" then
-        -- Not reachable from the menu and not meant to be: there is no UI for a
+        -- Not reachable from the panel and not meant to be: there is no UI for a
         -- screen rectangle and a player nudging one would move a screen other
         -- players are watching. `media.quad` is the operator's path.
         TriggerClientEvent("open77:media:result", source, false, "quad_is_operator_only")
@@ -1160,8 +1168,32 @@ RegisterNetEvent("open77:media:control", function(action, payload)
             return
         end
         entry.curtain = value
+    elseif action == "reissue" then
+        -- Puts a set the client can no longer resolve back into the props
+        -- registry. Nothing about the screen changes: this re-applies the
+        -- placement the entry already holds, so the prop is patched at the
+        -- transform it is already at, and the server's own update fan-out is
+        -- what makes the client project it again.
+        --
+        -- That is the whole repair, and it is enough because the client side is
+        -- already built for it: `Props::Project` treats a mapping whose local
+        -- entry is gone as stale, drops it and creates a fresh one. What was
+        -- missing was anything to ASK. A prop whose native entry is released
+        -- underneath a bound screen -- a resource release, a world change --
+        -- leaves the client's props resource believing the prop is projected, so
+        -- it never re-asks, and the server keeps counting the prop visible so it
+        -- never re-sends it. The screen then reports `prop_not_projected` for
+        -- the rest of the session with the panel standing in the world.
+        -- Measured 2026-09-15: a cinema set bound at 30 m, prop spawned, WebUI
+        -- surface presenting on the GPU, blank from 1.2 s after the bind.
+        local reissued, reissueReason = applyPlacement(entry, nil, nil)
+        if not reissued then
+            TriggerClientEvent("open77:media:result", source, false,
+                "reissue_refused:" .. tostring(reissueReason))
+            return
+        end
     elseif action == "move" then
-        -- The menu's path to the same arithmetic the `media.move` command uses.
+        -- The panel's path to the same arithmetic the `media.move` command uses.
         -- Both go through `Open77MediaPlacement`, so the distance clamps and the
         -- axis convention are decided in one place; the only thing this branch
         -- adds is that a payload cannot ask for a nudge larger than the step
@@ -1204,7 +1236,7 @@ RegisterNetEvent("open77:media:control", function(action, payload)
     TriggerClientEvent("open77:media:result", source, true, describeEntry(media[entry.id] or entry))
 end)
 
--- Spawn from the menu. Kept separate from `control` because it is the only
+-- Spawn from the panel. Kept separate from `control` because it is the only
 -- media message that creates a world entity, and it carries its own position
 -- instead of naming an existing screen.
 RegisterNetEvent("open77:media:spawn", function(payload)
@@ -1219,7 +1251,7 @@ RegisterNetEvent("open77:media:spawn", function(payload)
 
     -- The position is the caller's own, read server-side. A client-supplied
     -- position would let any client put a screen anywhere in the world,
-    -- including inside someone else's building, and the menu has no need for
+    -- including inside someone else's building, and the panel has no need for
     -- that: it spawns where the player is standing.
     local position = Open77.players.position(source)
     if position == nil then
@@ -1245,8 +1277,8 @@ RegisterNetEvent("open77:media:spawn", function(payload)
         string.format("television %d created", entry.id))
 end)
 
--- The catalogue, for the menu. Served rather than duplicated in the page so a
--- record added here appears in the menu without a second edit.
+-- The catalogue, for the panel. Served rather than duplicated in the page so a
+-- record added here appears in the panel without a second edit.
 RegisterNetEvent("open77:media:catalogue", function()
     local source = source
     if source == nil then return end

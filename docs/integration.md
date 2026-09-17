@@ -477,3 +477,50 @@ afternoon on either:
 
 The client logs the reason whenever it changes, so the first line that differs
 from the previous one is the answer.
+
+### A set that is never drawn because its host entity is not installed
+
+Diagnosed 2026-09-15, and it cost most of a day because nothing names it. A
+television is spawned as an *authored host entity*: the client hands the engine a
+depot path such as
+
+```
+cyberm\entities\props\open77_prop_electronics_tv_screen_16x9.ent
+```
+
+whose geometry was baked in by `scripts/build-assets.ps1` at asset-build time.
+If the installed `Open77.archive` does not carry that entry, the engine still
+**accepts** the spawn request — the log shows `spawn submitted` and `population
+registered` — and then simply never materialises the entity. No spawner event
+fires, `DynamicEntityService` stays in `PopulationRegistered` forever because its
+completion is a `populationSystem->FindEntity` poll, the props entry never adopts
+an entity, and every screen on that prop reports
+
+```
+[open77_media] television 1 (cinema.150ft): not drawing -- prop_not_projected
+```
+
+with the panel standing in the world. There is no error anywhere: not in the
+client log, not in the server's, not from the engine.
+
+What installs it and what takes it away: the archive is deployed to
+`archive\pc\mod\Open77.archive` and carries the host entities under
+`cyberm\entities\props\`. The **Open77 launcher app re-projects its own CDN
+archive over the install every time it runs** (a content-addressed blob in
+`%LOCALAPPDATA%\Open77\modstore\blobs\`), and that generation predates the TV
+hosts — so a launch through the launcher, or any launcher run, silently returns
+the install to a set with no television in it. The bats never touch the launcher,
+which is why a direct launch survives, and why the same machine can have had a
+working screen earlier in the day.
+
+The check, which does not need the game:
+
+```bash
+python tools/check-prop-hosts.py --archive "<game>\archive\pc\mod\Open77.archive"
+```
+
+CP77 archives mask their path strings, so grepping an archive for a path proves
+nothing; this compares the FNV1a64 path hashes the archive stores in the clear.
+It exits non-zero and names each missing host. `Launch-Open77-XBUNIVERSE-Local.bat`
+runs it as a preflight, so the next launcher clobber says so at launch instead of
+costing another afternoon.

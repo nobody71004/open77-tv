@@ -86,7 +86,7 @@
   // the first frame instead of the page holding 100 until the state round-trips.
   let state = {
     url: "", volume: 75, muted: false, paused: false, label: "",
-    border: "", curtain: "open",
+    border: "", curtain: "open", key: "",
   };
   // What is currently on screen: { kind, src, videoId }.
   let showing = { kind: "none" };
@@ -162,7 +162,7 @@
   // The curtain and the reveal
   // ---------------------------------------------------------------------------
   // The server holds one of three modes (`curtain` in the state, written by
-  // `media.curtain` or the menu), and this draws whichever it holds. The page
+  // `media.curtain` or the panel), and this draws whichever it holds. The page
   // owns the CLOCK, because the beats have to line up with what is on the glass
   // in front of the player: it counts 3-2-1 on the velvet, parts the panels on
   // `LINK START`, and reports each beat. The client's Lua half hears those
@@ -599,7 +599,11 @@
 
     if (decided.kind === "idle") {
       showOnly("idle");
-      elements.idleDetail.textContent = "no signal -- set a URL from the menu";
+      // The key is the client's answer (`pageState`), not a literal here: it is
+      // rebindable, and a television whose hint names a key the player no longer
+      // has is a hint that sends them to the pause menu to find out why.
+      elements.idleDetail.textContent = "no signal -- press " + (state.key || "F5") +
+        " to put something on this screen";
       notice("");
       showing = { kind: "none" };
       report("idle", "");
@@ -1271,7 +1275,7 @@
     }));
   });
 
-  // The menu can ask for the controls explicitly, for a television someone has
+  // The client can ask for the controls explicitly, for a television someone has
   // opened to configure rather than to watch.
   bridge.on("media:controls", function (payload) {
     const show = payload && payload.show === true;

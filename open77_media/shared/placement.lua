@@ -45,7 +45,7 @@ Open77MediaPlacement = {}
 ---
 ---A quarter of a metre: small enough to line a screen up against a wall or a
 ---counter by eye, large enough that crossing a room is a dozen presses rather
----than a hundred. The command and the menu both take a metres argument, so this
+---than a hundred. The command and the panel both take a metres argument, so this
 ---is the default rather than the only option.
 Open77MediaPlacement.Step = 0.25
 
@@ -55,7 +55,7 @@ Open77MediaPlacement.Step = 0.25
 Open77MediaPlacement.RotationStep = 15.0
 
 ---The nudge directions, in the order a UI should offer them. Kept here rather
----than in the menu so the command, the menu and the tests cannot disagree about
+---than in the panel so the command, the panel and the tests cannot disagree about
 ---what may be asked for.
 Open77MediaPlacement.Directions = { "left", "right", "forward", "back", "up", "down" }
 
@@ -63,7 +63,7 @@ Open77MediaPlacement.Directions = { "left", "right", "forward", "back", "up", "d
 Open77MediaPlacement.Turns = { "left", "right" }
 
 ---The largest nudge one request may apply, in metres, and the largest turn, in
----degrees. A bound rather than a validation nicety: the menu is one message
+---degrees. A bound rather than a validation nicety: the panel is one message
 ---away from a client, and "move it a kilometre" is a screen nobody can ever
 ---reach again. A hundred metres still crosses the biggest room in Night City,
 ---and a full turn is available one press at a time.
@@ -234,7 +234,7 @@ end
 ---caller whose own heading is `heading`.
 ---
 ---The set is put down *ahead* of the caller and turned to face them, which is
----what the menu promises. The direction the front must end up pointing is
+---what the panel promises. The direction the front must end up pointing is
 ---therefore the caller's forward, negated.
 ---
 ---`front` is `QuadFront`'s answer, so this works for every record without a
@@ -267,7 +267,7 @@ function Open77MediaPlacement.FacingYaw(frontX, frontY, heading)
     return Open77MediaPlacement.Wrap(yaw)
 end
 
----The least distance a menu-spawned screen is ever set down at, in metres.
+---The least distance a panel-spawned screen is ever set down at, in metres.
 ---
 ---Clears the deepest cabinet in the catalogue (the game's televisions measure
 ---0.18 m front to back and `tv.large` 0.227 m, from their cooked meshes' bounding
@@ -329,6 +329,60 @@ function Open77MediaPlacement.FacingDistance(quad, frontX, frontY, frontZ)
 
     local wanted = depth + height
     if wanted < floor then return floor end
+    return wanted
+end
+
+---How close a player has to be for the panel to drive a set, in metres.
+---
+---This is a property of the SET, not of the panel, and that is the correction: a
+---flat fifteen metres was a property of the panel, and the panel could not reach
+---the sets the server had just created for the player. A 150 ft cinema screen is
+---set down `FacingDistance` ahead of whoever asked for it -- 30.56 m for that
+---record -- so "walk within fifteen metres" refused the one set the panel had
+---just spawned, which is why a player standing in front of a fresh cinema screen
+---had no controls, no move and no remove. The reach has to grow with the panel it
+---is for, and it is the same number the spawn distance is derived from.
+---
+---The floor is the fifteen metres that was right for a television: furniture
+---keeps exactly the reach it had (`tv.large` computes 1.4 m of stand-off, so the
+---floor decides), and only a screen bigger than a person gets more, because only
+---a screen bigger than a person was set down further away in the first place.
+Open77MediaPlacement.MinimumReach = 15.0
+
+---What a set's own stand-off is multiplied by to give its reach.
+---
+---A quarter more than the distance it was placed at: enough that a player who
+---stepped back from where they spawned it can still drive it, and not so much
+---that the panel reaches a screen in the next room. Applied to the stand-off
+---rather than to the picture, so it stays proportional to the record at every
+---size in the catalogue instead of being a constant nobody can justify.
+Open77MediaPlacement.ReachSlack = 1.25
+
+---The furthest a panel may ever drive a set, in metres.
+---
+---A screen a hundred metres away is a picture on the skyline and the player
+---cannot see what a button did to it; beyond this the set is out of reach and
+---the panel says so. It is a ceiling on the rule above, not a second rule.
+Open77MediaPlacement.MaximumReach = 120.0
+
+---How close a player must be to drive this record's set, in metres.
+---
+---`FacingDistance` is where a player who asks for this record ends up standing,
+---so the reach is that distance plus the slack above, floored at
+---`MinimumReach` and capped at `MaximumReach`. Both halves are this module's so
+---that the distance a set is placed at and the distance it can be driven from
+---cannot disagree -- a disagreement that produced exactly the dead panel this
+---function exists to fix.
+---@param quad table|nil the rectangle, for its `height` and `offset`
+---@return number metres
+function Open77MediaPlacement.Reach(quad)
+    local floor = Open77MediaPlacement.MinimumReach
+    if type(quad) ~= "table" then return floor end
+    local frontX, frontY, frontZ = Open77MediaPlacement.QuadFront(quad)
+    local placed = Open77MediaPlacement.FacingDistance(quad, frontX, frontY, frontZ)
+    local wanted = placed * Open77MediaPlacement.ReachSlack
+    if wanted < floor then return floor end
+    if wanted > Open77MediaPlacement.MaximumReach then return Open77MediaPlacement.MaximumReach end
     return wanted
 end
 

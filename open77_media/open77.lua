@@ -19,9 +19,46 @@ reload_policy "local"
 -- Keeping them apart is what lets a screen be bound before its prop has streamed
 -- in -- the binding is a number and the lookup simply fails until it can
 -- succeed -- and lets the prop move without the screen caring.
+-- USING IT -- the three things a player has to know, and where each is decided:
+--
+--   * THE KEY. F5 opens the panel at the nearest set. It is registered with the
+--     engine (`RegisterKeyMapping`, permission `input.actions`), so it appears in
+--     the pause menu with the game's own keys, a rebind is remembered per machine,
+--     and it is configurable without a resource edit. Nothing in this resource
+--     prints the key as a literal: the panel footer and every idle screen ask
+--     `Open77.input.keyFor` for the EFFECTIVE binding, so a player who moved it is
+--     told the key they actually have.
+--
+--   * THE REACH. A set is drivable from within ITS OWN reach -- a per-record number
+--     computed by `shared/placement.lua`, carried on the wire, and drawn in the
+--     panel header next to the distance. It scales with the set because the server
+--     puts a screen down in front of whoever spawned it at the set's own distance:
+--     1.1 m for a 1.16 m television, 30.6 m for a 150 ft cinema screen. A flat range
+--     refused the cinema the moment it was spawned. When the nearest set is out of
+--     reach the panel says which set, how far, and how far it can be driven -- it
+--     never silently does nothing.
+--
+--   * THE PASTE. Ctrl+V is the HOST's edit command (`SurfaceClient::Send` turns the
+--     accelerator into CEF's own paste), because a page cannot read the clipboard;
+--     no page-side work would change that. The URL field therefore takes the caret
+--     when the panel opens, so a paste has somewhere to land, and it is never
+--     hidden -- spawning starts with nothing in reach by definition, and the field
+--     is the link the new set is born with.
+--
+--   * THE CONTROLS, and the two that are not about the set in front of you. The
+--     curtain has three modes, not two (`media.curtain <id> open|closed|reveal`),
+--     and the panel offers all three: the reveal -- the countdown the page owns and
+--     the game-side effects it triggers -- used to be reachable from the screen's
+--     own strip and the console and nowhere else. And the panel lists EVERY set in
+--     the world, not only its subject, because `remove` is the one control that
+--     cannot be gated on reach: a set spawned and then walked away from is out of
+--     range of the panel and of everything on it, so a mis-spawn used to stay in
+--     the world for good. The page may name a set for that one action; the client
+--     validates the id against its own list of screens, so a page can name a set
+--     it was shown and nothing else.
 shared_script "shared/records.lua"
 
--- Where a set stands and which way it points, nudged and turned from the menu or
+-- Where a set stands and which way it points, nudged and turned from the panel or
 -- the console. Pure arithmetic (which way "left" is, what a quarter turn does to
 -- a heading), shared because the server applies it and the tests pin it.
 shared_script "shared/placement.lua"
@@ -59,13 +96,30 @@ files { "tests/records_test.lua", "tests/placement_test.lua", "tests/client_test
         "tests/adblock_test.lua" }
 
 permissions {
-    -- Spawn/remove/URL requests from the menu, and the state pushes back down.
+    -- Spawn/remove/URL requests from the panel, and the state pushes back down.
     "network.events",
 
     -- The prop the screen is bound to. The screen half is `Open77.media`, which
     -- is gated by this same capability because a screen with no prop has nothing
     -- to be a screen on.
     "world.props",
+
+    -- The reveal's own effects, and the reason this is not optional: the countdown
+    -- is the PAGE's, but the two flare columns, the firework burst and the two
+    -- race sounds are the game's, and without this capability every one of them is
+    -- refused -- `permission_denied:world.effects`, once per cue, in the log and
+    -- nowhere else. A curtain that counts 3-2-1 and parts in silence is a reveal
+    -- that half happened, which is what "the reveal does nothing" looks like from
+    -- the driver's seat. Declared here because the effects are played on the
+    -- client (`playRevealCue` in client/main.lua) and the manifest is what grants
+    -- them.
+    "world.effects",
+
+    -- `RegisterKeyMapping` / `Open77.input.keyFor`: the panel's toggle and the name
+-- of the key it is bound to. One capability for both, because a resource that may
+-- register a key is a resource that may ask what it ended up bound to -- the
+-- alternative is a hint naming a key the player rebound away from.
+    "input.actions",
 
     -- `Open77.webui.blocklist` / `.blocklistState`: the operator's ad-blocklist
     -- layer, and the receipt that says whether the browser host took it. Its own

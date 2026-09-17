@@ -26,8 +26,15 @@ open77_media/          the resource -- this is the television
   web/tv.html|css|js     the page one television shows: YouTube's own player, a
                          framed third-party site, or the host's decode route for a
                          link this CEF build cannot play itself
-  tests/                 four suites: records (1572 assertions), placement (114),
-                         adblock (351), client (58)
+  web/remote.html|css|js  the remote: the panel a player opens at a set, toggled
+                         with F5 while one is in reach. It spawns from the
+                         catalogue, sets the source URL, plays, mutes, moves and
+                         turns the cabinet, opens and closes the curtain, fires
+                         the reveal, and removes a set. The key is configurable;
+                         the panel owns no state and every button is a request
+                         the server answers
+  tests/                 four suites: records (1572 assertions), placement (132),
+                         adblock (351), client (148)
 native/
   MediaScreens.hpp|cpp   the host-side module: bind a surface to a prop, project
                          its screen quad, publish overlay items, line-of-sight test
@@ -423,8 +430,12 @@ Two things bite during install, both written up in that document:
    automatic rescan is opt-in, so either restart the server or run the console
    command `refresh` — and until that happens the server looks healthy while the
    resource simply is not there.
-2. The menu tab lives in the **`freeroam`** resource, not in `open77_media`. Both
-   have to be current, or the catalogue loads and no tab appears.
+2. The panel is reached with **F5** while a set is in reach, and it is served by
+   this resource (`web/remote.html`), not by a menu tab. It used to live in the
+   **`freeroam`** resource's menu; that entry is gone, so `freeroam` no longer has
+   to be current for a set to be controllable. What F5 needs is the client host
+   seam — the overlay and the page it draws — plus the client half of this
+   resource, which is what decides that a set is in reach at all.
 
 ## Provenance
 

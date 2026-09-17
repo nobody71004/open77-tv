@@ -218,7 +218,7 @@ check(near(Open77MediaPlacement.Wrap(-10.0), 350.0), "a negative heading wraps f
 check(near(Open77MediaPlacement.Wrap(725.0), 5.0), "a heading beyond two turns wraps")
 
 -- Four quarter turns on the spot return the heading to where it started, which
--- is the property the menu's TURN button relies on when it is held.
+-- is the property the panel's TURN button relies on when it is held.
 local heading = 37.0
 for _ = 1, 4 do
     heading = Open77MediaPlacement.Turn(heading, "left", 90.0)
@@ -399,6 +399,99 @@ check(near(Open77MediaPlacement.FacingDistance({ height = 0.5, offset = { 0, -5.
 -- back to the floor and put a 17 m panel on the caller.
 check(near(Open77MediaPlacement.FacingDistance({ height = 2.0, offset = { 0, 9.0, 0 } }, nil, nil, nil), 2.0),
     "a front that cannot be read drops the depth term and keeps the height term")
+
+-- =============================================================================
+-- How close a player has to be to drive a set
+-- -----------------------------------------------------------------------------
+-- The reach, and it is the correction to a real dead end rather than a
+-- preference: a spawned 150 ft cinema screen is set down 30.5612 m ahead of the
+-- player (the case above), the panel's control range was a flat 15 m, and the
+-- result was a player standing in front of a screen the panel reported as "no set
+-- in range" -- no controls, no move, no remove, on the set the panel had itself
+-- just spawned. So the reach has to be at least the distance the record is placed
+-- at, and it is computed here, beside that distance, from the same rule.
+-- =============================================================================
+
+check(Open77MediaPlacement.MinimumReach == 15.0,
+    "the reach floor is still the 15 m the furniture family was tuned to")
+check(Open77MediaPlacement.ReachSlack > 1.0,
+    "the slack is more than the stand-off, or a player who stepped back could not drive it")
+
+-- Nothing to measure: no quad is the floor, not an error and not zero. A panel
+-- that reached nothing would be the bug this rule exists to fix.
+check(near(Open77MediaPlacement.Reach(nil), 15.0),
+    "a record with no quad is drivable from the floor")
+
+-- The furniture family keeps exactly the fifteen metres it had: every stand-off
+-- in the catalogue is below 15 / 1.25 = 12 m, so the floor decides for all of
+-- them, and this rule moved no television that already worked.
+local reaches = {
+    -- id,             stand-off in metres (the case above),   expected reach
+    { "tv.large",      1.1260,                                15.0 },
+    { "tv.16x9",       1.1000,                                15.0 },
+    { "monitor.c",     1.1000,                                15.0 },
+    { "surveillance",  1.1000,                                15.0 },
+    -- ... and the two that a flat rule could not reach, which is the whole point:
+    -- 20.3742 and 30.5612 m of stand-off are inside their own reach and were
+    -- outside the old one.
+    { "cinema.100ft",  20.3742,                               25.4678 },
+    { "cinema.150ft",  30.5612,                               38.2015 },
+}
+for _, case in ipairs(reaches) do
+    local id, standoff, expected = case[1], case[2], case[3]
+    -- The rule, restated here rather than called: the reach is the stand-off plus
+    -- the slack, floored. Stating it means a change to EITHER half fails on this
+    -- line, and the per-record answers above are the catalogue's own numbers.
+    local byRule = math.max(Open77MediaPlacement.MinimumReach,
+        standoff * Open77MediaPlacement.ReachSlack)
+    check(near(byRule, expected, 1.0e-3),
+        string.format("record '%s' (stand-off %.4f m) is drivable from %.4f m (got %.4f)",
+            id, standoff, expected, byRule))
+
+    -- And the module agrees, for a quad that says what that stand-off means: a
+    -- picture facing +Y with its glass `standoff - depth` in front of the origin.
+    -- Composed rather than read from a record, the same way the stand-off cases
+    -- above are, so the two rules are fed the same input.
+    local quad = {
+        height = 1.0,
+        offset = { 0.0, standoff - 1.0, 0.0 },
+        right = { 1.0, 0.0, 0.0 },
+        up = { 0.0, 0.0, 1.0 },
+    }
+    if standoff > Open77MediaPlacement.MinimumStandoff then
+        check(near(Open77MediaPlacement.Reach(quad), expected, 1.0e-3),
+            string.format("record '%s' reach from the module is %.4f (got %.4f)",
+                id, expected, Open77MediaPlacement.Reach(quad)))
+    end
+end
+
+-- The rule itself, on the catalogue's own numbers: a screen's reach grows with
+-- the screen, and always covers the spot it is set down at.
+local cinema = { height = 26.0131, offset = { 0.0, 4.548115, 16.553793 },
+    right = { 1.0, 0.0, 0.0 }, up = { 0.0, 0.0, 1.0 } }
+local cinemaReach = Open77MediaPlacement.Reach(cinema)
+local cinemaStandoff = Open77MediaPlacement.FacingDistance(cinema, 0.0, 1.0, 0.0)
+check(near(cinemaStandoff, 30.5612, 1.0e-3),
+    string.format("the 150 ft screen is set down 30.5612 m ahead (got %.4f)", cinemaStandoff))
+check(cinemaReach > cinemaStandoff,
+    string.format("and is drivable from where it was put (reach %.4f > stand-off %.4f)",
+        cinemaReach, cinemaStandoff))
+check(cinemaReach > Open77MediaPlacement.MinimumReach,
+    "a screen bigger than a person gets more reach than the floor")
+
+-- Monotonic, like the stand-off it is derived from.
+local smallReach = Open77MediaPlacement.Reach({ height = 1.0, offset = { 0, 0.1, 0 } })
+local bigReach = Open77MediaPlacement.Reach({ height = 20.0, offset = { 0, 3.0, 0 } })
+check(bigReach > smallReach, "a taller panel is drivable from further away")
+
+-- Finite: the rule is derived from a size, and a record with an absurd one must
+-- not produce a panel that drives something the player cannot see.
+local absurd = Open77MediaPlacement.Reach({ height = 1000.0, offset = { 0, 0.0, 0 } })
+check(near(absurd, Open77MediaPlacement.MaximumReach),
+    string.format("an absurd panel is capped at %s m (got %.4f)",
+        tostring(Open77MediaPlacement.MaximumReach), absurd))
+check(Open77MediaPlacement.MaximumReach > cinemaReach,
+    "and the cap is above every record in the catalogue, or it would refuse a real screen")
 
 TestResult = {
     passed = passed,

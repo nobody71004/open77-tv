@@ -13,7 +13,7 @@
 --   * a model alias that is a typo, checked against the alias table the props
 --     commands already publish (`Open77AdminConfig.props.models`, mirrored from
 --     the client's own `kModelAliases` in Props.cpp);
---   * a duplicate id, where the second record overwrites the first and the menu
+--   * a duplicate id, where the second record overwrites the first and the panel
 --     silently lists seven records out of eight;
 --   * a quad whose axes are parallel, which collapses the screen to a line;
 --   * an aspect ratio that is not a shape a screen could be, and an id whose

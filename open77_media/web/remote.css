@@ -1,0 +1,349 @@
+/* The television remote.
+ *
+ * A page of the open77_media resource, drawn on a transparent 1920x1080 surface
+ * and mapped 1:1 onto the viewport (see `createRemote` in client/main.lua), so
+ * every size here is a fraction of a 1080p frame and nothing scrolls.
+ *
+ * The tokens are the freeroam design system's, transcribed rather than imported:
+ * a resource serves its own files and cannot reach into another's, and the two
+ * surfaces sit one keypress apart on screen, so a second palette would be
+ * visible as a difference in the same session.
+ */
+
+:root {
+  --o-black: #05070b;
+  --o-ink-900: #0b0e14;
+  --o-ink-800: #0d131d;
+  --o-ink-700: #12161f;
+  --o-ink-600: #171c26;
+  --o-ink-400: #2a313e;
+  --o-cyan-400: #4ee6ee;
+  --o-cyan-500: #22d8e2;
+  --o-cyan-900: #0a2a2e;
+  --o-teal-muted: #3d7f85;
+  --o-red-500: #ff3b4e;
+  --o-red-700: #8e1420;
+  --text-primary: #e6eaec;
+  --text-secondary: #8a94a2;
+  --text-muted: #5a6472;
+  --line-hairline: rgba(138, 148, 162, 0.18);
+  --line-strong: rgba(138, 148, 162, 0.34);
+  --panel: rgba(11, 14, 20, 0.94);
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  /* Transparent, and that is the whole reason the surface can be always
+     visible: the panel is what the player sees, and the rest of the frame is
+     the game. */
+  background: transparent;
+  color: var(--text-primary);
+  font-family: "Segoe UI", "Noto Sans", system-ui, sans-serif;
+  /* The pointer is the client's own (it paints a cursor onto the surface), so a
+     text cursor over an input would be a second, wrong one. */
+  cursor: default;
+  user-select: none;
+}
+
+/* Closed is `display: none` on the ROOT, not opacity on a child: a body-scoped
+   probe cannot see past the root, so a root that is merely transparent reports
+   as a surface with nothing to draw and the panel is unfalsifiable from the
+   outside (see the note on `webui.status` in the bridge). */
+.remote { display: none; }
+
+.remote.open {
+  display: flex;
+  flex-direction: column;
+  position: fixed;
+  top: 90px;
+  right: 64px;
+  width: 560px;
+  max-height: calc(100% - 180px);
+  padding: 22px 24px 16px;
+  gap: 14px;
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
+  border-left: 3px solid var(--o-cyan-500);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.55);
+  overflow: hidden;
+}
+
+/* Header ------------------------------------------------------------------ */
+
+.head { display: flex; align-items: flex-start; gap: 12px; }
+.lockup { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1 1 auto; }
+
+.eyebrow {
+  font-size: 12px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--o-teal-muted);
+}
+.eyebrow b { color: var(--o-cyan-500); }
+
+#target-label {
+  font-size: 22px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.meta { font-size: 12px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.08em; }
+
+.icon {
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--line-hairline);
+  font-size: 14px;
+}
+.icon:hover { color: var(--text-primary); border-color: var(--line-strong); }
+
+/* Blocks ------------------------------------------------------------------ */
+
+.block { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+.block[hidden] { display: none; }
+
+.field {
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.field.inline { flex: 0 0 auto; margin-right: 4px; }
+
+.row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+.text, .range {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 34px;
+  padding: 0 10px;
+  background: var(--o-black);
+  color: var(--text-primary);
+  border: 1px solid var(--line-hairline);
+  font: inherit;
+  font-size: 13px;
+}
+.text:focus { outline: none; border-color: var(--o-cyan-500); }
+
+/* The placement step: a custom listbox. A native `<select>` popup does not render
+   in the CEF WebUI compositor (pinned repo-wide by `WebUiAssetTests`), so this is
+   the same shape the freeroam and admin pages use -- a trigger with `aria-haspopup`
+   and a `role="listbox"` menu the page opens, focuses and walks itself. */
+.dropdown { position: relative; flex: 0 0 96px; }
+.dropdown-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  gap: 6px;
+}
+.dropdown-trigger i {
+  width: 0;
+  height: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 5px solid var(--text-muted);
+}
+.dropdown-menu {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 0;
+  z-index: 31;
+  width: 120px;
+  display: none;
+  padding: 4px;
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6);
+}
+/* Above the trigger, not below: the PLACEMENT row sits at the bottom of the panel
+   and a menu that opened downward would fall outside its `overflow: hidden` box. */
+.dropdown.open .dropdown-menu { display: block; }
+.dropdown-option {
+  display: block;
+  width: 100%;
+  min-height: 28px;
+  padding: 6px 9px;
+  color: var(--text-secondary);
+  background: transparent;
+  border: 0;
+  border-left: 2px solid transparent;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+}
+.dropdown-option:hover, .dropdown-option:focus {
+  outline: none;
+  color: var(--text-primary);
+  background: var(--o-ink-600);
+}
+.dropdown-option.on {
+  color: var(--o-cyan-400);
+  border-left-color: var(--o-cyan-500);
+}
+input[type="range"].range { height: 26px; padding: 0; background: transparent; border: 0; }
+
+.btn {
+  height: 34px;
+  padding: 0 12px;
+  background: var(--o-ink-700);
+  color: var(--text-secondary);
+  border: 1px solid var(--line-hairline);
+  font: inherit;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.btn:hover { color: var(--text-primary); background: var(--o-ink-600); border-color: var(--line-strong); }
+.btn:active { background: var(--o-ink-900); }
+.btn.primary { background: var(--o-cyan-900); color: var(--o-cyan-400); border-color: var(--o-cyan-700, #0b7f87); }
+.btn.primary:hover { background: #0e3a40; color: var(--o-cyan-400); }
+.btn.active { color: var(--o-cyan-400); border-color: var(--o-cyan-500); }
+.btn.danger { color: var(--o-red-500); border-color: rgba(255, 59, 78, 0.35); }
+.btn.danger:hover { background: var(--o-red-700); color: #fff; }
+/* REMOVE fills its own row, so it is a deliberate press rather than the button
+   next to the nudge pad. */
+.btn.wide { flex: 1 1 auto; display: flex; align-items: center; justify-content: center; }
+/* SHOW is disabled with nothing in reach: the field is still the next spawn's
+   link, and a button that silently dropped the request would be a button that
+   lies about what it did. */
+.btn:disabled { opacity: 0.4; }
+.btn:disabled:hover {
+  background: var(--o-ink-700);
+  color: var(--text-secondary);
+  border-color: var(--line-hairline);
+}
+
+/* The line under a control that says whose it is and what it does. */
+.hint {
+  margin: 0;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.value { flex: 0 0 34px; text-align: right; font-size: 13px; color: var(--o-cyan-400); }
+
+/* Every third button on this panel is 34 px tall and carries a letter-spaced word;
+   a row in the set list needs a smaller one, or the list of sets is taller than
+   the controls it is there to complement. */
+.btn.small { height: 26px; padding: 0 8px; font-size: 10px; }
+
+/* The sets list ------------------------------------------------------------ */
+
+.setlist {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  /* The list is the thing with a scrollbar -- the same trade the catalogue makes
+     (`min-height: 0`): the controls above it must never be pushed out of the
+     panel's clipped box by a long list of sets. */
+  min-height: 0;
+  max-height: 132px;
+  overflow: hidden auto;
+  overscroll-behavior: contain;
+}
+.setrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 26px;
+  padding: 2px 0;
+  border-bottom: 1px solid var(--line-hairline);
+}
+.setname {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--text-primary);
+}
+.setwhere {
+  flex: 0 0 auto;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+.setwhere.ok { color: var(--o-cyan-400); }
+
+/* Spawn catalogue --------------------------------------------------------- */
+
+/* `min-height: 0` is load-bearing, and its absence was a real dead end: a
+   flex child defaults to `min-height: auto`, so the grid refused to shrink
+   below its content, and at a 1280x720 viewport -- where the panel's own
+   `max-height` is 540 px -- the catalogue pushed the PLACEMENT controls and
+   REMOVE past the panel's `overflow: hidden` box. They were laid out, present
+   in the DOM, and impossible to click, which is the same shape as the original
+   "no way to move it around" complaint. Shrinking the list is the right
+   sacrifice: the list is the thing with a scrollbar, the controls are not. */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  overflow-y: auto;
+  min-height: 0;
+  max-height: 210px;
+  padding-right: 2px;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px;
+  text-align: left;
+  background: var(--o-ink-700);
+  color: var(--text-primary);
+  border: 1px solid var(--line-hairline);
+  font: inherit;
+}
+.card:hover { border-color: var(--o-cyan-500); background: var(--o-ink-600); }
+.card strong { font-size: 13px; font-weight: 600; }
+.card small { font-size: 11px; color: var(--text-secondary); }
+.card .tag { font-size: 10px; letter-spacing: 0.1em; color: var(--o-teal-muted); }
+.empty { grid-column: 1 / -1; font-size: 12px; color: var(--text-muted); }
+
+/* Answer line and key hints ---------------------------------------------- */
+
+.note {
+  margin: 0;
+  min-height: 16px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.note.ok { color: var(--o-cyan-400); }
+.note.error { color: var(--o-red-500); }
+
+.keys {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  border-top: 1px solid var(--line-hairline);
+  padding-top: 10px;
+}
+.keycap {
+  padding: 2px 6px;
+  border: 1px solid var(--line-hairline);
+  color: var(--text-secondary);
+}
+.keys span + .keycap { margin-left: 10px; }

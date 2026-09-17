@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Open77 television remote</title>
+  <link rel="stylesheet" href="remote.css" />
+</head>
+<body>
+  <!--
+    The television remote: the UI for whoever is standing at a set.
+
+    It replaces the freeroam menu's TV tab, and it is a page of the MEDIA resource
+    rather than of a gamemode -- the resource that owns the screens owns the way
+    they are driven, so a server running any gamemode gets the same panel and
+    there is one implementation of "spawn a set" and "change its volume" instead
+    of one per menu.
+
+    It is created once, at resource start, and toggled by the client: `remote:state`
+    carries `open` and the surface is never created hidden, because on this client
+    build a surface created hidden never uploads its first frame once shown (see
+    `createRemote` in `client/main.lua`). Visibility is therefore this document's
+    own class, and it is the only authority on it.
+
+    Three shapes live here, and which one is on screen is the server's answer, not
+    this page's guess:
+      * a set within ITS OWN reach -- the controls, addressed to the nearest such
+        set, with its label, distance and reach in the header;
+      * sets nearby and none of them drivable -- the same panel with the nearest
+        one named, how far it is and how far it can be driven from, so "why is
+        this doing nothing" is answered in one line;
+      * no sets at all -- the spawn list, which is how a player puts a television
+        into the world in the first place.
+
+    The SOURCE URL field is above both of them and is never hidden, because it
+    answers the same question in both: it is the link the set in your hand is
+    playing, and it is the link the next set you spawn is born with. It used to
+    live inside the controls block, which meant that spawning -- the one flow that
+    always starts with no set in reach -- was done with the field off screen.
+  -->
+  <main id="remote" class="remote" aria-label="Television remote">
+    <header class="head">
+      <div class="lockup">
+        <span class="eyebrow"><b>//</b> OPEN77 &middot; SCREEN LINK</span>
+        <strong id="target-label">NO SET IN RANGE</strong>
+        <span class="meta" id="target-meta">stand within a set's reach, or spawn one</span>
+      </div>
+      <button class="icon" id="close" type="button" title="Close (Esc)" aria-label="Close remote">&#10005;</button>
+    </header>
+
+    <!-- The link. Always visible (see the note above), and always a request: the
+         panel never claims the set changed, so two players holding a remote at
+         one set cannot disagree about what is playing. Ctrl+V pastes here -- the
+         host owns that accelerator, because a page cannot read the clipboard. -->
+    <section class="block" id="source">
+      <label class="field" for="url">SOURCE URL</label>
+      <div class="row">
+        <input id="url" class="text" type="text" spellcheck="false" autocomplete="off"
+               placeholder="https://...  (empty = idle test pattern)" />
+        <button class="btn primary" id="load" type="button">SHOW</button>
+      </div>
+      <p class="hint" id="url-hint">the next set you spawn is born with this link</p>
+    </section>
+
+    <!-- The controls, addressed to the set the header names. Every one of them is
+         a request to the server: the panel never claims a change took effect. -->
+    <section class="block" id="controls" hidden>
+      <div class="row">
+        <button class="btn" id="mute" type="button">MUTE</button>
+        <button class="btn" id="play" type="button">PAUSE</button>
+      </div>
+
+      <!-- The curtain has three modes, not two, and the server holds all three
+           (`media.curtain <id> <open|closed|reveal>`). The old single toggle could
+           only ever reach two of them, so the reveal -- the one people actually
+           want in front of an audience -- was reachable from the screen's own
+           strip and the console but not from the remote. Which mode the set is
+           IN is read back from the server, so the lit button is the set's state
+           and not this page's memory of a click. -->
+      <div class="row">
+        <span class="field inline">CURTAIN</span>
+        <button class="btn" id="curtain-open" type="button" title="Curtain out of the way">OPEN</button>
+        <button class="btn" id="curtain-close" type="button" title="Curtain drawn in front of the picture">CLOSE</button>
+        <button class="btn primary" id="curtain-reveal" type="button"
+                title="3-2-1, then the panels part">REVEAL</button>
+      </div>
+
+      <div class="row">
+        <span class="field inline">VOLUME</span>
+        <input id="volume" class="range" type="range" min="0" max="100" step="1" value="75" />
+        <span class="value" id="volume-text">75</span>
+      </div>
+
+      <!-- Placement. The nudge is along the SET's own axes, not the world's, so
+           LEFT still means the cabinet's left on a set that has been turned; the
+           arithmetic is the server's (`shared/placement.lua`) and is pinned by
+           its own suite, because a "left" that moves a set right reports nothing.
+           REMOVE is on its own row and says what it removes: next to the nudge
+           pad it was one mis-click away from deleting the set being lined up. -->
+      <span class="field">PLACEMENT</span>
+      <div class="row">
+        <span class="field inline">STEP</span>
+        <!-- A custom listbox rather than the native dropdown element: a native
+             popup does not render in the CEF WebUI compositor, and the repo pins
+             that rule by name in `WebUiAssetTests`. -->
+        <div class="dropdown" id="step">
+          <button class="btn dropdown-trigger" id="step-trigger" type="button"
+                  aria-haspopup="listbox" aria-expanded="false" aria-controls="step-menu"
+                  title="How far one press moves the set">
+            <span id="step-label">0.25 m</span><i aria-hidden="true"></i>
+          </button>
+          <div class="dropdown-menu" id="step-menu" role="listbox" aria-label="Placement step"></div>
+        </div>
+        <span class="field inline">MOVE</span>
+        <button class="btn" data-move="left" type="button" title="Move left, in the set's own frame">&#9664;</button>
+        <button class="btn" data-move="right" type="button" title="Move right, in the set's own frame">&#9654;</button>
+        <button class="btn" data-move="up" type="button" title="Move up">&#9650;</button>
+        <button class="btn" data-move="down" type="button" title="Move down">&#9660;</button>
+        <button class="btn" data-move="forward" type="button" title="Move forward, the way the picture faces">FWD</button>
+        <button class="btn" data-move="back" type="button" title="Move back">BACK</button>
+        <span class="field inline">TURN</span>
+        <button class="btn" data-turn="left" type="button" title="Turn 15 degrees left">&#8634;</button>
+        <button class="btn" data-turn="right" type="button" title="Turn 15 degrees right">&#8635;</button>
+      </div>
+      <div class="row">
+        <button class="btn danger wide" id="remove" type="button">REMOVE THIS SET</button>
+      </div>
+    </section>
+
+    <!-- Every set this client can see, nearest first.
+
+         The panel drives ONE set -- the nearest one inside its own reach -- and
+         that is deliberate. But a set that was spawned and then walked away from
+         is not drivable from anywhere: it is out of reach of the panel and of
+         every control on it, so a mis-spawn stayed in the world for good. This
+         block is where such a set is named and removed, and each row says how far
+         it is and whether it is drivable, so "why can I not control that one" is
+         answered on the row rather than by walking to it. -->
+    <section class="block" id="sets" hidden>
+      <span class="field">SETS IN THIS WORLD</span>
+      <div class="setlist" id="setlist"></div>
+    </section>
+
+    <!-- The nearest set, when it is out of reach. The panel's subject is filling
+         the player's view and the header said "no set in range" -- this is the
+         line that says which set, how far, and how far away it can be driven. -->
+    <section class="block" id="near" hidden>
+      <p class="hint" id="near-text"></p>
+    </section>
+
+    <!-- Spawning. The catalogue is the media resource's own record list, fetched
+         through the server, and the SOURCE URL above is what the new set is born
+         with. -->
+    <section class="block" id="spawn">
+      <label class="field" for="search">SPAWN A SET</label>
+      <div class="row">
+        <input id="search" class="text" type="search" spellcheck="false"
+               placeholder="Filter records (label, model, size)" />
+        <button class="btn" id="refresh" type="button">REFRESH</button>
+      </div>
+      <div class="grid" id="catalogue"></div>
+    </section>
+
+    <p class="note" id="note" role="status" aria-live="polite"></p>
+    <footer class="keys">
+      <span class="keycap" id="key-open">F5</span><span>close &amp; open</span>
+      <span class="keycap">ESC</span><span>close</span>
+      <span class="keycap">CTRL+V</span><span>paste a link</span>
+      <span class="keycap">M</span><span>mute</span>
+      <span class="keycap">SPACE</span><span>pause</span>
+      <span class="keycap">&#8593;&#8595;</span><span>volume</span>
+      <span class="keycap">[ ]</span><span>turn</span>
+    </footer>
+  </main>
+
+  <script src="remote.js"></script>
+</body>
+</html>
