@@ -1,6 +1,6 @@
 # The shared browser a television in Open77 shows: neko's Chromium, streamed to
 # the screen over WebRTC. XBUNIVERSE STAGING only. Staging runs it as
-# open77/tvbrowser-chromium:5 (the history is in shared-browser/README.md): no DRM
+# open77/tvbrowser-chromium:6 (the history is in shared-browser/README.md): no DRM
 # module, the managed policies, three scripts in the client page, and a health
 # check at the path the server answers on. No port, capability or setting changes.
 FROM ghcr.io/m1k1o/neko/chromium:3@sha256:2471119c7b4010067f76f3421a78a8bcf35e3c223b2d1f4db084914ec915fb30
@@ -20,7 +20,9 @@ COPY policies.json /etc/chromium/policies/managed/policies.json
 #                    (kinds and counts, no addresses), and one retry over TCP
 #   open77-paste.js  Ctrl+V on the picture pastes this PC's clipboard over there,
 #                    and says what it did (a right-click is told to use Ctrl+V)
-#   open77-volume.js the television's volume and mute on the picture's sound
+#   open77-volume.js the television's volume and mute on the picture's sound,
+#                    through Web Audio (the game takes the sound before an
+#                    element's volume is applied)
 COPY open77-ice.js /var/www/open77-ice.js
 COPY open77-paste.js /var/www/open77-paste.js
 COPY open77-volume.js /var/www/open77-volume.js

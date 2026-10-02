@@ -79,13 +79,26 @@ The television's volume slider and mute button are the shared browser's too. The
 client page is the server's, so the television (`open77_media/web/tv.js`) cannot
 reach into it: it posts its level to the framed page -- to that page's origin only,
 at every update and once the page has loaded -- and `server/build/open77-volume.js`
-puts it on the stream's media element. The client keeps a volume of its own (saved
-in the browser, and copied back from the element whenever the element's changes),
-so the script also puts the television's level back whenever anything else moves
-it; the client then saves the television's level as its own. Each set has its own
-level, as every television does. The page reports where the level went
-(`volume_applied`/`mute_applied ... via the shared browser's page`) and the client
-page what it did (`browser_ice (volume 35 on 1 element ...)`), when either changes.
+applies it. Each set has its own level, as every television does.
+
+It applies it to the sound itself, through Web Audio, not to the stream's media
+element. The game's browser takes a page's sound as the page produces it, and a
+WebRTC stream's element volume is applied after that, by the audio device: in game
+the element at 75, 90 and 100 was one loudness, and that one too quiet (2026-10-02).
+So the stream's own audio track is disabled -- WebRTC plays a disabled remote track
+at zero, which silences the element -- and a clone of it, which disabling the
+original does not silence, goes through a gain and a limiter to the page's output.
+The gain is `2 x (level / 100) ^ 1.5`: 100 is twice the stream's own level (+6 dB)
+with the limiter (-3 dB, 20:1) catching the peaks, 75 is 1.3, 50 is 0.71, 0 and
+mute are silence. Until Web Audio may start (a game that holds a page's sound back
+until a click) the element keeps its own sound, with the level on it; the first
+click or key on the picture starts it. A new stream (the client reconnecting) is
+taken over the same way, and a track something turns back on is turned off again.
+
+The page reports where the level went (`volume_applied`/`mute_applied ... via the
+shared browser's page`) and the client page what it did, when that changes:
+`browser_ice (volume 75 on the stream's sound (gain 1.30, Web Audio running))`, or
+`... on 1 element (Web Audio suspended)` before it can start.
 
 Before this the slider and the mute button changed nothing at all on the shared
 browser: they were wired to YouTube's player and to plain video only.
@@ -148,7 +161,7 @@ machine are not touched.
 1. Copy `server/` to `/opt/open77-tvbrowser` (root, 700) and run `up.sh`. The
    first run generates `neko.env` (viewer and admin passwords, API token) and the
    television link `tv-url.secret`, both root-only; later runs reuse them, so the
-   link does not change. It builds `open77/tvbrowser-chromium:5`, checks the
+   link does not change. It builds `open77/tvbrowser-chromium:6`, checks the
    image (the three scripts in the client page, the policy, no Widevine), and runs the
    container capped at 4 cores, 4 GB and 2 GB of shared memory, with the client
    on `127.0.0.1:18080` and WebRTC on `59100` (UDP and TCP, published by Docker,
@@ -163,20 +176,25 @@ machine are not touched.
    run a Playwright Chromium on the server, so it reaches the browser the way a
    player does: logged in from the television link, the picture over the public
    IP (in the four networks above), a link pasted into the address bar and
-   opened, and the television's level read back from the stream (2026-10-02, image
-   5: 100, then 35, 35 muted and 75, as asked).
+   opened, and the television's level measured in the sound it puts out (2026-10-02,
+   image 6, a -24 dBFS tone played into the browser's own output: 2.43 times it at
+   100, 0.50 at 35, silence muted, 1.58 at 75 -- the gain curve and the limiter's
+   make-up gain, as computed).
 
-Staging went through five builds of `server/build/`, each a recreate with the
+Staging went through six builds of `server/build/`, each a recreate with the
 same `neko.env`, ports and link, the one before kept for rollback: 1, Widevine
 removed and the policies; 2, `open77-ice.js` and the health check at the path the
 server answers on (neko's own asked `/health`, which a server with a path prefix
 answers under the prefix, so a healthy container reported unhealthy); 3,
 `open77-paste.js`; 4, the paste notes and reports, and new tabs opening Google; 5,
-`open77-volume.js`. Build 5 also makes the policy and the scripts readable whatever
-modes the build context had: its first rollout was built from files copied from
-Windows, which arrive root-only, so for three minutes (nobody connected) neko
-answered 403 for the scripts and Chromium could not read its policies. `up.sh`
-checks the modes in the image now.
+`open77-volume.js` on the element; 6, the level through Web Audio. Build 5 also
+makes the policy and the scripts readable whatever modes the build context had: its
+first rollout was built from files copied from Windows, which arrive root-only, so
+for three minutes (nobody connected) neko answered 403 for the scripts and Chromium
+could not read its policies. `up.sh` checks the modes in the image now. Build 6's
+script was first copied into the running container (`docker cp`, the image 5 copy
+kept in its /tmp), so the page a player had open in the shared browser stayed open;
+the container is recreated on image 6 when nobody is watching.
 
 The picture is 1280x720 at 30 fps (`NEKO_DESKTOP_SCREEN`); each viewer is one
 WebRTC stream from the server.
@@ -187,6 +205,7 @@ WebRTC stream from the server.
 cd opx_tvbrowser && lua5.4 tests/run.lua    # the link rule, the commands, which TV, the export (33 checks)
 node server/test/ice-local.mjs              # open77-ice.js against real peer connections (16)
 node server/test/paste-local.mjs            # open77-paste.js: keys, socket, notes, reports (31)
+node server/test/volume-local.mjs           # open77-volume.js on a real WebRTC stream: gain, mute, reconnect, autoplay (17)
 node tests/tv-page/run.mjs                  # from the repository root: the page's half, volume included (54)
 ```
 

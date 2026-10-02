@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The shared browser for Open77 televisions on XBUNIVERSE STAGING: neko's Chromium
-# without Widevine, streamed over WebRTC (build/, run as image 5). Builds the
+# without Widevine, streamed over WebRTC (build/, run as image 6). Builds the
 # image and (re)creates the container -- which also wipes the browser's own state
 # (sessions, history). The first run generates neko.env (viewer and admin
 # passwords, API token) and the televisions' link (tv-url.secret), both
@@ -8,7 +8,7 @@
 # does not change. No firewall or nginx change (nginx.sh does the site).
 # Production servers are not touched. Prints no secret.
 set -euo pipefail
-D=/opt/open77-tvbrowser; NAME=open77-tvbrowser-xbs; IMAGE=open77/tvbrowser-chromium:5
+D=/opt/open77-tvbrowser; NAME=open77-tvbrowser-xbs; IMAGE=open77/tvbrowser-chromium:6
 cd "$D"
 umask 077
 if [ ! -f neko.env ]; then
