@@ -418,7 +418,11 @@ namespace Detail
     {
         std::string_view tag;
         std::string_view attribute;
-        std::string kind;
+        // A view rather than a `std::string`, because the table below is
+        // `constexpr` and a `std::string` member is not a literal type: the
+        // whole array would stop being a constant expression, which is what
+        // C2131 reports here. The one use copies it into `Embed::kind`.
+        std::string_view kind;
     };
     static constexpr Element kElements[] = {
         {"<iframe", "src", "iframe"},
@@ -459,7 +463,9 @@ namespace Detail
             if (url.empty() || url == documentUrl) break;
             if (Ads::IsBlocked(url)) break;
             if (std::none_of(found.begin(), found.end(), [&](const Embed& e) { return e.url == url; }))
-                found.push_back(Embed{url, element.kind});
+                // Spelled out because `std::string`'s constructor from a
+                // view-like type is explicit, and a braced list will not use it.
+                found.push_back(Embed{url, std::string(element.kind)});
             break;
         }
         at += advance > 0 ? advance : 1;

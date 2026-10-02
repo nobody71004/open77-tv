@@ -34,6 +34,14 @@ struct Answer
     /// Distinct from `frameable`, which is the site's answer rather than ours:
     /// "we could not ask" and "it said no" are different sentences on a screen.
     bool ok{};
+    /// True when the answer could not be formed because a fetch did not complete --
+    /// the document never answered, or the shell answered and not one of the
+    /// applications it names could be reached. The distinction this exists for is
+    /// the one `ok` cannot draw on its own once a shell is involved: "we could not
+    /// ask" is the wire's failure and somebody else's to fix, while "it said no" is
+    /// a verdict about this build that has to be answered for. Set here, where the
+    /// request is made, and nowhere else.
+    bool transport{};
     std::string error;
     /// The document's URL after redirects. A link that redirects is normal and
     /// the frame must be given where it settled, not where it started.

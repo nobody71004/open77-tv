@@ -73,17 +73,29 @@ enum class WebPagePolicy : uint8_t
     /// thumbnails, and media from any https host. See the directives' own notes
     /// for why each one is there.
     Media = 1,
+    /// A page whose job is the network: an author's dev server or hosted page, a
+    /// bundled page that fetches or embeds a remote origin. This is the policy
+    /// main's unconditional "resource authors may use HTTP endpoints" became --
+    /// the same directives, named and asked for instead of granted to everything.
+    Remote = 2,
+    /// Local UI plus remote images only; no remote scripts, frames or fetch.
+    Images = 3,
 };
 
 /// The highest value a payload may legitimately carry.
-inline constexpr uint8_t kMaximumWebPagePolicy = static_cast<uint8_t>(WebPagePolicy::Media);
+inline constexpr uint8_t kMaximumWebPagePolicy = static_cast<uint8_t>(WebPagePolicy::Images);
 
 /// The policy a surface asked for, from the wire value. Anything the host does
 /// not recognise is `Strict` -- an unknown policy must fail closed.
 [[nodiscard]] constexpr WebPagePolicy PolicyFromWire(const uint8_t aValue)
 {
-    return aValue == static_cast<uint8_t>(WebPagePolicy::Media) ? WebPagePolicy::Media
-                                                                : WebPagePolicy::Strict;
+    switch (aValue)
+    {
+    case static_cast<uint8_t>(WebPagePolicy::Media): return WebPagePolicy::Media;
+    case static_cast<uint8_t>(WebPagePolicy::Remote): return WebPagePolicy::Remote;
+    case static_cast<uint8_t>(WebPagePolicy::Images): return WebPagePolicy::Images;
+    default: return WebPagePolicy::Strict;
+    }
 }
 
 /// The header for a page that draws its own shipped files and nothing else.
@@ -95,6 +107,12 @@ inline constexpr const char* kStrictContentSecurityPolicy =
     "default-src 'self'; img-src 'self' data:; media-src 'self'; "
     "style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; "
     "connect-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'";
+
+inline constexpr const char* kImagesContentSecurityPolicy =
+    "default-src 'self'; img-src 'self' data: http: https:; media-src 'self'; "
+    "style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; "
+    "connect-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; "
+    "worker-src 'none'; form-action 'none'";
 
 /// The header for a page whose job is to play a link.
 ///
@@ -149,11 +167,39 @@ inline constexpr const char* kMediaContentSecurityPolicy =
     "frame-src https:; "
     "worker-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'";
 
+/// The header for a page that reaches the network as its job.
+///
+/// These are the directives this host served *every* page before a policy existed,
+/// moved here whole rather than rewritten: a resource that points its UI at a dev
+/// server (Vite, webpack, a hosted page) needs `http:` and `https:` for its own
+/// assets, `ws:`/`wss:` because hot reload is a WebSocket, and `data:`/`blob:` for
+/// whatever a bundler inlines. The two directives that are not a widening are
+/// `object-src` and `base-uri`, which came with them and stay.
+///
+/// What still confines a page under this policy is everything outside the string:
+/// the VFS serves only the files the resource declared, the origin gate in
+/// `SurfaceClient` keeps a document that is not the surface's own from reaching
+/// the bridge, and same-origin policy, TLS verification and the CEF sandbox are
+/// untouched. What it does not have is the local-only guarantee -- this is the one
+/// policy under which a page may fetch a host no build wrote down in advance,
+/// which is exactly why it is a policy a page has to ask for.
+inline constexpr const char* kRemoteContentSecurityPolicy =
+    "default-src 'self' http: https: data: blob:; "
+    "script-src 'self' http: https: data: blob: 'unsafe-inline' 'unsafe-eval'; "
+    "style-src 'self' http: https: data: blob: 'unsafe-inline'; "
+    "connect-src 'self' http: https: ws: wss:; "
+    "frame-src 'self' http: https: data: blob:; object-src 'none'; base-uri 'self' http: https:";
+
 /// The directives a page is served under.
 [[nodiscard]] constexpr const char* ContentSecurityPolicy(const WebPagePolicy aPolicy)
 {
-    return aPolicy == WebPagePolicy::Media ? kMediaContentSecurityPolicy
-                                           : kStrictContentSecurityPolicy;
+    switch (aPolicy)
+    {
+    case WebPagePolicy::Media: return kMediaContentSecurityPolicy;
+    case WebPagePolicy::Remote: return kRemoteContentSecurityPolicy;
+    case WebPagePolicy::Images: return kImagesContentSecurityPolicy;
+    default: return kStrictContentSecurityPolicy;
+    }
 }
 
 /// Whether a surface under this policy may reach anything that is not one of the
@@ -172,12 +218,18 @@ inline constexpr const char* kMediaContentSecurityPolicy =
 /// together so a resource can never be granted one without the other.
 [[nodiscard]] constexpr bool AllowsRemoteContent(const WebPagePolicy aPolicy)
 {
-    return aPolicy == WebPagePolicy::Media;
+    return aPolicy == WebPagePolicy::Media || aPolicy == WebPagePolicy::Remote || aPolicy == WebPagePolicy::Images;
 }
 
 /// The policy's name, for logs and tests.
 [[nodiscard]] constexpr const char* Describe(const WebPagePolicy aPolicy)
 {
-    return aPolicy == WebPagePolicy::Media ? "media" : "strict";
+    switch (aPolicy)
+    {
+    case WebPagePolicy::Media: return "media";
+    case WebPagePolicy::Remote: return "remote";
+    case WebPagePolicy::Images: return "images";
+    default: return "strict";
+    }
 }
 } // namespace op77::WebUI

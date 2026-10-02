@@ -325,6 +325,8 @@ Answer Probe(const std::string& aUrl, const std::string& aOurOrigin, const int a
     if (!document.ok)
     {
         answer.error = document.error;
+        // Nothing was asked and nothing refused: this answer came off the wire.
+        answer.transport = true;
         return answer;
     }
     answer.ok = true;
@@ -344,16 +346,32 @@ Answer Probe(const std::string& aUrl, const std::string& aOurOrigin, const int a
     // the probe stops at the first nested document that may be framed rather
     // than asking about the rest -- finding one is the answer, and each extra
     // question is seconds the player spends looking at "checking".
+    // Counted so the answer can say whether anything inside the shell was reached
+    // at all. One candidate that answered -- frameable or refused -- makes the
+    // verdict the site's; only if none of them answered is the failure the wire's.
+    std::size_t unreachableCandidates = 0;
     for (const auto& embed : WebUI::Framing::FindEmbeds(document.body, answer.documentUrl))
     {
         if (answer.candidates.size() >= kMaximumProbedCandidates) break;
         Candidate candidate;
         candidate.url = embed.url;
         candidate.kind = embed.kind;
+        // The rule covers what the shell wraps as well as the shell itself, which is
+        // where the advertising usually lives. A blocked candidate is refused without
+        // a request, and it is NOT one of the unreachable ones: our own layer refusing
+        // must never be counted as the wire failing, or a rule would set
+        // `transport:true` and turn this verdict into a skip.
+        if (blocked(embed.url))
+        {
+            candidate.violation = "blocked";
+            answer.candidates.push_back(std::move(candidate));
+            continue;
+        }
         const Response nested = Fetch(embed.url, false, aCandidateTimeoutMilliseconds);
         if (!nested.ok)
         {
             candidate.violation = nested.error;
+            ++unreachableCandidates;
         }
         else
         {
@@ -370,6 +388,13 @@ Answer Probe(const std::string& aUrl, const std::string& aOurOrigin, const int a
         answer.candidates.push_back(std::move(candidate));
         if (winner) break;
     }
+    if (!answer.candidates.empty() && unreachableCandidates == answer.candidates.size())
+    {
+        // The shell answered and refused framing, as a shell should, and then not
+        // one of the applications it names could be fetched. That is the same
+        // sentence as an unanswered document, one level down.
+        answer.transport = true;
+    }
     return answer;
 }
 
@@ -377,6 +402,7 @@ std::string ToJson(const Answer& aAnswer)
 {
     std::ostringstream output;
     output << "{\"ok\":" << (aAnswer.ok ? "true" : "false")
+           << ",\"transport\":" << (aAnswer.transport ? "true" : "false")
            << ",\"frameable\":" << (aAnswer.frameable ? "true" : "false")
            << ",\"url\":" << JsonQuote(aAnswer.documentUrl)
            << ",\"violation\":" << JsonQuote(aAnswer.violation)
