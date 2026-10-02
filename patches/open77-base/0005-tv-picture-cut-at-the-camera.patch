@@ -1,0 +1,3315 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 1 Oct 2026 10:10:50 -0500
+Subject: [PATCH] Draw the part of a television in front of the camera when the
+ rest is behind it
+
+Recorded in game on 2026-10-01, walking along the 150 ft cinema screen with
+its near end behind the camera: the picture became rays of colour bars
+shooting across the sky from the middle of the view, and half of it was
+missing. A corner behind the eye has no projection. The engine refuses it and
+Camera::ProjectPoints writes it as zero, the centre of the view; the quad over
+those corners was then refused by ScreenTessellation (CrossesCameraPlane) and
+drawn the old way anyway, as one image quad folded through the centre.
+
+Such a screen is now cut at a plane 0.2 m in front of the camera and only the
+part in front is drawn, exactly (webui/ScreenClip.hpp):
+
+  * The screen is flat, so its view depth is affine in texture space; the part
+    in front is the unit square cut by one line, three to five corners.
+  * Four points inside that part are projected by the engine like any corner.
+    With their view depths they fix the plane's own map from texture space to
+    the view: each row is affine in (u, v) (position times depth, and depth),
+    so it is a least-squares fit, well conditioned however small or oblique
+    the screen looks. Points that are not one flat screen seen through one
+    camera (one refused by the engine) are refused: reason clip_unsolved, not
+    drawn that tick rather than drawn wrong.
+  * Which way round the picture goes is ScreenQuad::Orient's own rule, asked
+    through the map where the screen is in front of the camera.
+  * The overlay item carries the map instead of corners (Item::clipped); held
+    samples blend maps between game ticks as they blend corners. The producer
+    reports drawn_clipped; occlusion is traced to the middle of the part in
+    front rather than to the centre, which may be behind the eye.
+  * The depth pass draws the part in front as a fan of up to four triangles
+    (Geometry gains a fourth register, twelve vertices a draw; a whole screen
+    is the same two triangles as before) and computes every pixel's texture
+    coordinate and depth from the map's inverse (ScreenDepth::BuildFromMap).
+    Calibration samples behind the near plane are skipped.
+  * Without the depth pass, PerspectiveImage::AddClipped cuts the screen to
+    the near plane and the view and halves its texture space, quadrant by
+    quadrant, until every cell is within the tolerance: a uniform grid cannot
+    do it, since the curvature grows as the cube of nearness.
+
+DrawSurfaceQuad and the new DrawSurfaceClipped share one body for the surface
+predicate, the descriptor and its marks. ScreenMotion::Blend takes eight or
+nine floats.
+
+Tested: ScreenClipTests (new) against a ray-traced pinhole: the cut for one,
+two and three corners behind the eye; the map from four projected points to a
+millionth of a pixel and of the depth, and within 0.02 px through float32
+arithmetic 2 km from the origin; the refusals; the depth pass from the map,
+pixel by pixel through ScreenDepth.hlsli (uv within 0.003 texel, depth within
+2e-6); the fan covering exactly the part in front; the orientation agreeing
+with Orient and CornerForTexture in nine poses; the curvature bound; cut
+points shared to the bit. PerspectiveImageTests: AddClipped on the cinema
+walked along (worst texel 0.65 px), a set turned beside the camera and one
+wholly in front, every pixel in front and in view covered, nothing drawn
+behind the near plane or outside the view, nothing for a screen wholly behind.
+SceneDepth.cpp, WorldOverlay.cpp and the changed parts of WebUiService.cpp and
+MediaScreens.cpp were compiled against MinGW's Windows headers with GCC and
+Clang; not yet in game.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01SGDf5e3noD7RiVDkPCENkG
+---
+ client/CMakeLists.txt                        |  10 +
+ client/src/api/MediaScreens.cpp              | 261 ++++--
+ client/src/webui/PerspectiveImage.hpp        | 219 +++++
+ client/src/webui/SceneDepth.cpp              | 111 ++-
+ client/src/webui/SceneDepth.hpp              |   9 +
+ client/src/webui/ScreenClip.hpp              | 563 +++++++++++++
+ client/src/webui/ScreenDepth.hpp             | 103 ++-
+ client/src/webui/ScreenDepthComposite.hlsl   |  31 +-
+ client/src/webui/ScreenDepthPass.cpp         |   2 +-
+ client/src/webui/ScreenDepthPass.hpp         |  54 +-
+ client/src/webui/ScreenDepthShaderSource.hpp |  31 +-
+ client/src/webui/ScreenMotion.hpp            |  13 +-
+ client/src/webui/ScreenTessellation.hpp      |  22 +-
+ client/src/webui/WebUiService.cpp            |  65 +-
+ client/src/webui/WebUiService.hpp            |  14 +
+ client/src/webui/WorldOverlay.cpp            |  98 ++-
+ client/src/webui/WorldOverlay.hpp            |  10 +
+ client/tests/PerspectiveImageTests.cpp       | 229 ++++++
+ client/tests/ScreenClipTests.cpp             | 820 +++++++++++++++++++
+ 19 files changed, 2502 insertions(+), 163 deletions(-)
+ create mode 100644 client/src/webui/ScreenClip.hpp
+ create mode 100644 client/tests/ScreenClipTests.cpp
+
+diff --git a/client/CMakeLists.txt b/client/CMakeLists.txt
+index 152fdf1..e013803 100644
+--- a/client/CMakeLists.txt
++++ b/client/CMakeLists.txt
+@@ -1012,6 +1012,16 @@ if(BUILD_TESTING)
+     set_target_properties(Open77.ScreenDepthShaderSource.Tests PROPERTIES FOLDER "Tests")
+     add_test(NAME Open77.ScreenDepthShaderSource.Tests COMMAND Open77.ScreenDepthShaderSource.Tests)
+ 
++    # A television with part of it behind the camera -- the 150 ft cinema walked
++    # along -- drawn from its plane's own map: the cut at the near plane, the map
++    # solved from points the engine can project, and the depth pass's constants and
++    # fan built from it, against a ray-traced camera. The ImGui fallback for the same
++    # screen is in Open77.PerspectiveImage.Tests.
++    add_executable(Open77.ScreenClip.Tests tests/ScreenClipTests.cpp)
++    target_include_directories(Open77.ScreenClip.Tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
++    set_target_properties(Open77.ScreenClip.Tests PROPERTIES FOLDER "Tests")
++    add_test(NAME Open77.ScreenClip.Tests COMMAND Open77.ScreenClip.Tests)
++
+     add_executable(Open77.SwimmingPresentation.Tests tests/SwimmingPresentationTests.cpp)
+     target_include_directories(Open77.SwimmingPresentation.Tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src" "${PROJECT_SOURCE_DIR}/core/include")
+     target_compile_features(Open77.SwimmingPresentation.Tests PRIVATE cxx_std_20)
+diff --git a/client/src/api/MediaScreens.cpp b/client/src/api/MediaScreens.cpp
+index 80f926c..1b141a3 100644
+--- a/client/src/api/MediaScreens.cpp
++++ b/client/src/api/MediaScreens.cpp
+@@ -5,6 +5,7 @@
+ #include "api/Props.hpp"
+ #include "api/WorldQuery.hpp"
+ #include "engine/RttiAccess.hpp"
++#include "webui/ScreenClip.hpp"
+ #include "webui/ScreenInput.hpp"
+ #include "webui/WorldOverlay.hpp"
+ #include "world/EntityService.hpp"
+@@ -243,6 +244,193 @@ bool Occluded(const RED4ext::Vector4& aEye, const RED4ext::Vector4& aTarget,
+     return blocked;
+ }
+ 
++/// Where the pointer is DRAWN, when this is the screen the player has taken over.
++///
++/// CEF rasterises a page into a texture; the HOST paints the cursor. On a world
++/// quad there is no window to paint into, so the position is published for the
++/// overlay's cursor instead of being drawn as a second marker -- and it is computed
++/// from the SAME four world corners the page is composited with, interpolated in
++/// texture space (the orientation is the one just decided, so a mirrored or
++/// turned-over panel is not special-cased), which is the only way the one pointer
++/// a player sees and the picture it points at cannot disagree about where the
++/// click will land.
++void PublishPointer(const Entry& aEntry, const Camera::View& aView,
++                    const std::vector<RED4ext::Vector4>& aWorld)
++{
++    const WebUiService::ScreenInput::State input = WebUiService::ScreenInput::Get();
++    if (!input.active || input.surface != aEntry.definition.surface)
++    {
++        return;
++    }
++    const auto at = [&](const int aU, const int aV) -> const RED4ext::Vector4& {
++        return aWorld[ScreenQuad::CornerForTexture(aEntry.orientation, aU, aV)];
++    };
++    const auto& topLeft = at(0, 0);
++    const auto& topRight = at(1, 0);
++    const auto& bottomRight = at(1, 1);
++    const auto& bottomLeft = at(0, 1);
++    const float u = std::clamp(input.u, 0.0F, 1.0F);
++    const float v = std::clamp(input.v, 0.0F, 1.0F);
++    const auto lerp = [](const RED4ext::Vector4& aA, const RED4ext::Vector4& aB,
++                         const float aT) {
++        return RED4ext::Vector4{aA.X + (aB.X - aA.X) * aT, aA.Y + (aB.Y - aA.Y) * aT,
++                                aA.Z + (aB.Z - aA.Z) * aT, 0.0F};
++    };
++    const auto top = lerp(topLeft, topRight, u);
++    const auto bottom = lerp(bottomLeft, bottomRight, u);
++    const auto point = lerp(top, bottom, v);
++
++    RED4ext::Vector4 projectedCursor{};
++    if (Camera::ProjectPoint(point, projectedCursor) == Camera::Status::Ok &&
++        std::isfinite(projectedCursor.X) && std::isfinite(projectedCursor.Y))
++    {
++        const auto relativeCursor = Sub(point, aView.position);
++        const float cursorDepth = Dot(relativeCursor, aView.forward);
++        if (cursorDepth > 0.05F)
++        {
++            WebUiService::ScreenInput::PublishPointerOnScreen(
++                (projectedCursor.X + 1.0F) * 0.5F, (1.0F - projectedCursor.Y) * 0.5F);
++        }
++    }
++}
++
++/// The overlay item for a screen with part of it behind the camera.
++///
++/// Its four corners cannot be projected -- the engine refuses a point behind the
++/// eye and `Camera::ProjectPoints` writes it as the centre of the view -- so the
++/// screen is described by its plane's own map instead (`webui/ScreenClip.hpp`):
++/// the part of the panel in front of the camera's near plane is a polygon in the
++/// panel's own coordinates, four points inside it are projected by the engine like
++/// any corner, and with their view depths they fix the map from the picture's
++/// texture space to the view. `WorldOverlay` draws the part in front from it.
++///
++/// Everything a screen seen whole is checked for is checked here too, against the
++/// part that can be seen: occlusion is traced to its middle rather than to the
++/// panel's centre, which may be behind the eye.
++bool BuildClippedItem(Entry& aEntry, const Camera::View& aView,
++                      const std::vector<RED4ext::Vector4>& aWorld, const float (&aCornerDepth)[4],
++                      const float aDistance, WorldOverlay::Item& aOut, std::string& aReason)
++{
++    namespace Clip = WorldOverlay::ScreenClip;
++    // The panel's own axes as texture space for now: (a, b) = (0, 0) at its -right,
++    // -up corner, `a` along +right and `b` along +up. Which way round the picture
++    // goes is decided below, from where this part of it lands.
++    const int origin = ScreenQuad::CornerIndex(-1, -1);
++    const int alongRight = ScreenQuad::CornerIndex(+1, -1);
++    const int alongUp = ScreenQuad::CornerIndex(-1, +1);
++    const Clip::Polygon region = Clip::VisibleRegion(
++        aCornerDepth[origin], aCornerDepth[alongRight], aCornerDepth[alongUp]);
++    double samples[4][2]{};
++    if (!Clip::SamplePoints(region, samples))
++    {
++        aReason = "behind_camera";
++        return false;
++    }
++    const auto pointAt = [&](const double aA, const double aB) {
++        const auto& o = aWorld[origin];
++        const auto& r = aWorld[alongRight];
++        const auto& u = aWorld[alongUp];
++        return RED4ext::Vector4{
++            static_cast<float>(o.X + ((r.X - o.X) * aA) + ((u.X - o.X) * aB)),
++            static_cast<float>(o.Y + ((r.Y - o.Y) * aA) + ((u.Y - o.Y) * aB)),
++            static_cast<float>(o.Z + ((r.Z - o.Z) * aA) + ((u.Z - o.Z) * aB)), 1.0F};
++    };
++
++    std::array<RED4ext::Vector4, 4> points{};
++    double depths[4]{};
++    for (size_t index = 0; index < points.size(); ++index)
++    {
++        points[index] = pointAt(samples[index][0], samples[index][1]);
++        depths[index] = static_cast<double>(Dot(Sub(points[index], aView.position), aView.forward));
++    }
++    std::array<RED4ext::Vector4, 4> projected{};
++    if (Camera::ProjectPoints(
++            std::span<const RED4ext::Vector4>(points.data(), points.size()),
++            std::span<RED4ext::Vector4>(projected.data(), projected.size())) != Camera::Status::Ok)
++    {
++        aReason = "projection_unavailable";
++        return false;
++    }
++    double at[4][2]{};
++    for (size_t index = 0; index < projected.size(); ++index)
++    {
++        if (!std::isfinite(projected[index].X) || !std::isfinite(projected[index].Y))
++        {
++            aReason = "projection_not_finite";
++            return false;
++        }
++        // NDC to the overlay's 0..1 from the top-left, as for the corners.
++        at[index][0] = (static_cast<double>(projected[index].X) + 1.0) * 0.5;
++        at[index][1] = (1.0 - static_cast<double>(projected[index].Y)) * 0.5;
++    }
++    Clip::Map panel;
++    if (!Clip::SolveMap(samples, at, depths, Clip::kDefaultPositionTolerance, panel))
++    {
++        // The four points do not agree with one flat screen seen through one
++        // camera: the engine refused one of them, or the view moved under the
++        // projection. Not drawn this tick rather than drawn wrong.
++        aReason = "clip_unsolved";
++        return false;
++    }
++
++    // Which way round the picture goes: `ScreenQuad::Orient`'s own rule -- the
++    // picture's left on whichever side of the panel lands on the left of the
++    // frame, its top on whichever lands at the top -- asked where the panel is in
++    // front of the camera, through the map, rather than of corners that are not.
++    // Inside the deadband the previous answer stands, as it does there.
++    const std::array<double, 2> middle = region.Centroid();
++    const std::array<double, 2> slopes = Clip::Slopes(panel, middle[0], middle[1]);
++    if (std::abs(slopes[0]) > static_cast<double>(ScreenQuad::kOrientationDeadband))
++    {
++        aEntry.orientation.flipU = slopes[0] < 0.0;
++    }
++    if (std::abs(slopes[1]) > static_cast<double>(ScreenQuad::kOrientationDeadband))
++    {
++        aEntry.orientation.flipV = slopes[1] > 0.0;
++    }
++    // The picture's (u, v) in the panel's (a, b): a = u, or 1 - u when the picture
++    // is mirrored against the panel; b = 1 - v (the picture's top row on the +up
++    // edge), or v when it is turned over. `ScreenQuad::CornerForTexture`, as a map.
++    const bool flipU = aEntry.orientation.flipU;
++    const bool flipV = aEntry.orientation.flipV;
++    const Clip::Map map = Clip::Substituted(panel, flipU ? -1.0 : 1.0, flipU ? 1.0 : 0.0,
++                                            flipV ? 1.0 : -1.0, flipV ? 0.0 : 1.0);
++
++    // Hidden by a wall: traced to the middle of the part that can be seen.
++    const RED4ext::Vector4 middleWorld = pointAt(middle[0], middle[1]);
++    const auto toMiddle = Sub(middleWorld, aView.position);
++    const float middleDistance = std::sqrt(std::max(0.0F, Dot(toMiddle, toMiddle)));
++    if (Occluded(aView.position, middleWorld, middleDistance))
++    {
++        aReason = "occluded";
++        return false;
++    }
++
++    const Clip::Polygon visible = Clip::VisibleRegion(map);
++    if (visible.count < 3)
++    {
++        aReason = "behind_camera";
++        return false;
++    }
++    const std::array<double, 2> middleUv = visible.Centroid();
++    const std::array<double, 2> middleAt = map.Apply(middleUv[0], middleUv[1]);
++
++    aOut = WorldOverlay::Item{};
++    aOut.style = WorldOverlay::Style::Screen;
++    aOut.surface = aEntry.definition.surface;
++    aOut.clipped = true;
++    map.Store(aOut.map.data());
++    aOut.depth = static_cast<float>(map.Depth(middleUv[0], middleUv[1]));
++    aOut.distance = aDistance;
++    aOut.maximumDistance = kMaximumDistance;
++    aOut.x = static_cast<float>(middleAt[0]);
++    aOut.y = static_cast<float>(middleAt[1]);
++    aEntry.distance = aDistance;
++    aReason = "drawn_clipped";
++    PublishPointer(aEntry, aView, aWorld);
++    return true;
++}
++
+ /// Builds the overlay item for one screen, or explains why there is none.
+ bool BuildItem(
+     Entry& aEntry,
+@@ -320,10 +508,24 @@ bool BuildItem(
+ 
+     const auto relative = Sub(centre, aView.position);
+     const float depth = Dot(relative, aView.forward);
+-    // Behind the camera, or close enough to the plane that the perspective
+-    // divide whips the quad across the frame. Tested before the projection
+-    // because it is one dot product against four matrix transforms.
+-    if (depth <= 0.05F)
++    // How far in front of the camera each corner is. All of them behind it (or so
++    // close to its plane that nothing can be on screen) is a screen behind the
++    // camera. SOME of them behind it is a screen the player is standing right at
++    // -- along the 150 ft cinema, or against a set -- whose corners have no
++    // projection: it is drawn from its map instead (`BuildClippedItem`). Tested
++    // before the projection because it is four dot products against four matrix
++    // transforms.
++    float cornerDepth[4]{};
++    float nearestCorner = 0.0F;
++    float farthestCorner = 0.0F;
++    for (size_t index = 0; index < 4; ++index)
++    {
++        cornerDepth[index] = Dot(Sub(world[index], aView.position), aView.forward);
++        nearestCorner = index == 0 ? cornerDepth[index] : std::min(nearestCorner, cornerDepth[index]);
++        farthestCorner = index == 0 ? cornerDepth[index] : std::max(farthestCorner, cornerDepth[index]);
++    }
++    const auto nearPlane = static_cast<float>(WorldOverlay::ScreenClip::kNearDepth);
++    if (!(farthestCorner > nearPlane))
+     {
+         aReason = "behind_camera";
+         return false;
+@@ -334,6 +536,10 @@ bool BuildItem(
+         aReason = "out_of_range";
+         return false;
+     }
++    if (!(nearestCorner >= nearPlane))
++    {
++        return BuildClippedItem(aEntry, aView, world, cornerDepth, distance, aOut, aReason);
++    }
+     if (Occluded(aView.position, centre, distance))
+     {
+         aReason = "occluded";
+@@ -394,52 +600,7 @@ bool BuildItem(
+     aOut.y = (aOut.corners[1] + aOut.corners[3] + aOut.corners[5] + aOut.corners[7]) * 0.25F;
+     aEntry.distance = distance;
+     aReason = "drawn";
+-
+-    // Where the pointer is DRAWN, when this is the screen the player has taken
+-    // over.
+-    //
+-    // CEF rasterises a page into a texture; the HOST paints the cursor. On a
+-    // world quad there is no window to paint into, so the position is published
+-    // for the overlay's cursor instead of being drawn as a second marker -- and
+-    // it is computed from the SAME four world corners the page is composited
+-    // with, interpolated in texture space (the orientation is the one `Orient`
+-    // just decided, so a mirrored or turned-over panel is not special-cased),
+-    // which is the only way the one pointer a player sees and the picture it
+-    // points at cannot disagree about where the click will land.
+-    const WebUiService::ScreenInput::State input = WebUiService::ScreenInput::Get();
+-    if (input.active && input.surface == aEntry.definition.surface)
+-    {
+-        const auto at = [&](const int aU, const int aV) -> const RED4ext::Vector4& {
+-            return world[ScreenQuad::CornerForTexture(aEntry.orientation, aU, aV)];
+-        };
+-        const auto& topLeft = at(0, 0);
+-        const auto& topRight = at(1, 0);
+-        const auto& bottomRight = at(1, 1);
+-        const auto& bottomLeft = at(0, 1);
+-        const float u = std::clamp(input.u, 0.0F, 1.0F);
+-        const float v = std::clamp(input.v, 0.0F, 1.0F);
+-        const auto lerp = [](const RED4ext::Vector4& aA, const RED4ext::Vector4& aB,
+-                             const float aT) {
+-            return RED4ext::Vector4{aA.X + (aB.X - aA.X) * aT, aA.Y + (aB.Y - aA.Y) * aT,
+-                                    aA.Z + (aB.Z - aA.Z) * aT, 0.0F};
+-        };
+-        const auto top = lerp(topLeft, topRight, u);
+-        const auto bottom = lerp(bottomLeft, bottomRight, u);
+-        const auto point = lerp(top, bottom, v);
+-
+-        RED4ext::Vector4 projectedCursor{};
+-        if (Camera::ProjectPoint(point, projectedCursor) == Camera::Status::Ok &&
+-            std::isfinite(projectedCursor.X) && std::isfinite(projectedCursor.Y))
+-        {
+-            const auto relativeCursor = Sub(point, aView.position);
+-            const float cursorDepth = Dot(relativeCursor, aView.forward);
+-            if (cursorDepth > 0.05F)
+-            {
+-                WebUiService::ScreenInput::PublishPointerOnScreen(
+-                    (projectedCursor.X + 1.0F) * 0.5F, (1.0F - projectedCursor.Y) * 0.5F);
+-            }
+-        }
+-    }
++    PublishPointer(aEntry, aView, world);
+     return true;
+ }
+ 
+diff --git a/client/src/webui/PerspectiveImage.hpp b/client/src/webui/PerspectiveImage.hpp
+index 3c1ce0c..5a5ca85 100644
+--- a/client/src/webui/PerspectiveImage.hpp
++++ b/client/src/webui/PerspectiveImage.hpp
+@@ -32,9 +32,20 @@
+ // `DrawSurfaceQuad` makes into a real `ImDrawList` and read back what the GPU is
+ // handed (`tests/PerspectiveImageTests.cpp`); `ScreenTessellation.hpp` stays free
+ // of ImGui and of the engine.
++//
++// A screen with part of it behind the camera has no four corners to start from
++// (ScreenClip.hpp): `AddClipped` draws it from its map instead, cut to the part in
++// front of the camera and in view.
+ 
++#include "ScreenClip.hpp"
+ #include "ScreenTessellation.hpp"
+ 
++#include <algorithm>
++#include <array>
++#include <cmath>
++#include <cstddef>
++#include <vector>
++
+ #include <imgui.h>
+ 
+ namespace op77::WorldOverlay::PerspectiveImage
+@@ -82,4 +93,212 @@ inline int Add(ImDrawList& aDraw, const ImTextureID aTexture, const float (&aCor
+                        ImVec2(1.0F, 0.0F), ImVec2(1.0F, 1.0F), ImVec2(0.0F, 1.0F), aTint);
+     return 1;
+ }
++
++/// How far past the draw list's clip rectangle, in pixels, a cut screen is still
++/// drawn: the scissor trims it there anyway, and the margin keeps the cut a whole
++/// pixel clear of anything that is seen.
++inline constexpr double kViewMarginPixels = 2.0;
++
++/// Bounds on the work `AddClipped` may do for one screen: how many times a cell
++/// may be halved, and how many pieces may be queued. Past either, what is left is
++/// drawn as it stands, a little less exact rather than not at all.
++inline constexpr int kMaximumClippedDepth = 10;
++inline constexpr int kMaximumClippedPieces = 4096;
++
++/// Queues `aTexture` over a screen that is partly behind the camera, `aMap` its
++/// map from texture space to pixels with the view depth as its third row
++/// (ScreenClip.hpp), with `aTint` on every vertex.
++///
++/// Only the part in front of the camera's near plane AND in view is drawn: the
++/// picture cut by five straight lines in texture space, the near plane and the four
++/// sides of the clip rectangle. A uniform grid cannot cover that part: the closer
++/// the screen comes to the eye the more it curves on screen -- as the cube of the
++/// nearness -- so the cells a few metres away must be hundreds of times smaller
++/// than those at the far end of the cinema. So the cut part's texture-space bounds
++/// are halved, quadrant by quadrant, until every cell is within `aTolerancePixels`
++/// by the curvature bound of `ScreenTessellation`, taken over that cell's own drawn
++/// part. A cell wholly inside is one image quad, as `Add` draws its cells; a cell a
++/// line runs through is cut to it and drawn as a fan. Every vertex is exact, and a
++/// corner two cells share is the same to the bit in both; where a cell meets two
++/// smaller ones, the smaller ones' extra corner lies on its edge, to float rounding.
++///
++/// Returns the pieces queued: 0 when none of the picture is in front of the camera
++/// and in view.
++inline int AddClipped(ImDrawList& aDraw, const ImTextureID aTexture, const ScreenClip::Map& aMap,
++                      const ImU32 aTint,
++                      const float aTolerancePixels = ScreenTessellation::kDefaultTolerancePixels)
++{
++    namespace Clip = ScreenClip;
++    if (!aMap.Finite())
++    {
++        return 0;
++    }
++    const ImVec2 clipMin = aDraw.GetClipRectMin();
++    const ImVec2 clipMax = aDraw.GetClipRectMax();
++    const double minX = static_cast<double>(clipMin.x) - kViewMarginPixels;
++    const double minY = static_cast<double>(clipMin.y) - kViewMarginPixels;
++    const double maxX = static_cast<double>(clipMax.x) + kViewMarginPixels;
++    const double maxY = static_cast<double>(clipMax.y) + kViewMarginPixels;
++    const Clip::Polygon region = Clip::InView(Clip::VisibleRegion(aMap), aMap, minX, minY, maxX, maxY);
++    if (region.count < 3)
++    {
++        return 0;
++    }
++
++    struct Cell
++    {
++        double u0{};
++        double v0{};
++        double u1{};
++        double v1{};
++    };
++    Cell root{1.0, 1.0, 0.0, 0.0};
++    for (int i = 0; i < region.count; ++i)
++    {
++        const auto& corner = region.at[static_cast<std::size_t>(i)];
++        root.u0 = std::min(root.u0, corner[0]);
++        root.u1 = std::max(root.u1, corner[0]);
++        root.v0 = std::min(root.v0, corner[1]);
++        root.v1 = std::max(root.v1, corner[1]);
++    }
++    root.u0 = std::clamp(root.u0, 0.0, 1.0);
++    root.v0 = std::clamp(root.v0, 0.0, 1.0);
++    root.u1 = std::clamp(root.u1, root.u0, 1.0);
++    root.v1 = std::clamp(root.v1, root.v0, 1.0);
++
++    // The five lines, as a u + b v + c >= 0 on the side that is drawn.
++    const auto& m = aMap.m;
++    const double lines[5][3] = {
++        {m[2][0], m[2][1], m[2][2] - Clip::kNearDepth},
++        {m[0][0] - (minX * m[2][0]), m[0][1] - (minX * m[2][1]), m[0][2] - (minX * m[2][2])},
++        {(maxX * m[2][0]) - m[0][0], (maxX * m[2][1]) - m[0][1], (maxX * m[2][2]) - m[0][2]},
++        {m[1][0] - (minY * m[2][0]), m[1][1] - (minY * m[2][1]), m[1][2] - (minY * m[2][2])},
++        {(maxY * m[2][0]) - m[1][0], (maxY * m[2][1]) - m[1][1], (maxY * m[2][2]) - m[1][2]},
++    };
++    constexpr unsigned kAllInside = (1U << 5) - 1U;
++    const auto sides = [&lines](const double aU, const double aV) {
++        unsigned inside = 0;
++        for (unsigned line = 0; line < 5; ++line)
++        {
++            if ((lines[line][0] * aU) + (lines[line][1] * aV) + lines[line][2] >= 0.0)
++            {
++                inside |= 1U << line;
++            }
++        }
++        return inside;
++    };
++    const auto at = [&aMap](const double aU, const double aV) {
++        const std::array<double, 2> pixel = aMap.Apply(aU, aV);
++        return ImVec2(static_cast<float>(pixel[0]), static_cast<float>(pixel[1]));
++    };
++    const auto uv = [](const double aU, const double aV) {
++        return ImVec2(static_cast<float>(aU), static_cast<float>(aV));
++    };
++    const auto draw = [&](const Clip::Polygon& aPiece, const bool aWhole) {
++        if (aWhole)
++        {
++            const auto& c = aPiece.at;
++            aDraw.AddImageQuad(aTexture, at(c[0][0], c[0][1]), at(c[1][0], c[1][1]), at(c[2][0], c[2][1]),
++                               at(c[3][0], c[3][1]), uv(c[0][0], c[0][1]), uv(c[1][0], c[1][1]),
++                               uv(c[2][0], c[2][1]), uv(c[3][0], c[3][1]), aTint);
++            return;
++        }
++        // A fan from the first corner, two triangles to an image quad; an odd one out
++        // is a quad with its last corner repeated, whose second triangle has no area.
++        ImVec2 pixels[Clip::kMaximumPolygon];
++        ImVec2 uvs[Clip::kMaximumPolygon];
++        for (int i = 0; i < aPiece.count; ++i)
++        {
++            const auto& corner = aPiece.at[static_cast<std::size_t>(i)];
++            pixels[i] = at(corner[0], corner[1]);
++            uvs[i] = uv(corner[0], corner[1]);
++        }
++        for (int i = 1; i + 1 < aPiece.count; i += 2)
++        {
++            const int third = i + 2 < aPiece.count ? i + 2 : i + 1;
++            aDraw.AddImageQuad(aTexture, pixels[0], pixels[i], pixels[i + 1], pixels[third], uvs[0], uvs[i],
++                               uvs[i + 1], uvs[third], aTint);
++        }
++    };
++
++    // Level by level, so that a budget that runs out leaves every part of the
++    // picture equally coarse rather than one corner exact and the rest not drawn.
++    const double tolerance = std::max(0.05, static_cast<double>(aTolerancePixels));
++    struct Pending
++    {
++        Cell cell;
++        Clip::Polygon piece;
++        bool whole{};
++    };
++    std::vector<Cell> level{root};
++    std::vector<Pending> split;
++    int queued = 0;
++    for (int depth = 0; !level.empty(); ++depth)
++    {
++        split.clear();
++        for (const Cell& cell : level)
++        {
++            const unsigned corners[4] = {sides(cell.u0, cell.v0), sides(cell.u1, cell.v0), sides(cell.u1, cell.v1),
++                                         sides(cell.u0, cell.v1)};
++            const unsigned all = corners[0] & corners[1] & corners[2] & corners[3];
++            const unsigned any = corners[0] | corners[1] | corners[2] | corners[3];
++            if (any != kAllInside)
++            {
++                continue; // wholly on the far side of one of the lines
++            }
++            Clip::Polygon piece = Clip::Rectangle(cell.u0, cell.v0, cell.u1, cell.v1);
++            for (unsigned line = 0; line < 5 && piece.count >= 3; ++line)
++            {
++                if ((all & (1U << line)) == 0)
++                {
++                    piece = Clip::Cut(piece, lines[line][0], lines[line][1], lines[line][2]);
++                }
++            }
++            if (piece.count < 3)
++            {
++                continue;
++            }
++            // `ScreenTessellation::ErrorBound` for this cell's legs, with the
++            // curvature bounded over the part of it that is drawn.
++            const Clip::Curvature k = Clip::CurvatureOver(aMap, piece);
++            const double p = cell.u1 - cell.u0;
++            const double q = cell.v1 - cell.v0;
++            const double bound = ((k.uu * p * p) + (2.0 * k.uv * p * q) + (k.vv * q * q)) / 8.0;
++            const bool whole = all == kAllInside;
++            if (!(bound <= tolerance) && depth < kMaximumClippedDepth)
++            {
++                split.push_back(Pending{cell, piece, whole});
++                continue;
++            }
++            draw(piece, whole);
++            ++queued;
++        }
++        if (split.empty())
++        {
++            break;
++        }
++        // Past the budget, what wanted halving is drawn as it is.
++        if (queued + (4 * static_cast<int>(split.size())) > kMaximumClippedPieces)
++        {
++            for (const Pending& pending : split)
++            {
++                draw(pending.piece, pending.whole);
++                ++queued;
++            }
++            break;
++        }
++        level.clear();
++        for (const Pending& pending : split)
++        {
++            const Cell& c = pending.cell;
++            const double u = (c.u0 + c.u1) * 0.5;
++            const double v = (c.v0 + c.v1) * 0.5;
++            level.push_back(Cell{c.u0, c.v0, u, v});
++            level.push_back(Cell{u, c.v0, c.u1, v});
++            level.push_back(Cell{c.u0, v, u, c.v1});
++            level.push_back(Cell{u, v, c.u1, c.v1});
++        }
++    }
++    return queued;
++}
+ } // namespace op77::WorldOverlay::PerspectiveImage
+diff --git a/client/src/webui/SceneDepth.cpp b/client/src/webui/SceneDepth.cpp
+index 3fd7bce..7d49d8d 100644
+--- a/client/src/webui/SceneDepth.cpp
++++ b/client/src/webui/SceneDepth.cpp
+@@ -38,6 +38,7 @@ namespace
+ namespace Policy = op77::WebUI::SceneDepthPolicy;
+ namespace SD = op77::WorldOverlay::ScreenDepth;
+ namespace Tess = op77::WorldOverlay::ScreenTessellation;
++namespace Clip = op77::WorldOverlay::ScreenClip;
+ 
+ static_assert(Policy::Dxgi::kR32G8X24Typeless == static_cast<uint32_t>(DXGI_FORMAT_R32G8X24_TYPELESS));
+ static_assert(Policy::Dxgi::kD32FloatS8X24Uint == static_cast<uint32_t>(DXGI_FORMAT_D32_FLOAT_S8X24_UINT));
+@@ -1860,9 +1861,11 @@ UINT FootprintTexelBytes(const DXGI_FORMAT aFormat)
+ /// buffer, with the screen's own inverse view depth at each, for the calibration.
+ /// Only at a present that copied the depth: then the screen's corners and the depth
+ /// are of the same moment, which at the presents in between (frame generation's)
+-/// they are not quite.
++/// they are not quite. A screen with part of it behind the camera passes its map
++/// (`aClipped`) instead of usable corners; its samples behind the near plane are
++/// skipped like samples off the edge of the view.
+ void RecordSamples(ID3D12GraphicsCommandList* const aList, const SD::Constants& aConstants,
+-                   const float (&aCorners)[8])
++                   const float (&aCorners)[8], const Clip::Map* const aClipped = nullptr)
+ {
+     if (s_copy.texture == nullptr || !s_copied || s_calibration.Direction() == Policy::Convention::Unknown)
+     {
+@@ -1899,10 +1902,24 @@ void RecordSamples(ID3D12GraphicsCommandList* const aList, const SD::Constants&
+         }
+     }
+     Tess::Homography map;
+-    if (Tess::Solve(aCorners, map) != Tess::Status::Ok)
++    if (aClipped == nullptr && Tess::Solve(aCorners, map) != Tess::Status::Ok)
+     {
+         return;
+     }
++    // Where a sample lands: through the corners' homography, or the cut screen's own
++    // map -- off the view (and so skipped below) where that is behind the near plane.
++    const auto place = [&map, aClipped](const float aU, const float aV) {
++        if (aClipped == nullptr)
++        {
++            return map.Apply(aU, aV);
++        }
++        if (!(aClipped->Depth(aU, aV) > Clip::kNearDepth))
++        {
++            return Tess::Point{-1.0F, -1.0F};
++        }
++        const std::array<double, 2> at = aClipped->Apply(aU, aV);
++        return Tess::Point{static_cast<float>(at[0]), static_cast<float>(at[1])};
++    };
+     const float scaleX = s_copyExtent[0] / s_overlayWidth;
+     const float scaleY = s_copyExtent[1] / s_overlayHeight;
+     const size_t index = static_cast<size_t>(slot - s_slots.data());
+@@ -1926,7 +1943,7 @@ void RecordSamples(ID3D12GraphicsCommandList* const aList, const SD::Constants&
+     {
+         for (const float u : Policy::kSampleCoordinates)
+         {
+-            const Tess::Point pixel = map.Apply(u, v);
++            const Tess::Point pixel = place(u, v);
+             const double inverse = (static_cast<double>(aConstants.plane[0]) * pixel.x) +
+                                    (static_cast<double>(aConstants.plane[1]) * pixel.y) + aConstants.plane[2];
+             const float texelX = std::floor(pixel.x * scaleX);
+@@ -1978,6 +1995,13 @@ struct ScreenDraw
+     float opacity{};
+     UINT64 picture{};
+     bool debug{};
++    /// A screen with part of it behind the camera (ScreenClip.hpp): drawn from its
++    /// map, over the part in front of the near plane -- `polygon`, `count` corners in
++    /// overlay pixels -- and `corners`/`centreDepth` unused.
++    bool clipped{};
++    int count{};
++    float polygon[2 * Clip::kMaximumCorners]{};
++    double map[3][3]{};
+ };
+ 
+ /// This present's sizes and model, as the pass's constants want them.
+@@ -2037,8 +2061,18 @@ void ScreenCallback(const ImDrawList*, const ImDrawCmd* const aCommand)
+     tuning.opacity = draw.opacity;
+     SD::Constants constants;
+     const bool useDepth = draw.debug ? frame.depth : frame.test;
+-    if (SD::Build(draw.corners, draw.centreDepth, frame.model, frame.overlay, frame.extent, frame.texture, tuning,
+-                  useDepth, constants) != SD::Status::Ok)
++    Clip::Map map;
++    if (draw.clipped)
++    {
++        std::memcpy(map.m, draw.map, sizeof(map.m));
++        if (SD::BuildFromMap(map, frame.model, frame.overlay, frame.extent, frame.texture, tuning, useDepth,
++                             constants) != SD::Status::Ok)
++        {
++            return;
++        }
++    }
++    else if (SD::Build(draw.corners, draw.centreDepth, frame.model, frame.overlay, frame.extent, frame.texture,
++                       tuning, useDepth, constants) != SD::Status::Ok)
+     {
+         return;
+     }
+@@ -2052,7 +2086,7 @@ void ScreenCallback(const ImDrawList*, const ImDrawCmd* const aCommand)
+     }
+     else if (frame.depth)
+     {
+-        RecordSamples(list, constants, draw.corners);
++        RecordSamples(list, constants, draw.corners, draw.clipped ? &map : nullptr);
+     }
+     const D3D12_RECT clip{static_cast<LONG>(aCommand->ClipRect.x), static_cast<LONG>(aCommand->ClipRect.y),
+                           static_cast<LONG>(aCommand->ClipRect.z), static_cast<LONG>(aCommand->ClipRect.w)};
+@@ -2060,8 +2094,11 @@ void ScreenCallback(const ImDrawList*, const ImDrawCmd* const aCommand)
+     D3D12_GPU_DESCRIPTOR_HANDLE picture{};
+     picture.ptr = draw.picture;
+     const D3D12_GPU_DESCRIPTOR_HANDLE depth = frame.depth ? s_viewGpu : picture;
+-    s_pass.Draw(list, constants, SD::MakeGeometry(draw.corners, frame.overlay[0], frame.overlay[1]),
+-                draw.debug ? depth : picture, depth);
++    const SD::Geometry geometry = draw.clipped
++                                      ? SD::MakePolygonGeometry(draw.polygon, draw.count, frame.overlay[0],
++                                                                frame.overlay[1])
++                                      : SD::MakeGeometry(draw.corners, frame.overlay[0], frame.overlay[1]);
++    s_pass.Draw(list, constants, geometry, draw.debug ? depth : picture, depth);
+     if (!draw.debug)
+     {
+         ++s_counters.screens;
+@@ -2567,6 +2604,62 @@ bool DrawScreen(ImDrawList& aDraw, const D3D12_GPU_DESCRIPTOR_HANDLE aPicture, c
+     return true;
+ }
+ 
++bool DrawClippedScreen(ImDrawList& aDraw, const D3D12_GPU_DESCRIPTOR_HANDLE aPicture, const Clip::Map& aMap,
++                       const float aOpacity)
++{
++    if (!s_graphicsReady || !s_pass.Ready() || aPicture.ptr == 0 || !aMap.Finite())
++    {
++        return false;
++    }
++    // Remembered before anything can refuse, so the next present copies the depth.
++    s_lastScreenAt = s_present + 1;
++    if (!s_copyUsable)
++    {
++        return false;
++    }
++    // The part in front of the near plane: three to five corners, which the pass
++    // draws as a fan. The pixel shader works every pixel's texture coordinate and
++    // depth out from the map, so the corners only say which pixels to shade.
++    const Clip::Polygon region = Clip::VisibleRegion(aMap);
++    if (region.count < 3 || region.count > Clip::kMaximumCorners)
++    {
++        return false;
++    }
++    ScreenDraw draw;
++    for (int i = 0; i < region.count; ++i)
++    {
++        const auto& corner = region.at[static_cast<size_t>(i)];
++        const std::array<double, 2> at = aMap.Apply(corner[0], corner[1]);
++        // Within a million pixels, as `ScreenTessellation::Solve` holds corners: the
++        // near plane is close enough to the eye that a corner of a large screen on it
++        // can land a long way off the view, but not that far.
++        if (!std::isfinite(at[0]) || !std::isfinite(at[1]) || std::abs(at[0]) > Tess::kMaximumCoordinate ||
++            std::abs(at[1]) > Tess::kMaximumCoordinate)
++        {
++            return false;
++        }
++        draw.polygon[i * 2] = static_cast<float>(at[0]);
++        draw.polygon[(i * 2) + 1] = static_cast<float>(at[1]);
++    }
++    // Refused here exactly as the callback would refuse it, so a screen the pass
++    // cannot draw is drawn the other way instead of not at all.
++    const float size[2]{s_overlayWidth, s_overlayHeight};
++    SD::Constants probe;
++    if (SD::BuildFromMap(aMap, SD::DepthModel{}, size, size, size, SD::Tuning{}, false, probe) != SD::Status::Ok)
++    {
++        return false;
++    }
++    draw.clipped = true;
++    draw.count = region.count;
++    std::memcpy(draw.map, aMap.m, sizeof(draw.map));
++    draw.centreDepth = 1.0F;
++    draw.opacity = std::clamp(aOpacity, 0.0F, 1.0F);
++    draw.picture = aPicture.ptr;
++    aDraw.AddCallback(&ScreenCallback, &draw, sizeof(draw));
++    aDraw.AddCallback(ImDrawCallback_ResetRenderState, nullptr);
++    return true;
++}
++
+ void DrawOverlay(ImDrawList& aForeground, const float aOverlayWidth, const float aOverlayHeight)
+ {
+     if (!s_debugView || !s_graphicsReady || !s_pass.Ready())
+diff --git a/client/src/webui/SceneDepth.hpp b/client/src/webui/SceneDepth.hpp
+index b4dac00..cf434d6 100644
+--- a/client/src/webui/SceneDepth.hpp
++++ b/client/src/webui/SceneDepth.hpp
+@@ -36,6 +36,8 @@
+ 
+ #include <d3d12.h>
+ 
++#include "ScreenClip.hpp"
++
+ struct ImDrawList;
+ 
+ namespace op77::WebUI::SceneDepth
+@@ -82,6 +84,13 @@ void FrameSubmitted(uint64_t aFenceValue);
+ [[nodiscard]] bool DrawScreen(ImDrawList& aDraw, D3D12_GPU_DESCRIPTOR_HANDLE aPicture, const float (&aCorners)[8],
+                               float aCentreDepth, float aOpacity);
+ 
++/// The same for a screen with part of it behind the camera (ScreenClip.hpp):
++/// `aMap` takes texture space to overlay pixels, its third row the view depth.
++/// Only the part in front of the camera's near plane is drawn. False, as above,
++/// when the pass cannot draw it.
++[[nodiscard]] bool DrawClippedScreen(ImDrawList& aDraw, D3D12_GPU_DESCRIPTOR_HANDLE aPicture,
++                                     const op77::WorldOverlay::ScreenClip::Map& aMap, float aOpacity);
++
+ /// Once per frame while the overlay is built: the debug view, when it is on.
+ void DrawOverlay(ImDrawList& aForeground, float aOverlayWidth, float aOverlayHeight);
+ 
+diff --git a/client/src/webui/ScreenClip.hpp b/client/src/webui/ScreenClip.hpp
+new file mode 100644
+index 0000000..7a36b53
+--- /dev/null
++++ b/client/src/webui/ScreenClip.hpp
+@@ -0,0 +1,563 @@
++#pragma once
++
++// A world screen with part of it behind the camera: the part in front, exactly.
++//
++// ---------------------------------------------------------------------------
++// THE PROBLEM THIS SOLVES
++// ---------------------------------------------------------------------------
++//
++// Everything else that draws a television starts from its four projected corners.
++// A corner behind the eye has no projection: the engine refuses the point and
++// `Camera::ProjectPoints` writes it as zero, the centre of the view. On a set seen
++// from in front that never happens, and `ScreenTessellation` refuses such a quad
++// anyway (`CrossesCameraPlane`) -- but the refusal fell back to the old single
++// image quad over those four corners, one of them now at the centre of the view.
++// On the 150 ft cinema screen, which a player walks right up to and along, that is
++// what was reported on 2026-10-01: rays of colour bars shooting across the sky from
++// the middle of the view, and half the picture missing where the quad was folded
++// back on itself, whenever the near end of the screen was behind the camera.
++//
++// ---------------------------------------------------------------------------
++// WHAT THIS DOES
++// ---------------------------------------------------------------------------
++//
++// The screen is a flat rectangle, so its view depth is AFFINE in texture space:
++// depth(u, v) = d00 + u (d10 - d00) + v (d01 - d00), from three corners' depths.
++// The part in front of a near plane is the unit square cut by one straight line in
++// (u, v): a convex polygon of three, four or five corners (`VisibleRegion`).
++// Points inside it project correctly, so a few of them, with their texture
++// coordinates and view depths, fix the plane's own map from texture space to the
++// view (`SolveMap`): a homography whose third row is the view depth itself, so it
++// carries the depth the depth test needs as well. The renderers then draw that
++// polygon: the depth pass computes every pixel's texture coordinate and depth from
++// the map's inverse and needs only the polygon's corners to know which pixels to
++// shade; the fallback without it cuts the polygon to the view and draws it as a
++// grid fine enough that the picture lies in its plane (`PerspectiveImage`).
++//
++// Pure and free of the engine, of ImGui and of D3D, so `tests/ScreenClipTests.cpp`
++// can check it against a ray-traced camera.
++
++#include <algorithm>
++#include <array>
++#include <cmath>
++#include <cstddef>
++
++namespace op77::WorldOverlay::ScreenClip
++{
++/// Where the picture stops: this many metres in front of the camera. Anything
++/// nearer projects hundreds of screens away, and the engine's own near plane is
++/// about this close too, so nothing that could be on screen is lost.
++inline constexpr double kNearDepth = 0.2;
++
++/// At most five corners: a square cut by one line.
++inline constexpr int kMaximumCorners = 5;
++
++/// Room for the square cut by the near plane and the four sides of the view, and
++/// then by a grid cell's four sides: every cut adds at most one corner.
++inline constexpr int kMaximumPolygon = 16;
++
++/// How far, in the units of the samples' positions, a sample may lie from the map
++/// solved through it before the samples are refused as not one flat screen seen
++/// through one camera. In the overlay's normalised viewport that is one percent of
++/// the view: float rounding is thousands of times smaller, and a point the engine
++/// refused to project (written as the centre of the view) is far larger.
++inline constexpr double kDefaultPositionTolerance = 0.01;
++
++/// Texture space -> view: (u, v, 1) -> (x w, y w, w). `x` and `y` are in whatever
++/// space the samples' positions were (the overlay's normalised viewport, or its
++/// pixels), and `w` is the view depth in metres: positive in front of the camera.
++struct Map
++{
++    double m[3][3]{{1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0, 1.0}};
++
++    [[nodiscard]] double Depth(const double aU, const double aV) const
++    {
++        return (m[2][0] * aU) + (m[2][1] * aV) + m[2][2];
++    }
++
++    /// The point at (u, v). Only meaningful where `Depth` is positive.
++    [[nodiscard]] std::array<double, 2> Apply(const double aU, const double aV) const
++    {
++        const double w = Depth(aU, aV);
++        return {((m[0][0] * aU) + (m[0][1] * aV) + m[0][2]) / w, ((m[1][0] * aU) + (m[1][1] * aV) + m[1][2]) / w};
++    }
++
++    /// The same map with its positions scaled: normalised viewport to pixels.
++    [[nodiscard]] Map Scaled(const double aX, const double aY) const
++    {
++        Map out = *this;
++        for (int column = 0; column < 3; ++column)
++        {
++            out.m[0][column] *= aX;
++            out.m[1][column] *= aY;
++        }
++        return out;
++    }
++
++    /// Row by row, as nine floats: how an overlay item carries it.
++    void Store(float* const aOut) const
++    {
++        for (int row = 0; row < 3; ++row)
++        {
++            for (int column = 0; column < 3; ++column)
++            {
++                aOut[(row * 3) + column] = static_cast<float>(m[row][column]);
++            }
++        }
++    }
++
++    [[nodiscard]] static Map Load(const float* const aValues)
++    {
++        Map out;
++        for (int row = 0; row < 3; ++row)
++        {
++            for (int column = 0; column < 3; ++column)
++            {
++                out.m[row][column] = static_cast<double>(aValues[(row * 3) + column]);
++            }
++        }
++        return out;
++    }
++
++    /// Every entry finite.
++    [[nodiscard]] bool Finite() const
++    {
++        for (const auto& row : m)
++        {
++            for (const double value : row)
++            {
++                if (!std::isfinite(value))
++                {
++                    return false;
++                }
++            }
++        }
++        return true;
++    }
++};
++
++/// A convex polygon in texture space, corners in order round its edge. Empty
++/// (`count` 0) when there is nothing of it: fewer than three corners, or no area.
++struct Polygon
++{
++    std::array<std::array<double, 2>, kMaximumPolygon> at{};
++    int count{};
++
++    [[nodiscard]] std::array<double, 2> Centroid() const
++    {
++        std::array<double, 2> sum{0.0, 0.0};
++        for (int i = 0; i < count; ++i)
++        {
++            sum[0] += at[static_cast<std::size_t>(i)][0];
++            sum[1] += at[static_cast<std::size_t>(i)][1];
++        }
++        const double n = static_cast<double>(std::max(1, count));
++        return {sum[0] / n, sum[1] / n};
++    }
++
++    /// Twice the signed area (positive counter-clockwise in u right, v down... the
++    /// sign is only ever compared with zero).
++    [[nodiscard]] double TwiceArea() const
++    {
++        double sum = 0.0;
++        for (int i = 0; i < count; ++i)
++        {
++            const auto& p = at[static_cast<std::size_t>(i)];
++            const auto& q = at[static_cast<std::size_t>((i + 1) % count)];
++            sum += (p[0] * q[1]) - (q[0] * p[1]);
++        }
++        return sum;
++    }
++};
++
++/// The whole of the picture: texture coordinates (0,0), (1,0), (1,1), (0,1).
++[[nodiscard]] inline Polygon Square()
++{
++    Polygon out;
++    out.at[0] = {0.0, 0.0};
++    out.at[1] = {1.0, 0.0};
++    out.at[2] = {1.0, 1.0};
++    out.at[3] = {0.0, 1.0};
++    out.count = 4;
++    return out;
++}
++
++/// A rectangle of texture space, corners in the same order as `Square`.
++[[nodiscard]] inline Polygon Rectangle(const double aU0, const double aV0, const double aU1, const double aV1)
++{
++    Polygon out;
++    out.at[0] = {aU0, aV0};
++    out.at[1] = {aU1, aV0};
++    out.at[2] = {aU1, aV1};
++    out.at[3] = {aU0, aV1};
++    out.count = 4;
++    return out;
++}
++
++/// The part of `aPolygon` where a u + b v + c >= 0 (Sutherland-Hodgman, one line).
++///
++/// A crossing point is computed from its edge's two corners taken in a fixed order,
++/// not in the order the polygon walks them, so two polygons that share an edge --
++/// neighbouring cells of a grid, walked in opposite directions -- get the SAME
++/// point, to the bit, and the picture drawn from them has no seam.
++[[nodiscard]] inline Polygon Cut(const Polygon& aPolygon, const double aA, const double aB, const double aC)
++{
++    Polygon out;
++    if (aPolygon.count < 3)
++    {
++        return out;
++    }
++    const auto value = [&](const std::array<double, 2>& aPoint) {
++        return (aA * aPoint[0]) + (aB * aPoint[1]) + aC;
++    };
++    const auto add = [&out](const std::array<double, 2>& aPoint) {
++        if (out.count > 0 && out.at[static_cast<std::size_t>(out.count - 1)] == aPoint)
++        {
++            return;
++        }
++        if (out.count < kMaximumPolygon)
++        {
++            out.at[static_cast<std::size_t>(out.count)] = aPoint;
++            ++out.count;
++        }
++    };
++    for (int i = 0; i < aPolygon.count; ++i)
++    {
++        const auto& p = aPolygon.at[static_cast<std::size_t>(i)];
++        const auto& q = aPolygon.at[static_cast<std::size_t>((i + 1) % aPolygon.count)];
++        const double fp = value(p);
++        const double fq = value(q);
++        if (fp >= 0.0)
++        {
++            add(p);
++        }
++        if ((fp >= 0.0) != (fq >= 0.0))
++        {
++            const bool flip = (q[0] < p[0]) || (q[0] == p[0] && q[1] < p[1]);
++            const auto& from = flip ? q : p;
++            const auto& to = flip ? p : q;
++            const double fFrom = flip ? fq : fp;
++            const double fTo = flip ? fp : fq;
++            const double t = fFrom / (fFrom - fTo);
++            add({from[0] + ((to[0] - from[0]) * t), from[1] + ((to[1] - from[1]) * t)});
++        }
++    }
++    if (out.count > 1 && out.at[0] == out.at[static_cast<std::size_t>(out.count - 1)])
++    {
++        --out.count;
++    }
++    if (out.count < 3 || !(std::abs(out.TwiceArea()) > 1.0e-15))
++    {
++        out.count = 0;
++    }
++    return out;
++}
++
++/// The unit square cut by depth(u, v) >= `aNear`, depth being affine with the given
++/// values at (0,0), (1,0) and (0,1). Three, four or five corners, or empty when all
++/// of it is nearer than `aNear`.
++[[nodiscard]] inline Polygon VisibleRegion(const double aDepth00, const double aDepth10, const double aDepth01,
++                                           const double aNear = kNearDepth)
++{
++    if (!std::isfinite(aDepth00) || !std::isfinite(aDepth10) || !std::isfinite(aDepth01))
++    {
++        return Polygon{};
++    }
++    return Cut(Square(), aDepth10 - aDepth00, aDepth01 - aDepth00, aDepth00 - aNear);
++}
++
++/// The same, from a map: its third row is the depth.
++[[nodiscard]] inline Polygon VisibleRegion(const Map& aMap, const double aNear = kNearDepth)
++{
++    return Cut(Square(), aMap.m[2][0], aMap.m[2][1], aMap.m[2][2] - aNear);
++}
++
++/// `aRegion` (in front of the camera: the map's depth positive on it) cut to the
++/// rectangle of positions `aMinX..aMaxX`, `aMinY..aMaxY` the map's positions are
++/// in -- the part of the screen that is in view. Each side of the view is a straight
++/// line in texture space: x >= aMinX is x w - aMinX w >= 0 where w > 0, and both
++/// are affine in (u, v).
++[[nodiscard]] inline Polygon InView(const Polygon& aRegion, const Map& aMap, const double aMinX, const double aMinY,
++                                    const double aMaxX, const double aMaxY)
++{
++    const auto& m = aMap.m;
++    Polygon out = Cut(aRegion, m[0][0] - (aMinX * m[2][0]), m[0][1] - (aMinX * m[2][1]), m[0][2] - (aMinX * m[2][2]));
++    out = Cut(out, (aMaxX * m[2][0]) - m[0][0], (aMaxX * m[2][1]) - m[0][1], (aMaxX * m[2][2]) - m[0][2]);
++    out = Cut(out, m[1][0] - (aMinY * m[2][0]), m[1][1] - (aMinY * m[2][1]), m[1][2] - (aMinY * m[2][2]));
++    return Cut(out, (aMaxY * m[2][0]) - m[1][0], (aMaxY * m[2][1]) - m[1][1], (aMaxY * m[2][2]) - m[1][2]);
++}
++
++/// Four points inside the polygon to solve the map from, well spread so the solve
++/// is well conditioned: three corners pulled a quarter of the way to the centroid
++/// and the centroid itself (a triangle), or four of its corners pulled in (more
++/// corners: the ones dropped are those whose neighbours are closest together, which
++/// loses the least of the spread). Pulled in so each lies strictly inside, in front
++/// of the near plane and off the edges. False for an empty polygon.
++[[nodiscard]] inline bool SamplePoints(const Polygon& aPolygon, double (&aOut)[4][2])
++{
++    if (aPolygon.count < 3)
++    {
++        return false;
++    }
++    const std::array<double, 2> centroid = aPolygon.Centroid();
++    const auto pulled = [&centroid](const std::array<double, 2>& aCorner, double (&aTo)[2]) {
++        aTo[0] = aCorner[0] + ((centroid[0] - aCorner[0]) * 0.25);
++        aTo[1] = aCorner[1] + ((centroid[1] - aCorner[1]) * 0.25);
++    };
++    if (aPolygon.count == 3)
++    {
++        pulled(aPolygon.at[0], aOut[0]);
++        pulled(aPolygon.at[1], aOut[1]);
++        pulled(aPolygon.at[2], aOut[2]);
++        aOut[3][0] = centroid[0];
++        aOut[3][1] = centroid[1];
++        return true;
++    }
++    Polygon kept = aPolygon;
++    while (kept.count > 4)
++    {
++        int drop = 0;
++        double shortest = 1.0e300;
++        for (int i = 0; i < kept.count; ++i)
++        {
++            const auto& before = kept.at[static_cast<std::size_t>((i + kept.count - 1) % kept.count)];
++            const auto& after = kept.at[static_cast<std::size_t>((i + 1) % kept.count)];
++            const double gap = std::hypot(after[0] - before[0], after[1] - before[1]);
++            if (gap < shortest)
++            {
++                shortest = gap;
++                drop = i;
++            }
++        }
++        for (int i = drop; i + 1 < kept.count; ++i)
++        {
++            kept.at[static_cast<std::size_t>(i)] = kept.at[static_cast<std::size_t>(i + 1)];
++        }
++        --kept.count;
++    }
++    for (int i = 0; i < 4; ++i)
++    {
++        pulled(kept.at[static_cast<std::size_t>(i)], aOut[i]);
++    }
++    return true;
++}
++
++/// The map from four samples: their texture coordinates, where they landed (`aAt`,
++/// in any one 2-D space: the overlay's normalised viewport, or pixels), and their
++/// view depths in metres.
++///
++/// Every row of the map is affine in (u, v): the third is the view depth, a plane
++/// in texture space because the screen is flat, and the first two are the position
++/// times that depth, because a perspective camera divides by it (any offset of the
++/// camera's centre, a jitter included, is the depth times a constant, and affine
++/// too). So each row is the least-squares plane through four values, solved from
++/// the samples' spread in TEXTURE space -- well conditioned however small, distant
++/// or oblique the screen looks, which a solve from four positions on screen is not.
++///
++/// False, `aOut` untouched, when a value is not finite, a depth is not in front of
++/// the camera, the samples are (nearly) in a line in texture space, or a sample
++/// lies more than `aTolerance` from where the solved map puts it, or its depth
++/// more than a part in a thousand: positions that are not one flat screen seen
++/// through one perspective camera.
++[[nodiscard]] inline bool SolveMap(const double (&aUv)[4][2], const double (&aAt)[4][2], const double (&aDepth)[4],
++                                   const double aTolerance, Map& aOut)
++{
++    double deepest = 0.0;
++    for (int i = 0; i < 4; ++i)
++    {
++        if (!std::isfinite(aUv[i][0]) || !std::isfinite(aUv[i][1]) || !std::isfinite(aAt[i][0]) ||
++            !std::isfinite(aAt[i][1]) || !std::isfinite(aDepth[i]) || !(aDepth[i] > 0.0))
++        {
++            return false;
++        }
++        deepest = std::max(deepest, aDepth[i]);
++    }
++    // The normal equations of the fit: N = sum r r^T with r = (u, v, 1).
++    double n[3][3]{};
++    for (int i = 0; i < 4; ++i)
++    {
++        const double r[3] = {aUv[i][0], aUv[i][1], 1.0};
++        for (int row = 0; row < 3; ++row)
++        {
++            for (int column = 0; column < 3; ++column)
++            {
++                n[row][column] += r[row] * r[column];
++            }
++        }
++    }
++    const double det = (n[0][0] * ((n[1][1] * n[2][2]) - (n[1][2] * n[2][1]))) -
++                       (n[0][1] * ((n[1][0] * n[2][2]) - (n[1][2] * n[2][0]))) +
++                       (n[0][2] * ((n[1][0] * n[2][1]) - (n[1][1] * n[2][0])));
++    // Texture coordinates are 0..1; four samples spread over a polygon of any useful
++    // size give a determinant of 1e-6 or more. Below this they are in a line.
++    if (!std::isfinite(det) || !(std::abs(det) > 1.0e-12))
++    {
++        return false;
++    }
++    double inverse[3][3];
++    inverse[0][0] = ((n[1][1] * n[2][2]) - (n[1][2] * n[2][1])) / det;
++    inverse[0][1] = ((n[0][2] * n[2][1]) - (n[0][1] * n[2][2])) / det;
++    inverse[0][2] = ((n[0][1] * n[1][2]) - (n[0][2] * n[1][1])) / det;
++    inverse[1][0] = ((n[1][2] * n[2][0]) - (n[1][0] * n[2][2])) / det;
++    inverse[1][1] = ((n[0][0] * n[2][2]) - (n[0][2] * n[2][0])) / det;
++    inverse[1][2] = ((n[0][2] * n[1][0]) - (n[0][0] * n[1][2])) / det;
++    inverse[2][0] = ((n[1][0] * n[2][1]) - (n[1][1] * n[2][0])) / det;
++    inverse[2][1] = ((n[0][1] * n[2][0]) - (n[0][0] * n[2][1])) / det;
++    inverse[2][2] = ((n[0][0] * n[1][1]) - (n[0][1] * n[1][0])) / det;
++
++    Map map;
++    for (int row = 0; row < 3; ++row)
++    {
++        // The values this row of the map must take at the samples.
++        double rhs[3]{};
++        for (int i = 0; i < 4; ++i)
++        {
++            const double value = row == 2 ? aDepth[i] : aAt[i][row] * aDepth[i];
++            rhs[0] += aUv[i][0] * value;
++            rhs[1] += aUv[i][1] * value;
++            rhs[2] += value;
++        }
++        for (int column = 0; column < 3; ++column)
++        {
++            map.m[row][column] =
++                (inverse[column][0] * rhs[0]) + (inverse[column][1] * rhs[1]) + (inverse[column][2] * rhs[2]);
++        }
++    }
++    if (!map.Finite())
++    {
++        return false;
++    }
++    const double tolerance = std::isfinite(aTolerance) && aTolerance > 0.0 ? aTolerance : kDefaultPositionTolerance;
++    for (int i = 0; i < 4; ++i)
++    {
++        const double depth = map.Depth(aUv[i][0], aUv[i][1]);
++        if (!(depth > 0.0) || std::abs(depth - aDepth[i]) > 1.0e-3 * deepest)
++        {
++            return false;
++        }
++        const std::array<double, 2> at = map.Apply(aUv[i][0], aUv[i][1]);
++        if (!(std::hypot(at[0] - aAt[i][0], at[1] - aAt[i][1]) <= tolerance))
++        {
++            return false;
++        }
++    }
++    aOut = map;
++    return true;
++}
++
++/// The inverse of a map: (x, y, 1) -> (u, v, 1) / depth. Its third row is
++/// 1 / view depth at a position, an affine function of it, which is what the depth
++/// pass's `plane` register is. False for a singular map.
++[[nodiscard]] inline bool Invert(const Map& aMap, double (&aOut)[3][3])
++{
++    const auto& h = aMap.m;
++    const double det = (h[0][0] * ((h[1][1] * h[2][2]) - (h[1][2] * h[2][1]))) -
++                       (h[0][1] * ((h[1][0] * h[2][2]) - (h[1][2] * h[2][0]))) +
++                       (h[0][2] * ((h[1][0] * h[2][1]) - (h[1][1] * h[2][0])));
++    if (!std::isfinite(det) || std::abs(det) < 1.0e-300)
++    {
++        return false;
++    }
++    aOut[0][0] = ((h[1][1] * h[2][2]) - (h[1][2] * h[2][1])) / det;
++    aOut[0][1] = ((h[0][2] * h[2][1]) - (h[0][1] * h[2][2])) / det;
++    aOut[0][2] = ((h[0][1] * h[1][2]) - (h[0][2] * h[1][1])) / det;
++    aOut[1][0] = ((h[1][2] * h[2][0]) - (h[1][0] * h[2][2])) / det;
++    aOut[1][1] = ((h[0][0] * h[2][2]) - (h[0][2] * h[2][0])) / det;
++    aOut[1][2] = ((h[0][2] * h[1][0]) - (h[0][0] * h[1][2])) / det;
++    aOut[2][0] = ((h[1][0] * h[2][1]) - (h[1][1] * h[2][0])) / det;
++    aOut[2][1] = ((h[0][1] * h[2][0]) - (h[0][0] * h[2][1])) / det;
++    aOut[2][2] = ((h[0][0] * h[1][1]) - (h[0][1] * h[1][0])) / det;
++    for (const auto& row : aOut)
++    {
++        for (const double value : row)
++        {
++            if (!std::isfinite(value))
++            {
++                return false;
++            }
++        }
++    }
++    return true;
++}
++
++/// The same map with texture space re-expressed: u -> aScaleU u + aOffsetU and
++/// v -> aScaleV v + aOffsetV. How a map solved over the panel's own axes becomes one
++/// over the picture's, once it is known which way round the picture goes.
++[[nodiscard]] inline Map Substituted(const Map& aMap, const double aScaleU, const double aOffsetU,
++                                     const double aScaleV, const double aOffsetV)
++{
++    Map out;
++    for (int row = 0; row < 3; ++row)
++    {
++        const double* const r = aMap.m[row];
++        out.m[row][0] = r[0] * aScaleU;
++        out.m[row][1] = r[1] * aScaleV;
++        out.m[row][2] = r[2] + (r[0] * aOffsetU) + (r[1] * aOffsetV);
++    }
++    return out;
++}
++
++/// The direction the picture's axes run in on screen at (u, v): d x / d u and
++/// d y / d v of the map's positions. What `ScreenQuad::Orient` asks of the four
++/// projected corners, asked where the screen is actually in front of the camera.
++[[nodiscard]] inline std::array<double, 2> Slopes(const Map& aMap, const double aU, const double aV)
++{
++    const auto& m = aMap.m;
++    const double w = aMap.Depth(aU, aV);
++    const double x = (m[0][0] * aU) + (m[0][1] * aV) + m[0][2];
++    const double y = (m[1][0] * aU) + (m[1][1] * aV) + m[1][2];
++    return {((m[0][0] * w) - (x * m[2][0])) / (w * w), ((m[1][1] * w) - (y * m[2][1])) / (w * w)};
++}
++
++/// Bounds on the second derivatives of the map's positions over a polygon in front
++/// of the camera, as `ScreenTessellation::CurvatureBound` bounds them over the
++/// whole square: every numerator is affine in (u, v) and the depth too, so the
++/// largest numerator and the smallest depth are both at corners.
++///
++///     x_uu = -2 g Nu / w^3     x_vv = -2 h Nv / w^3     x_uv = (D w - 2 h Nu) / w^3
++///     Nu = D v + (a i - c g),  Nv = -D u + (b i - c h),  D = a h - b g
++///
++/// for a row (a b c) of positions over the depth row (g h i), and the same for y.
++struct Curvature
++{
++    double uu{};
++    double uv{};
++    double vv{};
++};
++
++[[nodiscard]] inline Curvature CurvatureOver(const Map& aMap, const Polygon& aPolygon)
++{
++    const auto& m = aMap.m;
++    const double g = m[2][0];
++    const double h = m[2][1];
++    const double i = m[2][2];
++    double nearest = 1.0e300;
++    double xuu = 0.0, xuv = 0.0, xvv = 0.0, yuu = 0.0, yuv = 0.0, yvv = 0.0;
++    for (int k = 0; k < aPolygon.count; ++k)
++    {
++        const double u = aPolygon.at[static_cast<std::size_t>(k)][0];
++        const double v = aPolygon.at[static_cast<std::size_t>(k)][1];
++        const double w = aMap.Depth(u, v);
++        nearest = std::min(nearest, w);
++        const auto numerators = [&](const double* const aRow, double& aUU, double& aUV, double& aVV) {
++            const double a = aRow[0];
++            const double b = aRow[1];
++            const double c = aRow[2];
++            const double d = (a * h) - (b * g);
++            const double nu = (d * v) + ((a * i) - (c * g));
++            const double nv = (-d * u) + ((b * i) - (c * h));
++            aUU = std::max(aUU, std::abs(2.0 * g * nu));
++            aVV = std::max(aVV, std::abs(2.0 * h * nv));
++            aUV = std::max(aUV, std::abs((d * w) - (2.0 * h * nu)));
++        };
++        numerators(m[0], xuu, xuv, xvv);
++        numerators(m[1], yuu, yuv, yvv);
++    }
++    if (!(nearest > 0.0))
++    {
++        return Curvature{1.0e300, 1.0e300, 1.0e300};
++    }
++    const double cube = nearest * nearest * nearest;
++    return Curvature{std::hypot(xuu, yuu) / cube, std::hypot(xuv, yuv) / cube, std::hypot(xvv, yvv) / cube};
++}
++} // namespace op77::WorldOverlay::ScreenClip
+diff --git a/client/src/webui/ScreenDepth.hpp b/client/src/webui/ScreenDepth.hpp
+index b8244e2..390d8a1 100644
+--- a/client/src/webui/ScreenDepth.hpp
++++ b/client/src/webui/ScreenDepth.hpp
+@@ -22,6 +22,7 @@
+ // here as C++ through the shim below, so the tests exercise the shader's own
+ // code. Pure and free of the engine, D3D and ImGui.
+ 
++#include "ScreenClip.hpp"
+ #include "ScreenTessellation.hpp"
+ 
+ #include <algorithm>
+@@ -171,6 +172,46 @@ enum class Status : std::uint8_t
+     return "unknown";
+ }
+ 
++/// The sizes and the depth model, as every builder below checks them.
++[[nodiscard]] inline Status CheckSizes(const DepthModel& aModel, const float aOverlaySize[2],
++                                       const float aDepthSize[2], const float aDepthTextureSize[2])
++{
++    for (int i = 0; i < 2; ++i)
++    {
++        if (!std::isfinite(aOverlaySize[i]) || !(aOverlaySize[i] > 0.0F) || !std::isfinite(aDepthSize[i]) ||
++            !(aDepthSize[i] >= 1.0F) || !std::isfinite(aDepthTextureSize[i]) ||
++            !(aDepthTextureSize[i] >= aDepthSize[i]))
++        {
++            return Status::BadSize;
++        }
++    }
++    if (!std::isfinite(aModel.a) || !std::isfinite(aModel.b) || aModel.b == 0.0)
++    {
++        return Status::BadDepth;
++    }
++    return Status::Ok;
++}
++
++/// Everything but the screen's own rows: the depth model, the tuning, the sampling.
++inline void FillShared(const DepthModel& aModel, const float aOverlaySize[2], const float aDepthSize[2],
++                       const float aDepthTextureSize[2], const Tuning& aTuning, const bool aUseDepth,
++                       Constants& aOut)
++{
++    aOut.depth[0] = static_cast<float>(aModel.a);
++    aOut.depth[1] = static_cast<float>(1.0 / aModel.b);
++    aOut.depth[2] = std::max(0.0F, aTuning.toleranceMetres);
++    aOut.depth[3] = std::max(0.0F, aTuning.relativeTolerance);
++    aOut.sampling[0] = aDepthSize[0] / aOverlaySize[0];
++    aOut.sampling[1] = aDepthSize[1] / aOverlaySize[1];
++    aOut.sampling[2] = aDepthTextureSize[0];
++    aOut.sampling[3] = aDepthTextureSize[1];
++    aOut.look[0] = std::max(1.0e-4F, aTuning.softnessMetres);
++    aOut.look[1] = std::clamp(aTuning.opacity, 0.0F, 1.0F);
++    aOut.look[2] = aUseDepth ? 1.0F : 0.0F;
++    aOut.extent[0] = aDepthSize[0];
++    aOut.extent[1] = aDepthSize[1];
++}
++
+ /// Fills one screen's constants. `aCorners` in texture order (top-left, top-right,
+ /// bottom-right, bottom-left) in overlay pixels; `aCentreDepth` the view depth of
+ /// the screen's centre; `aOverlaySize` the presented image's size in pixels;
+@@ -195,18 +236,9 @@ enum class Status : std::uint8_t
+     {
+         return Status::BadDepth;
+     }
+-    for (int i = 0; i < 2; ++i)
++    if (const Status sizes = CheckSizes(aModel, aOverlaySize, aDepthSize, aDepthTextureSize); sizes != Status::Ok)
+     {
+-        if (!std::isfinite(aOverlaySize[i]) || !(aOverlaySize[i] > 0.0F) || !std::isfinite(aDepthSize[i]) ||
+-            !(aDepthSize[i] >= 1.0F) || !std::isfinite(aDepthTextureSize[i]) ||
+-            !(aDepthTextureSize[i] >= aDepthSize[i]))
+-        {
+-            return Status::BadSize;
+-        }
+-    }
+-    if (!std::isfinite(aModel.a) || !std::isfinite(aModel.b) || aModel.b == 0.0)
+-    {
+-        return Status::BadDepth;
++        return sizes;
+     }
+ 
+     // H maps (u, v, 1) to (x w, y w, w): rows (a b c), (d e f), (g h 1).
+@@ -246,19 +278,42 @@ enum class Status : std::uint8_t
+         out.inverse2[column] = static_cast<float>(inverse[2][column]);
+         out.plane[column] = static_cast<float>(inverse[2][column] / cornerDepth);
+     }
+-    out.depth[0] = static_cast<float>(aModel.a);
+-    out.depth[1] = static_cast<float>(1.0 / aModel.b);
+-    out.depth[2] = std::max(0.0F, aTuning.toleranceMetres);
+-    out.depth[3] = std::max(0.0F, aTuning.relativeTolerance);
+-    out.sampling[0] = aDepthSize[0] / aOverlaySize[0];
+-    out.sampling[1] = aDepthSize[1] / aOverlaySize[1];
+-    out.sampling[2] = aDepthTextureSize[0];
+-    out.sampling[3] = aDepthTextureSize[1];
+-    out.look[0] = std::max(1.0e-4F, aTuning.softnessMetres);
+-    out.look[1] = std::clamp(aTuning.opacity, 0.0F, 1.0F);
+-    out.look[2] = aUseDepth ? 1.0F : 0.0F;
+-    out.extent[0] = aDepthSize[0];
+-    out.extent[1] = aDepthSize[1];
++    FillShared(aModel, aOverlaySize, aDepthSize, aDepthTextureSize, aTuning, aUseDepth, out);
++    aOut = out;
++    return Status::Ok;
++}
++
++/// The same constants for a screen with part of it behind the camera
++/// (ScreenClip.hpp). There are no four corners to start from -- some of them have
++/// no projection -- so the producer hands over the plane's own map instead: texture
++/// space to overlay pixels, its third row the view depth in metres. Its inverse is
++/// the shader's three rows as they stand, and that inverse's third row is already
++/// 1 / view depth, the `plane` register. The pass draws only the part of the screen
++/// in front of the camera (`MakePolygonGeometry`), where every one of these is
++/// finite and positive.
++[[nodiscard]] inline Status BuildFromMap(const ScreenClip::Map& aMap, const DepthModel& aModel,
++                                         const float aOverlaySize[2], const float aDepthSize[2],
++                                         const float aDepthTextureSize[2], const Tuning& aTuning,
++                                         const bool aUseDepth, Constants& aOut)
++{
++    double inverse[3][3];
++    if (!ScreenClip::Invert(aMap, inverse))
++    {
++        return Status::BadQuad;
++    }
++    if (const Status sizes = CheckSizes(aModel, aOverlaySize, aDepthSize, aDepthTextureSize); sizes != Status::Ok)
++    {
++        return sizes;
++    }
++    Constants out;
++    for (int column = 0; column < 3; ++column)
++    {
++        out.inverse0[column] = static_cast<float>(inverse[0][column]);
++        out.inverse1[column] = static_cast<float>(inverse[1][column]);
++        out.inverse2[column] = static_cast<float>(inverse[2][column]);
++        out.plane[column] = static_cast<float>(inverse[2][column]);
++    }
++    FillShared(aModel, aOverlaySize, aDepthSize, aDepthTextureSize, aTuning, aUseDepth, out);
+     aOut = out;
+     return Status::Ok;
+ }
+diff --git a/client/src/webui/ScreenDepthComposite.hlsl b/client/src/webui/ScreenDepthComposite.hlsl
+index 2ddc428..e911684 100644
+--- a/client/src/webui/ScreenDepthComposite.hlsl
++++ b/client/src/webui/ScreenDepthComposite.hlsl
+@@ -1,16 +1,18 @@
+ // Draws one television's picture into the overlay: in perspective, and behind
+ // whatever in the game is in front of it.
+ //
+-// One draw per screen, six vertices, no vertex buffer: the four corners come in
+-// the Geometry constants and SV_VertexID picks them. The pixel shader works out
+-// the exact texture coordinate of every pixel from the corners (so the triangle
++// One draw per screen, twelve vertices, no vertex buffer: the corners of the part
++// of the screen to shade come in the Geometry constants and SV_VertexID picks them,
++// as a fan of up to four triangles -- a whole screen's four corners, or the three to
++// five of a screen cut at the camera's near plane. The pixel shader works out the
++// exact texture coordinate of every pixel from the screen's own map (so the triangle
+ // interpolation does not matter), and compares the screen's depth there with the
+ // game's depth buffer. The arithmetic is ScreenDepth.hlsli, which the C++ tests
+ // run too.
+ //
+ // Bindings (root signature in ScreenDepthPass.cpp):
+ //   b0  SdConstants   one screen's constants (ScreenDepth.hpp, Build)
+-//   b1  SdGeometry    its four corners and the overlay's size
++//   b1  SdGeometry    the corners to shade and the overlay's size
+ //   t0  the screen's picture (CEF's premultiplied BGRA)
+ //   t1  the game's depth, as a single-channel float view
+ //   s0  linear, clamped (the picture)
+@@ -20,8 +22,9 @@
+ 
+ struct SdGeometry
+ {
+-    float4 corners01;  // x0 y0 x1 y1: top-left, top-right, in overlay pixels
+-    float4 corners23;  // x2 y2 x3 y3: bottom-right, bottom-left
++    float4 corners01;  // x0 y0 x1 y1, in overlay pixels: a whole screen's top-left, top-right
++    float4 corners23;  // x2 y2 x3 y3: its bottom-right, bottom-left
++    float4 corners45;  // x4 y4 x5 y5: a cut screen's fifth corner; unused ones repeat the last
+     float4 viewport;   // xy: overlay size in pixels, zw: 1 / size
+ };
+ 
+@@ -47,14 +50,19 @@ struct VsOut
+ 
+ VsOut VSMain(uint vertex : SV_VertexID)
+ {
+-    // Two triangles, (0 1 2) and (0 2 3), over the quad's corners in texture order.
+-    static const uint kCorner[6] = { 0, 1, 2, 0, 2, 3 };
+-    uint corner = kCorner[vertex % 6];
++    // The fan (0 1 2), (0 2 3), (0 3 4), (0 4 5). A whole screen is the first two,
++    // over its corners in texture order; the corners a polygon does not have repeat
++    // its last one, so the triangles past it have no area.
++    uint fan = (vertex / 3u) % 4u;
++    uint within = vertex % 3u;
++    uint corner = within == 0u ? 0u : fan + within;
+     float2 pixel;
+     if (corner == 0) pixel = g_geometry.corners01.xy;
+     else if (corner == 1) pixel = g_geometry.corners01.zw;
+     else if (corner == 2) pixel = g_geometry.corners23.xy;
+-    else pixel = g_geometry.corners23.zw;
++    else if (corner == 3) pixel = g_geometry.corners23.zw;
++    else if (corner == 4) pixel = g_geometry.corners45.xy;
++    else pixel = g_geometry.corners45.zw;
+ 
+     VsOut output;
+     float2 ndc = pixel * g_geometry.viewport.zw * float2(2.0f, -2.0f) + float2(-1.0f, 1.0f);
+@@ -66,7 +74,8 @@ float4 PSMain(VsOut input) : SV_Target
+ {
+     float2 pixel = input.position.xy;
+     float2 uv = SdScreenUv(g_screen, pixel);
+-    // The triangles cover exactly the quad; this only trims float rounding at an edge.
++    // The triangles cover exactly the screen (or the part of it in front of the
++    // camera); this only trims float rounding at an edge.
+     if (uv.x < 0.0f || uv.x > 1.0f || uv.y < 0.0f || uv.y > 1.0f)
+     {
+         discard;
+diff --git a/client/src/webui/ScreenDepthPass.cpp b/client/src/webui/ScreenDepthPass.cpp
+index df246aa..1de3850 100644
+--- a/client/src/webui/ScreenDepthPass.cpp
++++ b/client/src/webui/ScreenDepthPass.cpp
+@@ -317,7 +317,7 @@ void Pass::Draw(ID3D12GraphicsCommandList* aList, const Constants& aConstants, c
+     aList->SetGraphicsRootDescriptorTable(2, aPicture);
+     aList->SetGraphicsRootDescriptorTable(3, aDepth);
+     aList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+-    aList->DrawInstanced(6, 1, 0, 0);
++    aList->DrawInstanced(kGeometryVertices, 1, 0, 0);
+ }
+ } // namespace op77::WorldOverlay::ScreenDepth
+ #endif
+diff --git a/client/src/webui/ScreenDepthPass.hpp b/client/src/webui/ScreenDepthPass.hpp
+index efd73fb..20b8b27 100644
+--- a/client/src/webui/ScreenDepthPass.hpp
++++ b/client/src/webui/ScreenDepthPass.hpp
+@@ -4,7 +4,7 @@
+ //
+ // One pipeline (a root signature and a pipeline state) and one call per screen.
+ // Everything a screen needs travels as root constants -- its eight registers of
+-// ScreenDepth::Constants and three of Geometry -- so there is no upload heap, no
++// ScreenDepth::Constants and four of Geometry -- so there is no upload heap, no
+ // constant buffer to manage and nothing to fence. Two descriptor tables carry
+ // the screen's picture and the game's depth, which the caller already has in the
+ // shader-visible heap it has bound (the overlay's own ImGui heap).
+@@ -18,7 +18,9 @@
+ //     and `ImDrawCallback_ResetRenderState` puts ImGui's own pipeline back
+ //     afterwards.
+ //
+-// Compiled for Windows only. Checked against a CPU reference pixel for pixel on
++// The D3D half is compiled for Windows only; the geometry the vertex shader reads
++// is plain data, compiled everywhere so a test can draw its fan
++// (tests/ScreenClipTests.cpp). Checked against a CPU reference pixel for pixel on
+ // Wine's Direct3D 12 (vkd3d over Mesa's software Vulkan) in the open77-tv
+ // repository, where SceneDepth was also run end to end; not on a GPU driver.
+ 
+@@ -26,28 +28,45 @@
+ 
+ #include <string>
+ 
+-#if defined(_WIN32)
+-#include <d3d12.h>
+-#include <dxgiformat.h>
+-
+ namespace op77::WorldOverlay::ScreenDepth
+ {
+-/// The screen's corners and the overlay's size, as the vertex shader reads them.
++/// The part of the screen to shade and the overlay's size, as the vertex shader
++/// reads them: up to six corners in order round a convex polygon, drawn as the fan
++/// (0 1 2), (0 2 3), (0 3 4), (0 4 5). A whole screen is its four corners in
++/// texture order -- the fan's first two triangles, the quad drawn before -- and a
++/// screen cut at the camera's near plane (ScreenClip.hpp) is three to five. Corners
++/// past the last repeat it, so the triangles they would make have no area.
+ struct alignas(16) Geometry
+ {
+     float corners01[4]{}; // x0 y0 x1 y1
+     float corners23[4]{}; // x2 y2 x3 y3
++    float corners45[4]{}; // x4 y4 x5 y5
+     float viewport[4]{};  // width, height, 1 / width, 1 / height
+ };
+-static_assert(sizeof(Geometry) == 3 * 16, "the geometry is three registers");
++static_assert(sizeof(Geometry) == 4 * 16, "the geometry is four registers");
+ 
+-[[nodiscard]] inline Geometry MakeGeometry(const float (&aCorners)[8], const float aWidth, const float aHeight)
++/// The vertices one draw submits: four triangles of the fan.
++inline constexpr unsigned kGeometryVertices = 12;
++
++/// `aCorners`: `aCount` (1 to 6) x, y pairs in overlay pixels, in order round a
++/// convex polygon.
++[[nodiscard]] inline Geometry MakePolygonGeometry(const float* const aCorners, const int aCount, const float aWidth,
++                                                  const float aHeight)
+ {
+     Geometry g;
++    float points[12]{};
++    const int count = aCount < 1 ? 1 : (aCount > 6 ? 6 : aCount);
++    for (int i = 0; i < 6; ++i)
++    {
++        const int source = i < count ? i : count - 1;
++        points[i * 2] = aCorners[source * 2];
++        points[(i * 2) + 1] = aCorners[(source * 2) + 1];
++    }
+     for (int i = 0; i < 4; ++i)
+     {
+-        g.corners01[i] = aCorners[i];
+-        g.corners23[i] = aCorners[4 + i];
++        g.corners01[i] = points[i];
++        g.corners23[i] = points[4 + i];
++        g.corners45[i] = points[8 + i];
+     }
+     g.viewport[0] = aWidth;
+     g.viewport[1] = aHeight;
+@@ -56,6 +75,19 @@ static_assert(sizeof(Geometry) == 3 * 16, "the geometry is three registers");
+     return g;
+ }
+ 
++/// A whole screen: its four corners in texture order.
++[[nodiscard]] inline Geometry MakeGeometry(const float (&aCorners)[8], const float aWidth, const float aHeight)
++{
++    return MakePolygonGeometry(aCorners, 4, aWidth, aHeight);
++}
++} // namespace op77::WorldOverlay::ScreenDepth
++
++#if defined(_WIN32)
++#include <d3d12.h>
++#include <dxgiformat.h>
++
++namespace op77::WorldOverlay::ScreenDepth
++{
+ /// The format a shader reads a depth buffer through, for the buffer's own
+ /// (usually typeless) format. False for a format that is not a depth format.
+ [[nodiscard]] bool DepthShaderFormat(DXGI_FORMAT aResourceFormat, DXGI_FORMAT& aOut);
+diff --git a/client/src/webui/ScreenDepthShaderSource.hpp b/client/src/webui/ScreenDepthShaderSource.hpp
+index 76f31b0..d69bd71 100644
+--- a/client/src/webui/ScreenDepthShaderSource.hpp
++++ b/client/src/webui/ScreenDepthShaderSource.hpp
+@@ -10,16 +10,18 @@ namespace op77::WorldOverlay::ScreenDepth::ShaderSource
+ inline constexpr const char kComposite[] = R"rbhlsl(// Draws one television's picture into the overlay: in perspective, and behind
+ // whatever in the game is in front of it.
+ //
+-// One draw per screen, six vertices, no vertex buffer: the four corners come in
+-// the Geometry constants and SV_VertexID picks them. The pixel shader works out
+-// the exact texture coordinate of every pixel from the corners (so the triangle
++// One draw per screen, twelve vertices, no vertex buffer: the corners of the part
++// of the screen to shade come in the Geometry constants and SV_VertexID picks them,
++// as a fan of up to four triangles -- a whole screen's four corners, or the three to
++// five of a screen cut at the camera's near plane. The pixel shader works out the
++// exact texture coordinate of every pixel from the screen's own map (so the triangle
+ // interpolation does not matter), and compares the screen's depth there with the
+ // game's depth buffer. The arithmetic is ScreenDepth.hlsli, which the C++ tests
+ // run too.
+ //
+ // Bindings (root signature in ScreenDepthPass.cpp):
+ //   b0  SdConstants   one screen's constants (ScreenDepth.hpp, Build)
+-//   b1  SdGeometry    its four corners and the overlay's size
++//   b1  SdGeometry    the corners to shade and the overlay's size
+ //   t0  the screen's picture (CEF's premultiplied BGRA)
+ //   t1  the game's depth, as a single-channel float view
+ //   s0  linear, clamped (the picture)
+@@ -29,8 +31,9 @@ inline constexpr const char kComposite[] = R"rbhlsl(// Draws one television's pi
+ 
+ struct SdGeometry
+ {
+-    float4 corners01;  // x0 y0 x1 y1: top-left, top-right, in overlay pixels
+-    float4 corners23;  // x2 y2 x3 y3: bottom-right, bottom-left
++    float4 corners01;  // x0 y0 x1 y1, in overlay pixels: a whole screen's top-left, top-right
++    float4 corners23;  // x2 y2 x3 y3: its bottom-right, bottom-left
++    float4 corners45;  // x4 y4 x5 y5: a cut screen's fifth corner; unused ones repeat the last
+     float4 viewport;   // xy: overlay size in pixels, zw: 1 / size
+ };
+ 
+@@ -56,14 +59,19 @@ struct VsOut
+ 
+ VsOut VSMain(uint vertex : SV_VertexID)
+ {
+-    // Two triangles, (0 1 2) and (0 2 3), over the quad's corners in texture order.
+-    static const uint kCorner[6] = { 0, 1, 2, 0, 2, 3 };
+-    uint corner = kCorner[vertex % 6];
++    // The fan (0 1 2), (0 2 3), (0 3 4), (0 4 5). A whole screen is the first two,
++    // over its corners in texture order; the corners a polygon does not have repeat
++    // its last one, so the triangles past it have no area.
++    uint fan = (vertex / 3u) % 4u;
++    uint within = vertex % 3u;
++    uint corner = within == 0u ? 0u : fan + within;
+     float2 pixel;
+     if (corner == 0) pixel = g_geometry.corners01.xy;
+     else if (corner == 1) pixel = g_geometry.corners01.zw;
+     else if (corner == 2) pixel = g_geometry.corners23.xy;
+-    else pixel = g_geometry.corners23.zw;
++    else if (corner == 3) pixel = g_geometry.corners23.zw;
++    else if (corner == 4) pixel = g_geometry.corners45.xy;
++    else pixel = g_geometry.corners45.zw;
+ 
+     VsOut output;
+     float2 ndc = pixel * g_geometry.viewport.zw * float2(2.0f, -2.0f) + float2(-1.0f, 1.0f);
+@@ -75,7 +83,8 @@ float4 PSMain(VsOut input) : SV_Target
+ {
+     float2 pixel = input.position.xy;
+     float2 uv = SdScreenUv(g_screen, pixel);
+-    // The triangles cover exactly the quad; this only trims float rounding at an edge.
++    // The triangles cover exactly the screen (or the part of it in front of the
++    // camera); this only trims float rounding at an edge.
+     if (uv.x < 0.0f || uv.x > 1.0f || uv.y < 0.0f || uv.y > 1.0f)
+     {
+         discard;
+diff --git a/client/src/webui/ScreenMotion.hpp b/client/src/webui/ScreenMotion.hpp
+index 5a33078..0ff4b2e 100644
+--- a/client/src/webui/ScreenMotion.hpp
++++ b/client/src/webui/ScreenMotion.hpp
+@@ -95,11 +95,18 @@ inline constexpr double kMaximumHoldMilliseconds = 250.0;
+ /// published. A fraction of exactly 1 returns `aTo` unchanged, which is what
+ /// keeps a session that is not rate-mismatched drawing precisely what it drew
+ /// before this seam existed.
+-[[nodiscard]] inline std::array<float, 8> Blend(const std::array<float, 8>& aFrom,
+-                                                const std::array<float, 8>& aTo,
++///
++/// Eight floats for a screen's corners; nine for the map of a screen with part of
++/// it behind the camera (`ScreenClip.hpp`). Its rows -- position times depth, and
++/// depth -- are affine in texture space and so is their blend, whose depth is
++/// positive wherever both samples' were: between the two ticks, every texel moves
++/// from where the first put it towards where the second does.
++template <std::size_t N>
++[[nodiscard]] inline std::array<float, N> Blend(const std::array<float, N>& aFrom,
++                                                const std::array<float, N>& aTo,
+                                                 const float aFraction)
+ {
+-    std::array<float, 8> out = aTo;
++    std::array<float, N> out = aTo;
+     if (!(aFraction < 1.0F) || !(aFraction > 0.0F))
+     {
+         // 0 draws the previous sample, 1 the new one, and anything outside is
+diff --git a/client/src/webui/ScreenTessellation.hpp b/client/src/webui/ScreenTessellation.hpp
+index 15e765d..c87dc92 100644
+--- a/client/src/webui/ScreenTessellation.hpp
++++ b/client/src/webui/ScreenTessellation.hpp
+@@ -71,17 +71,17 @@
+ //     convex -- and the tests throw random quads at it to check that nothing
+ //     non-convex gets through. What four 2-D points cannot reveal is a quad wholly
+ //     BEHIND the eye: it projects to the point-reflection of one in front and looks
+-//     like any other. The producer rules that out before it projects (`depth <=
+-//     0.05` on the centre in MediaScreens.cpp; the centre is the mean of the
+-//     corners, so a centre in front puts at least one corner in front). What
+-//     `Camera::ProjectPoints` returns for a corner behind the eye is the engine's
+-//     own `gameCameraSystem::ProjectPoint`: the plain divide is refused here, and a
+-//     point the engine refuses is written as zero (`api/Camera.cpp`), which lands
+-//     the corner at the centre of the view -- a wrong but well-formed quad that
+-//     was drawn wrongly before this too. A refused quad is drawn exactly as before
+-//     (`PerspectiveImage::Add`). Clipping the quad against the near plane and drawing
+-//     the clipped polygon is the real answer for a very large screen seen from very
+-//     close, and is not attempted here.
++//     like any other. The producer rules both out before it projects: it measures
++//     every corner's view depth (MediaScreens.cpp), and only a screen with all
++//     four at least `ScreenClip::kNearDepth` in front of the eye reaches this as
++//     four corners. One with some of them nearer -- a very large screen seen from
++//     very close, the 150 ft cinema walked along -- is cut at that plane and drawn
++//     from its map instead (`ScreenClip.hpp`, `PerspectiveImage::AddClipped`):
++//     what `Camera::ProjectPoints` returns for a corner behind the eye is the
++//     engine's refusal written as zero (`api/Camera.cpp`), the centre of the view,
++//     and a quad over that was drawn on 2026-10-01 as rays of colour across the
++//     sky. A quad this refuses for any other reason is drawn exactly as before
++//     (`PerspectiveImage::Add`).
+ //   * A CAPPED GRID. `kMaximumCells` bounds the work. Past it the error is
+ //     reduced, not removed, and `Choice::errorBoundPixels` reports what is left.
+ //
+diff --git a/client/src/webui/WebUiService.cpp b/client/src/webui/WebUiService.cpp
+index e101e50..9067405 100644
+--- a/client/src/webui/WebUiService.cpp
++++ b/client/src/webui/WebUiService.cpp
+@@ -3062,8 +3062,17 @@ void Draw(const float aViewportWidth, const float aViewportHeight)
+     if (premultiplied) draw->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
+ }
+ 
+-bool DrawSurfaceQuad(const WebUI::SurfaceId aSurface, const float (&aCorners)[8],
+-                     const uint8_t aAlpha, const float aCentreDepth)
++namespace
++{
++/// The one way a page reaches a world screen, for both shapes of screen: the
++/// predicate `Draw` tests, the descriptor it picks, and the marks that keep that
++/// descriptor alive until the frame is submitted. `aInDepth(draw, picture,
++/// opacity)` queues the picture through SceneDepth and says whether it did;
++/// `aInPerspective(draw, texture, tint)` queues it without, in perspective, when it
++/// did not.
++template <class InDepth, class InPerspective>
++bool DrawSurfaceOnScreen(const WebUI::SurfaceId aSurface, const uint8_t aAlpha, InDepth&& aInDepth,
++                         InPerspective&& aInPerspective)
+ {
+     if (ImGui::GetCurrentContext() == nullptr || aAlpha == 0)
+     {
+@@ -3095,18 +3104,16 @@ bool DrawSurfaceQuad(const WebUI::SurfaceId aSurface, const float (&aCorners)[8]
+     surface->gpuUsePending.store(true, std::memory_order_release);
+     const uint32_t slot = surface->ringConsumer.Active() ? surface->ringConsumer.VisibleSlot()
+                                                          : GpuRingConsumer::kNoSlot;
++    const bool fromRing = slot != GpuRingConsumer::kNoSlot && surface->ring.Valid();
+     // In the game's depth: hidden wherever the game drew something in front of the
+     // set (a hand, a body, a door frame), and in exact perspective. SceneDepth says
+     // no until it has found the game's depth buffer, and the screen is then drawn
+     // the old way below; until it has measured what that buffer's values mean, it
+     // draws the picture in perspective with the test off.
+-    if (aCentreDepth > 0.0F)
+     {
+-        const bool fromRing = slot != GpuRingConsumer::kNoSlot && surface->ring.Valid();
+         const D3D12_GPU_DESCRIPTOR_HANDLE picture =
+             fromRing ? surface->ring.gpuDescriptors[slot] : surface->gpuDescriptor;
+-        if (WebUI::SceneDepth::DrawScreen(*draw, picture, aCorners, aCentreDepth,
+-                                          static_cast<float>(aAlpha) / 255.0F))
++        if (aInDepth(*draw, picture, static_cast<float>(aAlpha) / 255.0F))
+         {
+             if (fromRing) surface->drawnSlot = slot;
+             else surface->cpuUsePending = true;
+@@ -3119,26 +3126,56 @@ bool DrawSurfaceQuad(const WebUI::SurfaceId aSurface, const float (&aCorners)[8]
+     // In perspective, not as one image quad: ImGui interpolates a texture linearly
+     // in SCREEN space, so a single quad bends the picture along its diagonal on any
+     // set not seen square, and the bend moves as the player walks round it.
+-    // `PerspectiveImage::Add` draws a set seen square as exactly that one quad and
+-    // an oblique one as a grid of cells with exact vertices, each within a pixel of
++    // `PerspectiveImage` draws a set seen square as exactly that one quad and an
++    // oblique one as a grid of cells with exact vertices, each within a pixel of
+     // where the plane puts its texels. The cells share this frame's descriptor and
+     // tint, and merge into one draw command.
+-    if (slot != GpuRingConsumer::kNoSlot && surface->ring.Valid())
++    if (fromRing)
+     {
+         surface->drawnSlot = slot;
+-        static_cast<void>(::op77::WorldOverlay::PerspectiveImage::Add(
+-            *draw, static_cast<ImTextureID>(surface->ring.gpuDescriptors[slot].ptr), aCorners,
+-            tint));
++        aInPerspective(*draw, static_cast<ImTextureID>(surface->ring.gpuDescriptors[slot].ptr), tint);
+     }
+     else
+     {
+         surface->cpuUsePending = true;
+-        static_cast<void>(::op77::WorldOverlay::PerspectiveImage::Add(
+-            *draw, static_cast<ImTextureID>(surface->gpuDescriptor.ptr), aCorners, tint));
++        aInPerspective(*draw, static_cast<ImTextureID>(surface->gpuDescriptor.ptr), tint);
+     }
+     if (premultiplied) draw->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
+     return true;
+ }
++} // namespace
++
++bool DrawSurfaceQuad(const WebUI::SurfaceId aSurface, const float (&aCorners)[8],
++                     const uint8_t aAlpha, const float aCentreDepth)
++{
++    return DrawSurfaceOnScreen(
++        aSurface, aAlpha,
++        [&aCorners, aCentreDepth](ImDrawList& aDraw, const D3D12_GPU_DESCRIPTOR_HANDLE aPicture,
++                                  const float aOpacity) {
++            return aCentreDepth > 0.0F &&
++                   WebUI::SceneDepth::DrawScreen(aDraw, aPicture, aCorners, aCentreDepth, aOpacity);
++        },
++        [&aCorners](ImDrawList& aDraw, const ImTextureID aTexture, const ImU32 aTint) {
++            static_cast<void>(::op77::WorldOverlay::PerspectiveImage::Add(aDraw, aTexture, aCorners, aTint));
++        });
++}
++
++bool DrawSurfaceClipped(const WebUI::SurfaceId aSurface, const ::op77::WorldOverlay::ScreenClip::Map& aMap,
++                        const uint8_t aAlpha)
++{
++    if (!aMap.Finite())
++    {
++        return false;
++    }
++    return DrawSurfaceOnScreen(
++        aSurface, aAlpha,
++        [&aMap](ImDrawList& aDraw, const D3D12_GPU_DESCRIPTOR_HANDLE aPicture, const float aOpacity) {
++            return WebUI::SceneDepth::DrawClippedScreen(aDraw, aPicture, aMap, aOpacity);
++        },
++        [&aMap](ImDrawList& aDraw, const ImTextureID aTexture, const ImU32 aTint) {
++            static_cast<void>(::op77::WorldOverlay::PerspectiveImage::AddClipped(aDraw, aTexture, aMap, aTint));
++        });
++}
+ 
+ void OnPresent()
+ {
+diff --git a/client/src/webui/WebUiService.hpp b/client/src/webui/WebUiService.hpp
+index 6c7885c..3139e71 100644
+--- a/client/src/webui/WebUiService.hpp
++++ b/client/src/webui/WebUiService.hpp
+@@ -16,6 +16,11 @@
+ 
+ #include <op77/WebUI/Messages.hpp>
+ 
++namespace op77::WorldOverlay::ScreenClip
++{
++struct Map;
++} // namespace op77::WorldOverlay::ScreenClip
++
+ namespace op77::WebUiService
+ {
+ struct CreateOptions
+@@ -286,6 +291,15 @@ void Draw(float aViewportWidth, float aViewportHeight);
+ // through `webui.status`.
+ [[nodiscard]] bool DrawSurfaceQuad(WebUI::SurfaceId aSurface, const float (&aCorners)[8], uint8_t aAlpha,
+                                    float aCentreDepth = 0.0F);
++
++// The same for a screen with part of it behind the camera, which has no four
++// projected corners to give: `aMap` takes the picture's texture space to the
++// caller's pixels, with the view depth in metres as its third row
++// (`webui/ScreenClip.hpp`). Only the part in front of the camera's near plane is
++// drawn -- through SceneDepth when it can, otherwise as a grid cut to the view
++// (`PerspectiveImage::AddClipped`). Same surface predicate, same false.
++[[nodiscard]] bool DrawSurfaceClipped(WebUI::SurfaceId aSurface, const ::op77::WorldOverlay::ScreenClip::Map& aMap,
++                                      uint8_t aAlpha);
+ // Once per swapchain Present, whether or not the overlay drew: paces the host's
+ // Chromium compositor (BeginFrame) to the game's own frames.
+ void OnPresent();
+diff --git a/client/src/webui/WorldOverlay.cpp b/client/src/webui/WorldOverlay.cpp
+index 9854241..a51f5b5 100644
+--- a/client/src/webui/WorldOverlay.cpp
++++ b/client/src/webui/WorldOverlay.cpp
+@@ -1,5 +1,6 @@
+ #include "WorldOverlay.hpp"
+ 
++#include "ScreenClip.hpp"
+ #include "ScreenMotion.hpp"
+ 
+ #include <Windows.h>
+@@ -19,9 +20,10 @@
+ 
+ #include <imgui.h>
+ 
+-// For `DrawSurfaceQuad` only. The header deliberately does not carry this: the
+-// producers that include `WorldOverlay.hpp` are game-thread modules and must not
+-// acquire a d3d12.h dependency from an overlay declaration.
++// For `DrawSurfaceQuad` and `DrawSurfaceClipped` only. The header deliberately
++// does not carry this: the producers that include `WorldOverlay.hpp` are
++// game-thread modules and must not acquire a d3d12.h dependency from an overlay
++// declaration.
+ #include "WebUiService.hpp"
+ 
+ namespace op77::WorldOverlay
+@@ -130,6 +132,13 @@ struct HeldSample
+ {
+     std::array<float, 8> from{};
+     std::array<float, 8> to{};
++    // A screen with part of it behind the camera is held as its map instead
++    // (`Item::clipped`), and blended the same way. A sample of one kind is never
++    // blended with one of the other: the first frame after a screen's near end
++    // crosses the camera's plane, either way, draws the newest sample.
++    bool clipped{};
++    std::array<float, 9> fromMap{};
++    std::array<float, 9> toMap{};
+     // The view depth of the screen's centre that came with each set of corners:
+     // it moves with them, or the depth test would judge the picture's plane a
+     // tick out of step with the prop it is on (centimetres while walking).
+@@ -407,6 +416,24 @@ void DrawScreen(ImDrawList* const aDraw, const Item& aItem,
+     static_cast<void>(WebUiService::DrawSurfaceQuad(aItem.surface, corners, alpha, aDepth));
+ }
+ 
++/// A screen with part of it behind the camera (`Item::clipped`), from its map:
++/// the map is in the normalised viewport like everything else here, and becomes
++/// pixels by scaling its two position rows. Silent when the hand-off fails, for
++/// the reasons `DrawScreen` gives.
++void DrawClippedScreen(const Item& aItem, const std::array<float, 9>& aMap, const float aWidth,
++                       const float aHeight, const float aAlpha)
++{
++    if (aItem.surface == 0)
++    {
++        return;
++    }
++    const ScreenClip::Map map =
++        ScreenClip::Map::Load(aMap.data()).Scaled(static_cast<double>(aWidth), static_cast<double>(aHeight));
++    const auto alpha = static_cast<uint8_t>(
++        std::clamp(aAlpha * 255.0F, 0.0F, 255.0F));
++    static_cast<void>(WebUiService::DrawSurfaceClipped(aItem.surface, map, alpha));
++}
++
+ void DrawRing(ImDrawList* const aDraw, const Item& aItem, const float aWidth, const float aHeight,
+               const float aUnit, const float aAlpha)
+ {
+@@ -757,33 +784,44 @@ void Draw(const float aViewportWidth, const float aViewportHeight, const Layer a
+                     // corners are therefore remembered per surface, with the time
+                     // the tick published them, and placed at draw time.
+                     if (item.style == Style::Screen && item.surface != 0 &&
+-                        item.corners.size() == 8)
++                        (item.clipped || item.corners.size() == 8))
+                     {
+                         auto& held = s_screenMotion[item.surface];
+                         const auto age = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             frame.published - held.toAt);
+-                        const bool usable = held.toAt != Clock::time_point{} &&
+-                            ScreenMotion::UsableAsPrevious(
+-                                static_cast<double>(age.count()));
+                         // Not `usable` for a surface seen for the first time, or
+                         // one that was off screen longer than a held sample is
+                         // trusted: blending from where it used to be would sweep
+-                        // the picture across the world once.
+-                        held.from = usable ? held.to : std::array<float, 8>{};
+-                        for (size_t index = 0; index < 8; ++index)
++                        // the picture across the world once. Nor across a change
++                        // between corners and a map, which cannot be blended.
++                        const bool usable = held.toAt != Clock::time_point{} &&
++                            held.clipped == item.clipped &&
++                            ScreenMotion::UsableAsPrevious(
++                                static_cast<double>(age.count()));
++                        if (item.clipped)
++                        {
++                            held.fromMap = usable ? held.toMap : item.map;
++                            held.toMap = item.map;
++                        }
++                        else
+                         {
+-                            if (!usable)
++                            held.from = usable ? held.to : std::array<float, 8>{};
++                            for (size_t index = 0; index < 8; ++index)
++                            {
++                                if (!usable)
++                                {
++                                    held.from[index] = item.corners[index];
++                                }
++                            }
++                            for (size_t index = 0; index < 8; ++index)
+                             {
+-                                held.from[index] = item.corners[index];
++                                held.to[index] = item.corners[index];
+                             }
+                         }
++                        held.clipped = item.clipped;
+                         held.fromAt = usable ? held.toAt : frame.published;
+                         held.fromDepth = usable ? held.toDepth : item.depth;
+                         held.toDepth = item.depth;
+-                        for (size_t index = 0; index < 8; ++index)
+-                        {
+-                            held.to[index] = item.corners[index];
+-                        }
+                         held.toAt = frame.published;
+                     }
+                     s_visible.push_back(item);
+@@ -867,6 +905,26 @@ void Draw(const float aViewportWidth, const float aViewportHeight, const Layer a
+         {
+             continue;
+         }
++        if (item.style == Style::Screen && item.clipped)
++        {
++            // Part of it behind the camera: drawn from its map, blended between
++            // the two newest ticks exactly as the corners are below. `depth` is the
++            // middle of the part in front, so the gate above never drops it.
++            std::array<float, 9> placed = item.map;
++            if (const auto held = s_screenMotion.find(item.surface);
++                held != s_screenMotion.end() && held->second.clipped)
++            {
++                const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
++                    Clock::now() - held->second.fromAt);
++                const auto span = std::chrono::duration_cast<std::chrono::milliseconds>(
++                    held->second.toAt - held->second.fromAt);
++                const float fraction = ScreenMotion::Fraction(static_cast<double>(elapsed.count()),
++                                                              static_cast<double>(span.count()));
++                placed = ScreenMotion::Blend(held->second.fromMap, held->second.toMap, fraction);
++            }
++            DrawClippedScreen(item, placed, aViewportWidth, aViewportHeight, alpha);
++            continue;
++        }
+         if (item.style == Style::Screen)
+         {
+             // After the depth gate, before the cull. A screen is a quad, not a
+@@ -874,7 +932,11 @@ void Draw(const float aViewportWidth, const float aViewportHeight, const Layer a
+             // screen whose middle is just off the edge of the view, which is
+             // precisely when a player is looking around one. `depth` still
+             // applies, because a quad whose centre is behind the camera has no
+-            // drawable winding.
++            // drawable winding -- such a screen arrives `clipped` instead, above.
++            if (item.corners.size() != 8)
++            {
++                continue;
++            }
+             std::array<float, 8> placed{};
+             placed.fill(0.0F);
+             for (size_t index = 0; index < 8; ++index)
+@@ -883,7 +945,7 @@ void Draw(const float aViewportWidth, const float aViewportHeight, const Layer a
+             }
+             float depth = item.depth;
+             if (const auto held = s_screenMotion.find(item.surface);
+-                held != s_screenMotion.end())
++                held != s_screenMotion.end() && !held->second.clipped)
+             {
+                 const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                     Clock::now() - held->second.fromAt);
+diff --git a/client/src/webui/WorldOverlay.hpp b/client/src/webui/WorldOverlay.hpp
+index f6a83c1..2ea00b4 100644
+--- a/client/src/webui/WorldOverlay.hpp
++++ b/client/src/webui/WorldOverlay.hpp
+@@ -83,6 +83,7 @@
+ // What belongs here is the short list of overlays whose whole job is to sit on a
+ // world point: nameplates, the interaction prompt, and ground rings.
+ 
++#include <array>
+ #include <cstdint>
+ #include <string>
+ #include <string_view>
+@@ -250,6 +251,15 @@ struct Item
+     /// corners is a rectangle with a missing vertex, which is a bug in the
+     /// producer rather than something to draw a degenerate triangle for.
+     std::vector<float> corners;
++    /// `Screen` only: set when part of the screen is behind the camera, so that
++    /// some of its corners have no projection and `corners` is not used. The
++    /// screen is then described by `map` instead: its plane's own map from the
++    /// picture's texture space to the same normalised viewport, row by row, with
++    /// the view depth in metres as its third row (`webui/ScreenClip.hpp`), and only
++    /// the part of it in front of the camera's near plane is drawn. `depth` is the
++    /// view depth of the middle of that part.
++    bool clipped{};
++    std::array<float, 9> map{};
+     /// `Ring` only: mean distance from the camera to the ring's own vertices,
+     /// which is NOT `distance`. `distance` measures the centre, and a player
+     /// standing inside a 50 m boundary ring is nearly at that centre -- so the
+diff --git a/client/tests/PerspectiveImageTests.cpp b/client/tests/PerspectiveImageTests.cpp
+index 755dcd1..1bf86dd 100644
+--- a/client/tests/PerspectiveImageTests.cpp
++++ b/client/tests/PerspectiveImageTests.cpp
+@@ -13,6 +13,11 @@
+ // ImGui's vertices, since they carry no w. For every sample of every triangle,
+ // the texel the GPU would fetch there is sent through the pinhole to where the
+ // plane really puts it, and the distance between the two is the error.
++//
++// `AddClipped`, for a screen with part of it behind the camera, is held to the
++// same: within the tolerance everywhere it draws, nothing drawn of the part behind
++// the near plane or outside the view, and every pixel of the part in front that is
++// in view covered.
+ 
+ #include "webui/PerspectiveImage.hpp"
+ 
+@@ -24,6 +29,7 @@
+ #include <iostream>
+ #include <map>
+ #include <utility>
++#include <vector>
+ 
+ #define CHECK(x)                                                                         \
+     do                                                                                   \
+@@ -39,6 +45,7 @@ namespace
+ {
+ namespace PI = op77::WorldOverlay::PerspectiveImage;
+ namespace Tess = op77::WorldOverlay::ScreenTessellation;
++namespace Clip = op77::WorldOverlay::ScreenClip;
+ 
+ // M_PI is POSIX, not C++; MSVC only has it behind _USE_MATH_DEFINES.
+ constexpr double kPi = 3.14159265358979323846;
+@@ -202,6 +209,187 @@ double OneQuadError(const Rectangle& aRectangle)
+     return WorstTexelError(frame.list, aRectangle);
+ }
+ 
++double Focal()
++{
++    return (static_cast<double>(kHeight) * 0.5) / std::tan(30.0 * kPi / 180.0);
++}
++
++/// The map `AddClipped` is handed for a rectangle, exact: texture space to pixels
++/// with the view depth (z) as its third row. Each row is affine in (u, v) because
++/// the pinhole divides by z.
++Clip::Map MapOf(const Rectangle& aRectangle)
++{
++    // At(u, v) = (centre - right + up) + u (2 right) + v (-2 up).
++    const Vec3 origin = Plus(aRectangle.centre, Plus(Times(aRectangle.right, -1.0), aRectangle.up));
++    const Vec3 columns[3] = {Times(aRectangle.right, 2.0), Times(aRectangle.up, -2.0), origin};
++    Clip::Map map;
++    for (int column = 0; column < 3; ++column)
++    {
++        const Vec3& c = columns[column];
++        map.m[0][column] = (static_cast<double>(kWidth) * 0.5 * c.z) + (Focal() * c.x);
++        map.m[1][column] = (static_cast<double>(kHeight) * 0.5 * c.z) - (Focal() * c.y);
++        map.m[2][column] = c.z;
++    }
++    return map;
++}
++
++/// The view depth of texel (u, v).
++double DepthAt(const Rectangle& aRectangle, const double aU, const double aV)
++{
++    return aRectangle.At(aU, aV).z;
++}
++
++/// Which pixels the picture's triangles cover, every one of them rasterised at its
++/// pixel centres.
++std::vector<char> Coverage(const ImDrawList& aList)
++{
++    const int width = static_cast<int>(kWidth);
++    const int height = static_cast<int>(kHeight);
++    std::vector<char> covered(static_cast<std::size_t>(width) * static_cast<std::size_t>(height), 0);
++    ForEachPictureTriangle(aList, [&](const ImDrawVert& aA, const ImDrawVert& aB, const ImDrawVert& aC) {
++        const double area = ((static_cast<double>(aB.pos.x) - aA.pos.x) * (static_cast<double>(aC.pos.y) - aA.pos.y)) -
++                            ((static_cast<double>(aC.pos.x) - aA.pos.x) * (static_cast<double>(aB.pos.y) - aA.pos.y));
++        if (area == 0.0)
++        {
++            return;
++        }
++        const int x0 = std::max(0, static_cast<int>(std::floor(std::min({aA.pos.x, aB.pos.x, aC.pos.x}))));
++        const int x1 = std::min(width - 1, static_cast<int>(std::ceil(std::max({aA.pos.x, aB.pos.x, aC.pos.x}))));
++        const int y0 = std::max(0, static_cast<int>(std::floor(std::min({aA.pos.y, aB.pos.y, aC.pos.y}))));
++        const int y1 = std::min(height - 1, static_cast<int>(std::ceil(std::max({aA.pos.y, aB.pos.y, aC.pos.y}))));
++        const auto edge = [](const ImDrawVert& aP, const ImDrawVert& aQ, const double aX, const double aY) {
++            return ((static_cast<double>(aQ.pos.x) - aP.pos.x) * (aY - aP.pos.y)) -
++                   ((aX - aP.pos.x) * (static_cast<double>(aQ.pos.y) - aP.pos.y));
++        };
++        for (int y = y0; y <= y1; ++y)
++        {
++            for (int x = x0; x <= x1; ++x)
++            {
++                const double px = x + 0.5;
++                const double py = y + 0.5;
++                const double a = edge(aB, aC, px, py) / area;
++                const double b = edge(aC, aA, px, py) / area;
++                const double c = edge(aA, aB, px, py) / area;
++                if (a >= -1.0e-9 && b >= -1.0e-9 && c >= -1.0e-9)
++                {
++                    covered[(static_cast<std::size_t>(y) * static_cast<std::size_t>(width)) + static_cast<std::size_t>(x)] = 1;
++                }
++            }
++        }
++    });
++    return covered;
++}
++
++/// Whether the ray through a pixel meets the rectangle past the near plane.
++bool SeenAt(const Rectangle& aRectangle, const double aX, const double aY)
++{
++    // The ray (dx, dy, 1) has depth t at parameter t; solve centre + right s + up r
++    // = ray t for s, r in -1..1.
++    const double dx = (aX - (static_cast<double>(kWidth) * 0.5)) / Focal();
++    const double dy = -(aY - (static_cast<double>(kHeight) * 0.5)) / Focal();
++    const Vec3& c = aRectangle.centre;
++    const Vec3& r = aRectangle.right;
++    const Vec3& u = aRectangle.up;
++    // [r u -d] [s q t]^T = -c, d = (dx, dy, 1).
++    const double m[3][3] = {{r.x, u.x, -dx}, {r.y, u.y, -dy}, {r.z, u.z, -1.0}};
++    const double rhs[3] = {-c.x, -c.y, -c.z};
++    const double det = (m[0][0] * ((m[1][1] * m[2][2]) - (m[1][2] * m[2][1]))) -
++                       (m[0][1] * ((m[1][0] * m[2][2]) - (m[1][2] * m[2][0]))) +
++                       (m[0][2] * ((m[1][0] * m[2][1]) - (m[1][1] * m[2][0])));
++    if (std::abs(det) < 1.0e-12)
++    {
++        return false;
++    }
++    const auto solve = [&](const int aColumn) {
++        double n[3][3];
++        for (int i = 0; i < 3; ++i)
++        {
++            for (int j = 0; j < 3; ++j)
++            {
++                n[i][j] = j == aColumn ? rhs[i] : m[i][j];
++            }
++        }
++        return ((n[0][0] * ((n[1][1] * n[2][2]) - (n[1][2] * n[2][1]))) -
++                (n[0][1] * ((n[1][0] * n[2][2]) - (n[1][2] * n[2][0]))) +
++                (n[0][2] * ((n[1][0] * n[2][1]) - (n[1][1] * n[2][0])))) /
++               det;
++    };
++    const double s = solve(0);
++    const double q = solve(1);
++    const double t = solve(2);
++    return t > Clip::kNearDepth && s >= -1.0 && s <= 1.0 && q >= -1.0 && q <= 1.0;
++}
++
++/// Everything `AddClipped` must hold to for one rectangle: what it reports, where
++/// its vertices are, how far any texel is from where the plane puts it, and that
++/// the part in front of the near plane and in view is covered.
++double CheckClipped(const Rectangle& aRectangle, const char* const aName)
++{
++    const Clip::Map map = MapOf(aRectangle);
++    Frame frame;
++    const int pieces = PI::AddClipped(frame.list, kPicture, map, kTint);
++    CHECK(pieces >= 1 && pieces <= PI::kMaximumClippedPieces);
++    CHECK(frame.list.VtxBuffer.Size > 0);
++    const double margin = PI::kViewMarginPixels + 0.01;
++    for (const ImDrawVert& vertex : frame.list.VtxBuffer)
++    {
++        CHECK(std::isfinite(vertex.pos.x) && std::isfinite(vertex.pos.y));
++        CHECK(vertex.pos.x >= -margin && vertex.pos.x <= kWidth + margin);
++        CHECK(vertex.pos.y >= -margin && vertex.pos.y <= kHeight + margin);
++        CHECK(vertex.uv.x >= 0.0F && vertex.uv.x <= 1.0F && vertex.uv.y >= 0.0F && vertex.uv.y <= 1.0F);
++        CHECK(DepthAt(aRectangle, vertex.uv.x, vertex.uv.y) >= Clip::kNearDepth - 1.0e-4);
++        CHECK(vertex.col == kTint);
++    }
++    // One draw command, however many pieces.
++    int commands = 0;
++    for (const ImDrawCmd& command : frame.list.CmdBuffer)
++    {
++        if (command.ElemCount > 0)
++        {
++            ++commands;
++            CHECK(command.TextureId == kPicture);
++        }
++    }
++    CHECK(commands == 1);
++    // Watertight: a texel drawn by two cells is at the same pixel in both.
++    std::map<std::pair<float, float>, std::pair<float, float>> placed;
++    for (const ImDrawVert& vertex : frame.list.VtxBuffer)
++    {
++        const auto [found, inserted] =
++            placed.emplace(std::make_pair(vertex.uv.x, vertex.uv.y), std::make_pair(vertex.pos.x, vertex.pos.y));
++        CHECK(inserted || found->second == std::make_pair(vertex.pos.x, vertex.pos.y));
++    }
++    const double error = WorstTexelError(frame.list, aRectangle);
++    // Covered: every pixel whose ray meets the picture past the near plane, but for
++    // the pixels along the picture's own edge, where the rasteriser decides.
++    const std::vector<char> covered = Coverage(frame.list);
++    int seen = 0;
++    for (int y = 1; y + 1 < static_cast<int>(kHeight); y += 2)
++    {
++        for (int x = 1; x + 1 < static_cast<int>(kWidth); x += 2)
++        {
++            const double px = x + 0.5;
++            const double py = y + 0.5;
++            const bool here = SeenAt(aRectangle, px, py);
++            if (!here)
++            {
++                continue;
++            }
++            if (!SeenAt(aRectangle, px - 1.5, py) || !SeenAt(aRectangle, px + 1.5, py) ||
++                !SeenAt(aRectangle, px, py - 1.5) || !SeenAt(aRectangle, px, py + 1.5))
++            {
++                continue;
++            }
++            ++seen;
++            CHECK(covered[(static_cast<std::size_t>(y) * static_cast<std::size_t>(kWidth)) + static_cast<std::size_t>(x)] == 1);
++        }
++    }
++    CHECK(seen > 1000);
++    std::cout << aName << ": " << pieces << " pieces, " << frame.list.VtxBuffer.Size
++              << " vertices, worst texel " << error << " px\n";
++    return error;
++}
++
+ /// The bound `ScreenTessellation` reports for these corners.
+ Tess::Choice ChoiceFor(const float (&aCorners)[8])
+ {
+@@ -349,6 +537,47 @@ int main()
+         }
+     }
+ 
++    // The 150 ft cinema walked along: a wall 3 m to the left, from 5 m behind the
++    // player to 40 m ahead. Its near end is behind the camera, so it has no four
++    // corners to draw from; the part in front and in view is drawn from its map,
++    // every texel where the plane puts it.
++    {
++        const Rectangle cinema{{-3.0, 4.0, 17.86}, {0.0, 0.0, 22.86}, {0.0, 12.86, 0.0}};
++        CHECK(DepthAt(cinema, 0.0, 0.0) < 0.0 && DepthAt(cinema, 1.0, 0.0) > 0.0);
++        const double error = CheckClipped(cinema, "cinema walked along, near end behind");
++        CHECK(error <= static_cast<double>(Tess::kDefaultTolerancePixels) + 0.05);
++    }
++
++    // A television right beside the camera, turned so that one corner is behind it.
++    {
++        const Rectangle beside = Turned(1.16, 0.66, 0.35, 70.0, 0.2);
++        CHECK(DepthAt(beside, 0.0, 0.0) < Clip::kNearDepth || DepthAt(beside, 1.0, 0.0) < Clip::kNearDepth);
++        const double error = CheckClipped(beside, "television turned beside the camera");
++        CHECK(error <= static_cast<double>(Tess::kDefaultTolerancePixels) + 0.05);
++    }
++
++    // Wholly in front: the same quality as `Add`.
++    {
++        const Rectangle tv = Turned(1.16, 0.66, 1.5, 50.0);
++        const double error = CheckClipped(tv, "television at 50 degrees, through AddClipped");
++        CHECK(error <= static_cast<double>(Tess::kDefaultTolerancePixels) + 0.01);
++    }
++
++    // Wholly behind the camera, or wholly out of view: nothing is queued.
++    {
++        const Rectangle behind{{0.0, 0.0, -3.0}, {0.6, 0.0, 0.0}, {0.0, 0.3, 0.0}};
++        Frame frame;
++        CHECK(PI::AddClipped(frame.list, kPicture, MapOf(behind), kTint) == 0);
++        CHECK(frame.list.VtxBuffer.Size == 0);
++        const Rectangle aside{{40.0, 0.0, 3.0}, {0.6, 0.0, 0.0}, {0.0, 0.3, 0.0}};
++        CHECK(PI::AddClipped(frame.list, kPicture, MapOf(aside), kTint) == 0);
++        CHECK(frame.list.VtxBuffer.Size == 0);
++        Clip::Map broken = MapOf(aside);
++        broken.m[0][1] = std::nan("");
++        CHECK(PI::AddClipped(frame.list, kPicture, broken, kTint) == 0);
++        CHECK(frame.list.VtxBuffer.Size == 0);
++    }
++
+     // Not a number is refused the same way, rather than spread over a grid.
+     {
+         const float broken[8] = {std::nanf(""), 100.0F, 900.0F, 100.0F,
+diff --git a/client/tests/ScreenClipTests.cpp b/client/tests/ScreenClipTests.cpp
+new file mode 100644
+index 0000000..0d3bf63
+--- /dev/null
++++ b/client/tests/ScreenClipTests.cpp
+@@ -0,0 +1,820 @@
++// Pins the arithmetic that draws a television with part of it behind the camera.
++//
++// The failure this exists for was reported on 2026-10-01 from the 150 ft cinema:
++// walking along the screen, with its near end behind the camera, the picture
++// turned into rays of colour bars shooting across the sky from the middle of the
++// view, and half of it went missing. A corner behind the eye has no projection --
++// the engine writes it as the centre of the view -- and the quad over those four
++// corners was drawn anyway. The fix (webui/ScreenClip.hpp) cuts the screen at a
++// plane just in front of the camera and draws the part in front from the plane's
++// own map, solved from points the engine CAN project.
++//
++// The ground truth here shares nothing with the code under test: a pinhole camera
++// and a flat rectangle, ray-traced in double precision. Pinned:
++//   * the part in front of the near plane is exactly the polygon the cut makes, for
++//     one, two and three corners behind the eye;
++//   * the map solved from four projected points puts every texel of that part where
++//     the pinhole does, and carries its view depth -- with the engine's float32
++//     arithmetic a long way from the world's origin too;
++//   * four points that are not one flat screen seen through one camera (one of them
++//     refused by the engine) are refused, not drawn;
++//   * the depth pass's constants built from the map (ScreenDepth.hpp, BuildFromMap)
++//     give every pixel the right texture coordinate and depth, through the shader's
++//     own arithmetic (ScreenDepth.hlsli);
++//   * the depth pass's fan over the polygon (ScreenDepthPass.hpp) shades exactly the
++//     part in front, and a whole screen exactly as before;
++//   * the picture is the right way round: the orientation and texture space the
++//     producer derives from the map agree with `ScreenQuad::Orient` and
++//     `CornerForTexture` on every screen they can both see;
++//   * the curvature bound the fallback tessellation relies on is a bound;
++//   * cut points two neighbouring cells share are the same to the bit.
++
++#include "api/ScreenQuad.hpp"
++#include "webui/ScreenClip.hpp"
++#include "webui/ScreenDepth.hpp"
++#include "webui/ScreenDepthPass.hpp"
++#include "webui/ScreenMotion.hpp"
++
++#include <algorithm>
++#include <array>
++#include <cmath>
++#include <cstdlib>
++#include <iostream>
++#include <vector>
++
++#define CHECK(x)                                                                         \
++    do                                                                                   \
++    {                                                                                    \
++        if (!(x))                                                                        \
++        {                                                                                \
++            std::cerr << "Failed line " << __LINE__ << ": " #x "\n";                     \
++            std::exit(1);                                                                \
++        }                                                                                \
++    } while (0)
++
++namespace
++{
++namespace Clip = op77::WorldOverlay::ScreenClip;
++namespace SD = op77::WorldOverlay::ScreenDepth;
++namespace Quad = op77::Api::ScreenQuad;
++
++constexpr double kPi = 3.14159265358979323846;
++
++struct Vec3
++{
++    double x{}, y{}, z{};
++};
++Vec3 operator+(const Vec3 a, const Vec3 b) { return {a.x + b.x, a.y + b.y, a.z + b.z}; }
++Vec3 operator-(const Vec3 a, const Vec3 b) { return {a.x - b.x, a.y - b.y, a.z - b.z}; }
++Vec3 operator*(const Vec3 a, const double s) { return {a.x * s, a.y * s, a.z * s}; }
++double Dot(const Vec3 a, const Vec3 b) { return (a.x * b.x) + (a.y * b.y) + (a.z * b.z); }
++Vec3 Cross(const Vec3 a, const Vec3 b)
++{
++    return {(a.y * b.z) - (a.z * b.y), (a.z * b.x) - (a.x * b.z), (a.x * b.y) - (a.y * b.x)};
++}
++
++/// A pinhole at the origin looking down +z, y up: 60 degrees of vertical field
++/// onto `width` x `height` pixels, y down. Positions are given either in pixels or
++/// in the overlay's normalised viewport (0..1 from the top-left), the space the
++/// producer publishes in.
++struct Camera
++{
++    double width = 1280.0;
++    double height = 720.0;
++    double focal = (720.0 / 2.0) / std::tan(30.0 * kPi / 180.0);
++
++    [[nodiscard]] std::array<double, 2> Pixel(const Vec3 p) const
++    {
++        return {(width / 2.0) + (focal * p.x / p.z), (height / 2.0) - (focal * p.y / p.z)};
++    }
++    [[nodiscard]] std::array<double, 2> Normalised(const Vec3 p) const
++    {
++        const auto at = Pixel(p);
++        return {at[0] / width, at[1] / height};
++    }
++    /// The ray through a pixel, scaled so its parameter is view depth.
++    [[nodiscard]] Vec3 Ray(const double aX, const double aY) const
++    {
++        return {(aX - (width / 2.0)) / focal, -(aY - (height / 2.0)) / focal, 1.0};
++    }
++    /// The exact map of a parallelogram `aOrigin + u aU + v aV`, in pixels: each row
++    /// is affine because the projection divides by the depth, which is z.
++    [[nodiscard]] Clip::Map ExactMap(const Vec3 aOrigin, const Vec3 aU, const Vec3 aV) const
++    {
++        Clip::Map map;
++        const Vec3 columns[3] = {aU, aV, aOrigin};
++        for (int column = 0; column < 3; ++column)
++        {
++            const Vec3 c = columns[column];
++            map.m[0][column] = ((width / 2.0) * c.z) + (focal * c.x);
++            map.m[1][column] = ((height / 2.0) * c.z) - (focal * c.y);
++            map.m[2][column] = c.z;
++        }
++        return map;
++    }
++};
++
++/// A screen: its corner at texture (0,0) and its two edges, u along `across` and
++/// v (DOWN the picture) along `down`.
++struct Screen
++{
++    Vec3 origin;
++    Vec3 across;
++    Vec3 down;
++
++    [[nodiscard]] Vec3 At(const double aU, const double aV) const { return origin + (across * aU) + (down * aV); }
++    [[nodiscard]] double Depth(const double aU, const double aV) const { return At(aU, aV).z; }
++
++    /// Where a ray from the eye meets it: t (= view depth, the ray's z being 1)
++    /// and (u, v); t < 0 when it does not, or not inside the picture.
++    [[nodiscard]] double Hit(const Vec3 aDir, double& aU, double& aV) const
++    {
++        const Vec3 n = Cross(across, down);
++        const double denom = Dot(aDir, n);
++        if (std::abs(denom) < 1.0e-15)
++        {
++            return -1.0;
++        }
++        const double t = Dot(origin, n) / denom;
++        if (!(t > 0.0))
++        {
++            return -1.0;
++        }
++        // Solve p - origin = u across + v down in the plane.
++        const Vec3 d = (aDir * t) - origin;
++        const double aa = Dot(across, across);
++        const double ab = Dot(across, down);
++        const double bb = Dot(down, down);
++        const double da = Dot(d, across);
++        const double db = Dot(d, down);
++        const double det = (aa * bb) - (ab * ab);
++        aU = ((da * bb) - (db * ab)) / det;
++        aV = ((db * aa) - (da * ab)) / det;
++        if (aU < 0.0 || aU > 1.0 || aV < 0.0 || aV > 1.0)
++        {
++            return -1.0;
++        }
++        return t;
++    }
++};
++
++/// A `width` x `height` m screen centred at `centre`, its picture's left-to-right
++/// along `right` and its top-to-bottom along minus `up`.
++Screen Make(const Vec3 aCentre, const Vec3 aRight, const Vec3 aUp, const double aWidth, const double aHeight)
++{
++    const Vec3 across = aRight * aWidth;
++    const Vec3 down = aUp * (-aHeight);
++    return Screen{aCentre - (across * 0.5) - (down * 0.5), across, down};
++}
++
++Vec3 Turn(const Vec3 aVector, const double aYawDegrees)
++{
++    const double yaw = aYawDegrees * kPi / 180.0;
++    return {(aVector.x * std::cos(yaw)) + (aVector.z * std::sin(yaw)), aVector.y,
++            (-aVector.x * std::sin(yaw)) + (aVector.z * std::cos(yaw))};
++}
++
++bool InsidePolygon(const Clip::Polygon& aPolygon, const double aU, const double aV, const double aSlack)
++{
++    // Convex, either winding: inside when on the same side of every edge.
++    int positive = 0;
++    int negative = 0;
++    for (int i = 0; i < aPolygon.count; ++i)
++    {
++        const auto& p = aPolygon.at[static_cast<std::size_t>(i)];
++        const auto& q = aPolygon.at[static_cast<std::size_t>((i + 1) % aPolygon.count)];
++        const double ex = q[0] - p[0];
++        const double ey = q[1] - p[1];
++        const double length = std::hypot(ex, ey);
++        const double side = ((ex * (aV - p[1])) - (ey * (aU - p[0]))) / std::max(length, 1.0e-300);
++        if (side > aSlack)
++        {
++            ++positive;
++        }
++        else if (side < -aSlack)
++        {
++            ++negative;
++        }
++    }
++    return positive == 0 || negative == 0;
++}
++
++/// What the producer does for a screen partly behind the eye, in normalised
++/// viewport units: the region in texture space, four points in it projected, their
++/// depths, and the map solved from them.
++bool SolveFor(const Screen& aScreen, const Camera& aCamera, Clip::Polygon& aRegion, Clip::Map& aMap)
++{
++    aRegion = Clip::VisibleRegion(aScreen.Depth(0.0, 0.0), aScreen.Depth(1.0, 0.0), aScreen.Depth(0.0, 1.0));
++    double samples[4][2];
++    if (!Clip::SamplePoints(aRegion, samples))
++    {
++        return false;
++    }
++    double at[4][2];
++    double depths[4];
++    for (int i = 0; i < 4; ++i)
++    {
++        const Vec3 p = aScreen.At(samples[i][0], samples[i][1]);
++        const auto n = aCamera.Normalised(p);
++        at[i][0] = n[0];
++        at[i][1] = n[1];
++        depths[i] = p.z;
++    }
++    return Clip::SolveMap(samples, at, depths, Clip::kDefaultPositionTolerance, aMap);
++}
++
++// The scenes. The camera is at the origin looking down +z.
++
++/// The cinema, 150 ft by its 16:9 height, as a wall 3 m to the left that runs from
++/// 5 m behind the player to 40 m ahead: walked along, its near end behind the eye.
++/// Two corners behind, so the part in front has four corners.
++Screen Cinema()
++{
++    return Make(Vec3{-3.0, 4.0, -5.0 + (45.72 / 2.0)}, Vec3{0.0, 0.0, 1.0}, Vec3{0.0, 1.0, 0.0}, 45.72, 25.72);
++}
++
++/// A television stood right next to, turned and tilted so that one corner is behind
++/// the eye: five corners in front.
++Screen OneCornerBehind()
++{
++    // Depths at (0,0), (1,0), (0,1): -0.3, 0.9, 0.7, so (1,1) is at 1.9.
++    return Screen{Vec3{-0.4, 0.3, -0.3}, Vec3{1.1, 0.05, 1.2}, Vec3{0.1, -0.62, 1.0}};
++}
++
++/// Three corners behind: only the far corner's triangle is in front.
++Screen ThreeCornersBehind()
++{
++    // Depths -1.6, -0.3, -0.1 and (1,1) at 1.2: the triangle in front is in view.
++    return Screen{Vec3{0.35, 0.25, -1.6}, Vec3{-0.2, -0.35, 1.3}, Vec3{-0.45, -0.15, 1.5}};
++}
++} // namespace
++
++int main()
++{
++    const Camera camera;
++
++    // -- the part in front of the near plane ----------------------------------------
++    {
++        struct Case
++        {
++            const char* name;
++            Screen screen;
++            int corners;
++        };
++        const Case cases[] = {
++            {"cinema walked along", Cinema(), 4},
++            {"one corner behind", OneCornerBehind(), 5},
++            {"three corners behind", ThreeCornersBehind(), 3},
++            {"wholly in front", Make(Vec3{0.2, 0.1, 2.5}, Turn(Vec3{1.0, 0.0, 0.0}, 40.0), Vec3{0.0, 1.0, 0.0}, 1.6, 0.9),
++             4},
++        };
++        for (const Case& c : cases)
++        {
++            const Clip::Polygon region = Clip::VisibleRegion(c.screen.Depth(0.0, 0.0), c.screen.Depth(1.0, 0.0),
++                                                             c.screen.Depth(0.0, 1.0));
++            CHECK(region.count == c.corners);
++            for (int i = 0; i < region.count; ++i)
++            {
++                const auto& corner = region.at[static_cast<std::size_t>(i)];
++                CHECK(corner[0] >= -1.0e-12 && corner[0] <= 1.0 + 1.0e-12);
++                CHECK(corner[1] >= -1.0e-12 && corner[1] <= 1.0 + 1.0e-12);
++                CHECK(c.screen.Depth(corner[0], corner[1]) >= Clip::kNearDepth - 1.0e-9);
++            }
++            // Every texel nearer than the plane is outside it and every texel past it
++            // inside, a hair either side of the line excepted.
++            for (int j = 0; j <= 200; ++j)
++            {
++                for (int i = 0; i <= 200; ++i)
++                {
++                    const double u = i / 200.0;
++                    const double v = j / 200.0;
++                    const double depth = c.screen.Depth(u, v);
++                    if (std::abs(depth - Clip::kNearDepth) < 1.0e-6)
++                    {
++                        continue;
++                    }
++                    CHECK(InsidePolygon(region, u, v, 1.0e-9) == (depth > Clip::kNearDepth));
++                }
++            }
++            std::cout << c.name << ": " << region.count << " corners in front of the near plane\n";
++        }
++        // All of it behind: nothing.
++        CHECK(Clip::VisibleRegion(-2.0, -1.0, -3.0).count == 0);
++        CHECK(Clip::VisibleRegion(0.1, 0.15, 0.05).count == 0);
++        CHECK(Clip::VisibleRegion(std::nan(""), 1.0, 1.0).count == 0);
++    }
++
++    // -- the map, solved from four projected points ---------------------------------
++    {
++        const Screen screens[] = {Cinema(), OneCornerBehind(), ThreeCornersBehind()};
++        for (const Screen& screen : screens)
++        {
++            Clip::Polygon region;
++            Clip::Map map;
++            CHECK(SolveFor(screen, camera, region, map));
++            // Every texel of the part in front where the pinhole puts it, to a
++            // millionth of a pixel, with its depth.
++            double worstPixels = 0.0;
++            double worstDepth = 0.0;
++            for (int j = 0; j <= 100; ++j)
++            {
++                for (int i = 0; i <= 100; ++i)
++                {
++                    const double u = i / 100.0;
++                    const double v = j / 100.0;
++                    if (!InsidePolygon(region, u, v, -1.0e-12))
++                    {
++                        continue;
++                    }
++                    const Vec3 p = screen.At(u, v);
++                    const auto truth = camera.Normalised(p);
++                    const auto at = map.Apply(u, v);
++                    worstPixels = std::max(worstPixels, std::hypot((at[0] - truth[0]) * camera.width,
++                                                                   (at[1] - truth[1]) * camera.height));
++                    worstDepth = std::max(worstDepth, std::abs(map.Depth(u, v) - p.z) / p.z);
++                }
++            }
++            CHECK(worstPixels < 1.0e-6);
++            CHECK(worstDepth < 1.0e-9);
++            // The region the map's own depth row cuts is the region the corners cut.
++            const Clip::Polygon again = Clip::VisibleRegion(map);
++            CHECK(again.count == region.count);
++            for (int i = 0; i < region.count; ++i)
++            {
++                const auto& corner = region.at[static_cast<std::size_t>(i)];
++                bool found = false;
++                for (int k = 0; k < again.count; ++k)
++                {
++                    const auto& other = again.at[static_cast<std::size_t>(k)];
++                    found = found || std::hypot(other[0] - corner[0], other[1] - corner[1]) < 1.0e-9;
++                }
++                CHECK(found);
++            }
++        }
++    }
++
++    // -- the same through the engine's float32, two kilometres from the origin ------
++    {
++        // The world as the game has it: float positions far from the origin, a float
++        // subtraction to the eye, a float projection. The producer's depths are its
++        // own float dot products. Still within a fiftieth of a pixel.
++        const Vec3 offset{-2134.37, 1517.82, 31.5};
++        const Screen screen = Cinema();
++        const auto toFloat = [](const Vec3 p) { return std::array<float, 3>{static_cast<float>(p.x), static_cast<float>(p.y), static_cast<float>(p.z)}; };
++        const std::array<float, 3> eye = toFloat(offset);
++        const Clip::Polygon region =
++            Clip::VisibleRegion(screen.Depth(0.0, 0.0), screen.Depth(1.0, 0.0), screen.Depth(0.0, 1.0));
++        double samples[4][2];
++        CHECK(Clip::SamplePoints(region, samples));
++        double at[4][2];
++        double depths[4];
++        for (int i = 0; i < 4; ++i)
++        {
++            const std::array<float, 3> world = toFloat(screen.At(samples[i][0], samples[i][1]) + offset);
++            const float x = world[0] - eye[0];
++            const float y = world[1] - eye[1];
++            const float z = world[2] - eye[2];
++            const float focal = static_cast<float>(camera.focal);
++            at[i][0] = static_cast<double>((0.5F * static_cast<float>(camera.width) + (focal * x / z)) /
++                                           static_cast<float>(camera.width));
++            at[i][1] = static_cast<double>((0.5F * static_cast<float>(camera.height) - (focal * y / z)) /
++                                           static_cast<float>(camera.height));
++            depths[i] = static_cast<double>(z);
++        }
++        Clip::Map map;
++        CHECK(Clip::SolveMap(samples, at, depths, Clip::kDefaultPositionTolerance, map));
++        double worst = 0.0;
++        for (int j = 0; j <= 50; ++j)
++        {
++            for (int i = 0; i <= 50; ++i)
++            {
++                const double u = i / 50.0;
++                const double v = j / 50.0;
++                if (!InsidePolygon(region, u, v, -1.0e-12))
++                {
++                    continue;
++                }
++                const auto truth = camera.Normalised(screen.At(u, v));
++                const auto placed = map.Apply(u, v);
++                const auto px = camera.Pixel(screen.At(u, v));
++                // Only what can be on screen: a texel a hundred screens off the view
++                // is placed as well as float can place it, which is not what matters.
++                if (px[0] < 0.0 || px[0] > camera.width || px[1] < 0.0 || px[1] > camera.height)
++                {
++                    continue;
++                }
++                worst = std::max(worst, std::hypot((placed[0] - truth[0]) * camera.width,
++                                                   (placed[1] - truth[1]) * camera.height));
++            }
++        }
++        std::cout << "cinema through float32 at 2 km: worst texel " << worst << " px\n";
++        CHECK(worst < 0.05);
++    }
++
++    // -- refusals ------------------------------------------------------------------
++    {
++        const Screen screen = Cinema();
++        const Clip::Polygon region =
++            Clip::VisibleRegion(screen.Depth(0.0, 0.0), screen.Depth(1.0, 0.0), screen.Depth(0.0, 1.0));
++        double samples[4][2];
++        CHECK(Clip::SamplePoints(region, samples));
++        double at[4][2];
++        double depths[4];
++        for (int i = 0; i < 4; ++i)
++        {
++            const Vec3 p = screen.At(samples[i][0], samples[i][1]);
++            const auto n = camera.Normalised(p);
++            at[i][0] = n[0];
++            at[i][1] = n[1];
++            depths[i] = p.z;
++        }
++        Clip::Map map;
++        Clip::Map untouched;
++        untouched.m[0][0] = 42.0;
++        // A point the engine refused, written as the centre of the view.
++        {
++            double refused[4][2];
++            std::copy(&at[0][0], &at[0][0] + 8, &refused[0][0]);
++            refused[2][0] = 0.5;
++            refused[2][1] = 0.5;
++            map = untouched;
++            CHECK(!Clip::SolveMap(samples, refused, depths, Clip::kDefaultPositionTolerance, map));
++            CHECK(map.m[0][0] == 42.0);
++        }
++        // A depth that is not in front, or not a number; a position not a number.
++        {
++            double bad[4];
++            std::copy(depths, depths + 4, bad);
++            bad[1] = -bad[1];
++            CHECK(!Clip::SolveMap(samples, at, bad, Clip::kDefaultPositionTolerance, map));
++            bad[1] = std::nan("");
++            CHECK(!Clip::SolveMap(samples, at, bad, Clip::kDefaultPositionTolerance, map));
++            double nan[4][2];
++            std::copy(&at[0][0], &at[0][0] + 8, &nan[0][0]);
++            nan[3][1] = std::nan("");
++            CHECK(!Clip::SolveMap(samples, nan, depths, Clip::kDefaultPositionTolerance, map));
++        }
++        // Samples in a line in texture space fix no plane.
++        {
++            const double line[4][2] = {{0.1, 0.1}, {0.3, 0.3}, {0.5, 0.5}, {0.9, 0.9}};
++            CHECK(!Clip::SolveMap(line, at, depths, Clip::kDefaultPositionTolerance, map));
++        }
++        // Depths that are not the plane's the positions describe: two swapped.
++        {
++            double off[4];
++            std::copy(depths, depths + 4, off);
++            std::swap(off[0], off[2]);
++            CHECK(!Clip::SolveMap(samples, at, off, Clip::kDefaultPositionTolerance, map));
++        }
++        // A polygon of nothing gives no samples.
++        CHECK(!Clip::SamplePoints(Clip::Polygon{}, samples));
++    }
++
++    // -- the depth pass's constants, through the shader's own arithmetic -------------
++    {
++        const Screen screens[] = {Cinema(), OneCornerBehind(), ThreeCornersBehind()};
++        for (const Screen& screen : screens)
++        {
++            Clip::Polygon region;
++            Clip::Map normalised;
++            CHECK(SolveFor(screen, camera, region, normalised));
++            const Clip::Map pixels = normalised.Scaled(camera.width, camera.height);
++            const float size[2] = {static_cast<float>(camera.width), static_cast<float>(camera.height)};
++            SD::Constants constants;
++            CHECK(SD::BuildFromMap(pixels, SD::DepthModel::ReversedInfinite(0.05), size, size, size, SD::Tuning{},
++                                   true, constants) == SD::Status::Ok);
++            const SD::Shared::SdConstants c = SD::ToShared(constants);
++            int shaded = 0;
++            double worstUv = 0.0;
++            double worstDepth = 0.0;
++            for (int py = 0; py < static_cast<int>(camera.height); py += 2)
++            {
++                for (int px = 0; px < static_cast<int>(camera.width); px += 2)
++                {
++                    const Vec3 dir = camera.Ray(px + 0.5, py + 0.5);
++                    double u = 0.0, v = 0.0;
++                    const double t = screen.Hit(dir, u, v);
++                    if (!(t > Clip::kNearDepth))
++                    {
++                        continue;
++                    }
++                    const SD::Hlsl::float2 pixel(static_cast<float>(px) + 0.5F, static_cast<float>(py) + 0.5F);
++                    const SD::Hlsl::float2 uv = SD::Shared::SdScreenUv(c, pixel);
++                    // Texels of a 1920 x 1080 picture.
++                    worstUv = std::max(worstUv, std::abs(static_cast<double>(uv.x) - u) * 1920.0);
++                    worstUv = std::max(worstUv, std::abs(static_cast<double>(uv.y) - v) * 1080.0);
++                    const double inverse = static_cast<double>(SD::Shared::SdPlaneInverseDepth(c, pixel));
++                    worstDepth = std::max(worstDepth, std::abs((inverse * t) - 1.0));
++                    ++shaded;
++                }
++            }
++            std::cout << "depth pass from the map: " << shaded << " px, uv within " << worstUv
++                      << " texel, depth within " << worstDepth << "\n";
++            CHECK(shaded > 1000);
++            CHECK(worstUv < 0.05);
++            CHECK(worstDepth < 1.0e-4);
++        }
++        // A singular map is refused; so are bad sizes, as for the corners.
++        {
++            Clip::Map singular;
++            singular.m[2][0] = 0.0;
++            singular.m[2][1] = 0.0;
++            singular.m[2][2] = 0.0;
++            const float size[2] = {1280.0F, 720.0F};
++            SD::Constants constants;
++            CHECK(SD::BuildFromMap(singular, SD::DepthModel{}, size, size, size, SD::Tuning{}, false, constants) ==
++                  SD::Status::BadQuad);
++            const float zero[2] = {0.0F, 720.0F};
++            CHECK(SD::BuildFromMap(Clip::Map{}, SD::DepthModel{}, zero, size, size, SD::Tuning{}, false,
++                                   constants) == SD::Status::BadSize);
++        }
++    }
++
++    // -- the fan the depth pass draws over the polygon ------------------------------
++    {
++        // The vertex shader's own choice of corner for each of its twelve vertices
++        // (ScreenDepthComposite.hlsl, VSMain), from the geometry it is given.
++        const auto corner = [](const SD::Geometry& aGeometry, const unsigned aVertex) {
++            const unsigned fan = (aVertex / 3) % 4;
++            const unsigned within = aVertex % 3;
++            const unsigned index = within == 0 ? 0 : fan + within;
++            const float* const source =
++                index < 2 ? aGeometry.corners01 : (index < 4 ? aGeometry.corners23 : aGeometry.corners45);
++            const unsigned offset = (index % 2) * 2;
++            return std::array<double, 2>{source[offset], source[offset + 1]};
++        };
++        const auto area = [](const std::array<double, 2>& a, const std::array<double, 2>& b,
++                             const std::array<double, 2>& c) {
++            return ((b[0] - a[0]) * (c[1] - a[1])) - ((c[0] - a[0]) * (b[1] - a[1]));
++        };
++        // A whole screen: the two triangles it always was, (0 1 2) and (0 2 3), and
++        // two more with no area.
++        {
++            const float corners[8] = {100.0F, 50.0F, 900.0F, 80.0F, 950.0F, 600.0F, 60.0F, 650.0F};
++            const SD::Geometry g = SD::MakeGeometry(corners, 1280.0F, 720.0F);
++            constexpr unsigned kOld[6] = {0, 1, 2, 0, 2, 3};
++            for (unsigned vertex = 0; vertex < 6; ++vertex)
++            {
++                const auto at = corner(g, vertex);
++                CHECK(at[0] == corners[kOld[vertex] * 2] && at[1] == corners[(kOld[vertex] * 2) + 1]);
++            }
++            for (unsigned triangle = 2; triangle < 4; ++triangle)
++            {
++                CHECK(area(corner(g, triangle * 3), corner(g, (triangle * 3) + 1), corner(g, (triangle * 3) + 2)) ==
++                      0.0);
++            }
++            CHECK(SD::kGeometryVertices == 12);
++            CHECK(g.viewport[0] == 1280.0F && g.viewport[1] == 720.0F);
++        }
++        // A cut screen: the fan covers the polygon exactly -- every pixel inside it
++        // in exactly one triangle, none outside it in any.
++        const Screen screens[] = {Cinema(), OneCornerBehind(), ThreeCornersBehind()};
++        for (const Screen& screen : screens)
++        {
++            Clip::Polygon region;
++            Clip::Map normalised;
++            CHECK(SolveFor(screen, camera, region, normalised));
++            const Clip::Map pixels = normalised.Scaled(camera.width, camera.height);
++            const Clip::Polygon visible = Clip::VisibleRegion(pixels);
++            CHECK(visible.count >= 3 && visible.count <= Clip::kMaximumCorners);
++            float polygon[2 * Clip::kMaximumCorners]{};
++            std::vector<std::array<double, 2>> placed;
++            for (int i = 0; i < visible.count; ++i)
++            {
++                const auto& c = visible.at[static_cast<std::size_t>(i)];
++                const auto at = pixels.Apply(c[0], c[1]);
++                polygon[i * 2] = static_cast<float>(at[0]);
++                polygon[(i * 2) + 1] = static_cast<float>(at[1]);
++                placed.push_back({static_cast<double>(polygon[i * 2]), static_cast<double>(polygon[(i * 2) + 1])});
++            }
++            const SD::Geometry g = SD::MakePolygonGeometry(polygon, visible.count, static_cast<float>(camera.width),
++                                                           static_cast<float>(camera.height));
++            int inside = 0;
++            for (int py = 0; py < static_cast<int>(camera.height); py += 3)
++            {
++                for (int px = 0; px < static_cast<int>(camera.width); px += 3)
++                {
++                    const std::array<double, 2> p{px + 0.5, py + 0.5};
++                    int covered = 0;  // inside a triangle or on its edge
++                    int strictly = 0; // inside, off every edge: two of these would be an overlap
++                    double nearestEdge = 1.0e300;
++                    for (unsigned triangle = 0; triangle < 4; ++triangle)
++                    {
++                        const auto a = corner(g, triangle * 3);
++                        const auto b = corner(g, (triangle * 3) + 1);
++                        const auto c = corner(g, (triangle * 3) + 2);
++                        const double whole = area(a, b, c);
++                        if (whole == 0.0)
++                        {
++                            continue;
++                        }
++                        const double wa = area(b, c, p) / whole;
++                        const double wb = area(c, a, p) / whole;
++                        const double wc = area(a, b, p) / whole;
++                        if (wa >= -1.0e-9 && wb >= -1.0e-9 && wc >= -1.0e-9)
++                        {
++                            ++covered;
++                        }
++                        if (wa > 1.0e-9 && wb > 1.0e-9 && wc > 1.0e-9)
++                        {
++                            ++strictly;
++                        }
++                    }
++                    for (std::size_t i = 0; i < placed.size(); ++i)
++                    {
++                        const auto& s = placed[i];
++                        const auto& e = placed[(i + 1) % placed.size()];
++                        const double length = std::hypot(e[0] - s[0], e[1] - s[1]);
++                        nearestEdge = std::min(nearestEdge, std::abs(area(s, e, p)) / std::max(length, 1.0e-300));
++                    }
++                    // The truth: does this pixel's ray meet the screen past the plane?
++                    const Vec3 dir = camera.Ray(p[0], p[1]);
++                    double u = 0.0, v = 0.0;
++                    const bool truth = screen.Hit(dir, u, v) > Clip::kNearDepth;
++                    if (nearestEdge < 0.5)
++                    {
++                        continue; // on an edge, where either answer is the rasteriser's
++                    }
++                    CHECK(strictly <= 1);
++                    if (truth)
++                    {
++                        ++inside;
++                        CHECK(covered >= 1);
++                    }
++                    else
++                    {
++                        CHECK(covered == 0);
++                    }
++                }
++            }
++            CHECK(inside > 1000);
++        }
++    }
++
++    // -- which way round the picture goes -----------------------------------------
++    {
++        // A whole screen, seen in poses the corner rule can answer: square on, turned,
++        // from behind, turned over, rolled. The producer's map-based answer (slopes at
++        // the middle, then the substitution into texture space) must agree with
++        // `ScreenQuad::Orient` and put every texture corner where `CornerForTexture`
++        // says the frame does.
++        struct Pose
++        {
++            double yaw;
++            double roll;
++        };
++        const Pose poses[] = {{0.0, 0.0}, {35.0, 0.0}, {-60.0, 0.0}, {160.0, 0.0}, {200.0, 0.0},
++                              {0.0, 180.0}, {20.0, 170.0}, {180.0, 180.0}, {10.0, 25.0}};
++        for (const Pose& pose : poses)
++        {
++            const double roll = pose.roll * kPi / 180.0;
++            const Vec3 right = Turn(Vec3{std::cos(roll), std::sin(roll), 0.0}, pose.yaw);
++            const Vec3 up = Turn(Vec3{-std::sin(roll), std::cos(roll), 0.0}, pose.yaw);
++            const Vec3 centre{0.3, -0.2, 3.0};
++            const double halfWidth = 0.8;
++            const double halfHeight = 0.45;
++            // The panel's corners in `ScreenQuad::Corners`' tagged order.
++            Vec3 tagged[4];
++            for (int side = -1; side <= 1; side += 2)
++            {
++                for (int row = -1; row <= 1; row += 2)
++                {
++                    tagged[Quad::CornerIndex(side, row)] = centre + (right * (side * halfWidth)) + (up * (row * halfHeight));
++                }
++            }
++            float projected[8];
++            for (int i = 0; i < 4; ++i)
++            {
++                const auto n = camera.Normalised(tagged[i]);
++                projected[i * 2] = static_cast<float>(n[0]);
++                projected[(i * 2) + 1] = static_cast<float>(n[1]);
++            }
++            const Quad::Orientation byCorners = Quad::Orient(projected);
++
++            // The producer's way: the panel's own (a, b) space, a along +right from the
++            // -right edge, b along +up from the -up edge.
++            const Vec3 origin = tagged[Quad::CornerIndex(-1, -1)];
++            const Screen panel{origin, tagged[Quad::CornerIndex(+1, -1)] - origin,
++                               tagged[Quad::CornerIndex(-1, +1)] - origin};
++            Clip::Polygon region;
++            Clip::Map panelMap;
++            CHECK(SolveFor(panel, camera, region, panelMap));
++            CHECK(region.count == 4);
++            const auto middle = region.Centroid();
++            const auto slopes = Clip::Slopes(panelMap, middle[0], middle[1]);
++            Quad::Orientation byMap{};
++            CHECK(std::abs(slopes[0]) > Quad::kOrientationDeadband);
++            CHECK(std::abs(slopes[1]) > Quad::kOrientationDeadband);
++            byMap.flipU = slopes[0] < 0.0;
++            byMap.flipV = slopes[1] > 0.0;
++            CHECK(byMap.flipU == byCorners.flipU);
++            CHECK(byMap.flipV == byCorners.flipV);
++
++            const Clip::Map texture = Clip::Substituted(panelMap, byMap.flipU ? -1.0 : 1.0, byMap.flipU ? 1.0 : 0.0,
++                                                        byMap.flipV ? 1.0 : -1.0, byMap.flipV ? 0.0 : 1.0);
++            for (int v = 0; v <= 1; ++v)
++            {
++                for (int u = 0; u <= 1; ++u)
++                {
++                    const int source = Quad::CornerForTexture(byCorners, u, v);
++                    const auto at = texture.Apply(u, v);
++                    CHECK(std::abs(at[0] - projected[source * 2]) < 1.0e-6);
++                    CHECK(std::abs(at[1] - projected[(source * 2) + 1]) < 1.0e-6);
++                }
++            }
++        }
++    }
++
++    // -- the curvature bound is a bound ---------------------------------------------
++    {
++        const Screen screens[] = {Cinema(), OneCornerBehind(), ThreeCornersBehind()};
++        for (const Screen& screen : screens)
++        {
++            const Clip::Map map = camera.ExactMap(screen.origin, screen.across, screen.down);
++            const Clip::Polygon region = Clip::VisibleRegion(map);
++            CHECK(region.count >= 3);
++            const Clip::Curvature bound = Clip::CurvatureOver(map, region);
++            const double h = 1.0e-4;
++            for (int j = 1; j < 40; ++j)
++            {
++                for (int i = 1; i < 40; ++i)
++                {
++                    const double u = i / 40.0;
++                    const double v = j / 40.0;
++                    if (!InsidePolygon(region, u, v, 2.0 * h) || !InsidePolygon(region, u + h, v + h, 0.0) ||
++                        !InsidePolygon(region, u - h, v - h, 0.0) || !InsidePolygon(region, u + h, v - h, 0.0) ||
++                        !InsidePolygon(region, u - h, v + h, 0.0))
++                    {
++                        continue;
++                    }
++                    const auto f = [&map](const double aU, const double aV) { return map.Apply(aU, aV); };
++                    const auto c = f(u, v);
++                    const auto pu = f(u + h, v);
++                    const auto mu = f(u - h, v);
++                    const auto pv = f(u, v + h);
++                    const auto mv = f(u, v - h);
++                    const auto pp = f(u + h, v + h);
++                    const auto pm = f(u + h, v - h);
++                    const auto mp = f(u - h, v + h);
++                    const auto mm = f(u - h, v - h);
++                    const double uu = std::hypot((pu[0] - (2.0 * c[0]) + mu[0]) / (h * h),
++                                                 (pu[1] - (2.0 * c[1]) + mu[1]) / (h * h));
++                    const double vv = std::hypot((pv[0] - (2.0 * c[0]) + mv[0]) / (h * h),
++                                                 (pv[1] - (2.0 * c[1]) + mv[1]) / (h * h));
++                    const double uv = std::hypot((pp[0] - pm[0] - mp[0] + mm[0]) / (4.0 * h * h),
++                                                 (pp[1] - pm[1] - mp[1] + mm[1]) / (4.0 * h * h));
++                    CHECK(uu <= (bound.uu * 1.001) + 1.0e-3);
++                    CHECK(vv <= (bound.vv * 1.001) + 1.0e-3);
++                    CHECK(uv <= (bound.uv * 1.001) + 1.0e-3);
++                }
++            }
++        }
++    }
++
++    // -- cut points neighbouring cells share are the same to the bit ----------------
++    {
++        const double line[3] = {0.731, -1.29, 0.3017};
++        const Clip::Polygon left = Clip::Cut(Clip::Rectangle(0.1, 0.2, 0.35, 0.45), line[0], line[1], line[2]);
++        const Clip::Polygon right = Clip::Cut(Clip::Rectangle(0.35, 0.2, 0.6, 0.45), line[0], line[1], line[2]);
++        int shared = 0;
++        for (int i = 0; i < left.count; ++i)
++        {
++            const auto& p = left.at[static_cast<std::size_t>(i)];
++            if (p[0] != 0.35)
++            {
++                continue;
++            }
++            bool same = false;
++            for (int k = 0; k < right.count; ++k)
++            {
++                same = same || right.at[static_cast<std::size_t>(k)] == p;
++            }
++            CHECK(same);
++            ++shared;
++        }
++        CHECK(shared == 2); // one corner of the shared edge, and where the line crosses it
++        // A cut that leaves nothing, and one that leaves it all.
++        CHECK(Clip::Cut(Clip::Square(), 0.0, 0.0, -1.0).count == 0);
++        CHECK(Clip::Cut(Clip::Square(), 0.0, 0.0, 1.0).count == 4);
++    }
++
++    // -- a map held between two ticks blends as the corners do ----------------------
++    {
++        std::array<float, 9> from{};
++        std::array<float, 9> to{};
++        for (std::size_t i = 0; i < 9; ++i)
++        {
++            from[i] = static_cast<float>(i);
++            to[i] = static_cast<float>(i) * 3.0F;
++        }
++        namespace Motion = op77::WorldOverlay::ScreenMotion;
++        CHECK(Motion::Blend(from, to, 1.0F) == to);
++        CHECK(Motion::Blend(from, to, 0.0F) == from);
++        const auto middle = Motion::Blend(from, to, 0.5F);
++        CHECK(middle[4] == 8.0F);
++    }
++
++    std::cout << "ScreenClip: near-plane cut, map from projected points, refusals, depth pass, fan, "
++                 "orientation, curvature bound and shared cuts OK\n";
++    return 0;
++}
+-- 
+2.43.0
+

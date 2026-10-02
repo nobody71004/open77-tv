@@ -1,0 +1,1109 @@
+From c72b6db919fb94f29b06224950126917f44e646f Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 1 Oct 2026 11:12:44 +0000
+Subject: [PATCH] Keep the television depth test on at every present, with
+ frame generation
+
+In game, with frame generation on, the picture still showed over V's body and
+hands at most presents, and the game stuttered. The log said why: about four
+presents for every frame the game rendered (10533 of 12478 presents in 30 s
+had no depth work before them), and the chosen buffer changing at almost every
+present between the scene's (853x533 D32_S8, ~2400 draws) and a small pass's of
+the same size (D32, 119 draws).
+
+Three things followed from judging one present at a time:
+
+  * The depth test was applied only at a present that had just copied the
+    depth; at the others the picture was drawn with the test off, over
+    everything. With four presents a frame, that was most of them.
+  * Whichever buffer had been drawn into since the last present was taken for
+    the scene's, so the copy alternated between the scene and the small pass.
+  * Each change of buffer changed the copy's format, so the copy texture was
+    made again (and logged) at almost every present: the stutter.
+
+Now:
+
+  * The choice is made on each buffer's work summed over the last several
+    presents, shrinking by an eighth a present (SceneDepthPolicy::History).
+    The scene's buffer stays chosen whether or not this present drew into it;
+    another takes over only by doing more than twice its work, as before.
+  * The overlay's copy is used at every present until a newer one replaces it,
+    for at most 30 presents, so the presents between the game's frames keep
+    the test.
+  * The chosen buffer is copied once its frame's depth is finished: only if the
+    game used it since the last present (one it has let go of may be gone),
+    changed it since the last copy, and moved it into a read-only state since
+    its last clear or left it in one (SceneDepthPolicy::ShouldCopy). Clears are
+    recorded in order with the state changes, so "since its last clear" means
+    what it does on the GPU. A frame whose work spans presents is no longer
+    copied half drawn; a buffer the game never reads is copied whenever it
+    changes, and one found mid-frame eight times since the last copy is copied
+    anyway.
+  * The calibration samples only at presents that copied, where the screen's
+    corners and the depth are of the same moment.
+  * A change of buffer is logged at most every five seconds; the status line
+    counts them all, and now the presents that waited for a finished frame.
+  * Copies go on for 600 presents after a screen was last drawn (was 120), so
+    a screen turned back to is tested from its first present.
+
+Tested: the policy tests pin the history on the game's own pattern (the
+scene's buffer chosen at every present from the first, a new buffer taking
+over within four frames, gone ones forgotten) and the copy timing. The
+end-to-end run on Wine's Direct3D 12 (outside the repository) gains a frame
+generation mode: one game frame per two to four presents, its work spread over
+them, a small pass's buffer of the scene's size in between. With the previous
+code 21 of 27 presents drew the picture over the hand and the small buffer was
+chosen; now every present once the depth is measured shows the picture behind
+the hand and nowhere else hidden, in all four variants, and the four earlier
+variants still pass.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Qum3jofThN9KuYZN8xcYdD
+---
+ client/src/webui/SceneDepth.cpp        | 353 +++++++++++++++++--------
+ client/src/webui/SceneDepthPolicy.hpp  | 182 ++++++++++++-
+ client/tests/SceneDepthPolicyTests.cpp | 198 +++++++++++++-
+ 3 files changed, 617 insertions(+), 116 deletions(-)
+
+diff --git a/client/src/webui/SceneDepth.cpp b/client/src/webui/SceneDepth.cpp
+index e04b9c33..3fd7bcea 100644
+--- a/client/src/webui/SceneDepth.cpp
++++ b/client/src/webui/SceneDepth.cpp
+@@ -129,6 +129,18 @@ constexpr uint32_t kDepthStates =
+     static_cast<uint32_t>(D3D12_RESOURCE_STATE_DEPTH_WRITE) | static_cast<uint32_t>(D3D12_RESOURCE_STATE_DEPTH_READ);
+ constexpr uint32_t kShaderReadStates = static_cast<uint32_t>(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE) |
+                                        static_cast<uint32_t>(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
++constexpr uint32_t kWriteStates =
++    static_cast<uint32_t>(D3D12_RESOURCE_STATE_DEPTH_WRITE) | static_cast<uint32_t>(D3D12_RESOURCE_STATE_RENDER_TARGET) |
++    static_cast<uint32_t>(D3D12_RESOURCE_STATE_UNORDERED_ACCESS) | static_cast<uint32_t>(D3D12_RESOURCE_STATE_COPY_DEST) |
++    static_cast<uint32_t>(D3D12_RESOURCE_STATE_RESOLVE_DEST);
++
++/// A state nothing writes the buffer in: its depth is finished for now. (COMMON is
++/// not counted: it says nothing about what comes next.)
++constexpr bool IsReadOnly(const D3D12_RESOURCE_STATES aState)
++{
++    const auto bits = static_cast<uint32_t>(aState);
++    return bits != 0 && (bits & kWriteStates) == 0;
++}
+ 
+ /// What a depth-stencil view points at, from CreateDepthStencilView.
+ struct DsvTarget
+@@ -216,11 +228,13 @@ struct StateChange
+         Transition,
+         AliasedAway, ///< an aliasing barrier gave its memory to another resource
+         AliasedIn,   ///< an aliasing barrier gave it its memory back
++        Cleared,     ///< the whole depth plane of the view `dsv` was cleared (a new frame's depth begins)
+     };
+     ID3D12Resource* resource{};
+     UINT subresource{};
+     D3D12_RESOURCE_STATES after{};
+     Kind kind{Kind::Transition};
++    SIZE_T dsv{};
+ };
+ 
+ /// Everything one command list recorded that matters, since its last Reset.
+@@ -319,7 +333,8 @@ ListState* PeekState(const void* const aList)
+     return found == s_lists.end() ? nullptr : found->second.get();
+ }
+ 
+-/// A depth buffer across frames: its last known state, per plane.
++/// A depth buffer across frames: its last known state, per plane, in the order the
++/// GPU runs the game's lists.
+ struct Track
+ {
+     std::array<D3D12_RESOURCE_STATES, 2> state{};
+@@ -327,6 +342,9 @@ struct Track
+     bool initialKnown{}; ///< from its creation, not from a change seen since
+     bool cleared{};
+     float clearDepth{};  ///< the optimised clear value it was made with, or the last clear seen
++    uint64_t writes{};   ///< draws into it and clears of it, ever: changes whenever its content may have
++    bool settledSinceClear{}; ///< moved into a read-only state since its last clear: this frame's depth is done
++    bool everSettled{};  ///< ever moved into a read-only state: the game reads it once it is done
+ };
+ 
+ /// A depth buffer in the frame being accumulated.
+@@ -390,38 +408,65 @@ void Merge(ListState& aList)
+         frame.vertices += use.vertices;
+         frame.viewportWidth = std::max(frame.viewportWidth, use.viewportWidth);
+         frame.viewportHeight = std::max(frame.viewportHeight, use.viewportHeight);
++        Track& track = s_tracks[target.resource];
++        track.writes += use.draws + (use.cleared ? 1U : 0U);
+         if (use.cleared)
+         {
+             frame.cleared = true;
+             frame.clearDepth = use.clearDepth;
+-            Track& track = s_tracks[target.resource];
+             track.cleared = true;
+             track.clearDepth = use.clearDepth;
+         }
+     }
+-    for (const StateChange& transition : aList.transitions)
++    // State changes and clears in the order the list recorded them, so that "done
++    // with since its last clear" means the same as it does on the GPU.
++    for (const StateChange& change : aList.transitions)
+     {
+-        Track& track = s_tracks[transition.resource];
+-        if (transition.kind != StateChange::Kind::Transition)
++        if (change.kind == StateChange::Kind::Cleared)
++        {
++            ID3D12Resource* cleared = nullptr;
++            {
++                const std::shared_lock lock(s_dsvMutex);
++                if (const auto found = s_dsvs.find(change.dsv); found != s_dsvs.end() && found->second.usable)
++                {
++                    cleared = found->second.resource;
++                }
++            }
++            if (cleared != nullptr)
++            {
++                s_tracks[cleared].settledSinceClear = false;
++            }
++            continue;
++        }
++        Track& track = s_tracks[change.resource];
++        FrameUse& frame = s_frame.uses[change.resource]; // the game used it this present, whatever the change
++        if (change.kind != StateChange::Kind::Transition)
+         {
+             // In the order the GPU runs them: what counts is whether the memory is
+             // the buffer's when the frame ends.
+-            s_frame.uses[transition.resource].aliasedAway = transition.kind == StateChange::Kind::AliasedAway;
++            frame.aliasedAway = change.kind == StateChange::Kind::AliasedAway;
+             continue;
+         }
+-        if (transition.subresource == D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES)
++        if (change.subresource == D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES)
+         {
+-            track.state = {transition.after, transition.after};
++            track.state = {change.after, change.after};
+             track.known = {true, true};
+         }
+-        else if (transition.subresource < 2)
++        else if (change.subresource < 2)
++        {
++            track.state[change.subresource] = change.after;
++            track.known[change.subresource] = true;
++        }
++        if ((static_cast<uint32_t>(change.after) & kShaderReadStates) != 0)
+         {
+-            track.state[transition.subresource] = transition.after;
+-            track.known[transition.subresource] = true;
++            frame.readByShaders = true;
+         }
+-        if ((static_cast<uint32_t>(transition.after) & kShaderReadStates) != 0)
++        // The depth plane moved to where nothing writes it: this frame's depth is done.
++        if ((change.subresource == D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES || change.subresource == 0) &&
++            IsReadOnly(change.after))
+         {
+-            s_frame.uses[transition.resource].readByShaders = true;
++            track.settledSinceClear = true;
++            track.everSettled = true;
+         }
+     }
+     aList.useCount = 0;
+@@ -1053,6 +1098,11 @@ void STDMETHODCALLTYPE DetourClearDepthStencilView(ID3D12GraphicsCommandList* co
+             use->cleared = true;
+             use->clearDepth = aDepth;
+         }
++        if (state->transitions.size() < 4096)
++        {
++            state->transitions.push_back(
++                {nullptr, 0, D3D12_RESOURCE_STATE_DEPTH_WRITE, StateChange::Kind::Cleared, aView.ptr});
++        }
+     }
+ }
+ 
+@@ -1081,6 +1131,11 @@ void STDMETHODCALLTYPE DetourBeginRenderPass(ID3D12GraphicsCommandList4* const a
+         {
+             state->current->cleared = true;
+             state->current->clearDepth = aDepthStencil->DepthBeginningAccess.Clear.ClearValue.DepthStencil.Depth;
++            if (state->transitions.size() < 4096)
++            {
++                state->transitions.push_back({nullptr, 0, D3D12_RESOURCE_STATE_DEPTH_WRITE,
++                                              StateChange::Kind::Cleared, aDepthStencil->cpuDescriptor.ptr});
++            }
+         }
+     }
+ }
+@@ -1318,9 +1373,11 @@ constexpr double kModelBias = 1.015;
+ // Until B is measured, the debug view shades depth as if it were this.
+ constexpr double kDisplayB = 0.05;
+ // A copy is made only while a screen was drawn this recently (presents), or the
+-// debug view is on.
+-constexpr uint64_t kCopyWhileScreensWithin = 120;
+-constexpr uint64_t kCalibrateEvery = 3; // presents
++// debug view is on: a few seconds, so that a screen turned back to is tested from
++// its first present.
++constexpr uint64_t kCopyWhileScreensWithin = 600;
++// A change of buffer is logged at most this often; the status line counts them all.
++constexpr auto kSwitchLogEvery = std::chrono::seconds(5);
+ constexpr size_t kReadbackSlots = 4;
+ constexpr size_t kSamplesPerSlot = Policy::kSamplesPerScreen * 4;
+ constexpr UINT64 kSampleStride = D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT;
+@@ -1350,14 +1407,15 @@ struct Retired
+ };
+ std::vector<Retired> s_retired;
+ 
+-/// The buffer chosen for the frame just finished.
++/// The buffer chosen at this present (from the work of the last several), and what
++/// the game did with it since the previous one.
+ struct Selection
+ {
+     ID3D12Resource* resource{};
+     D3D12_RESOURCE_DESC desc{};
+     Policy::Family family{Policy::Family::None};
+     float extent[2]{};
+-    uint32_t draws{};
++    uint32_t draws{};   ///< summed over recent presents (Policy::History)
+     uint32_t indirect{};
+     uint64_t vertices{};
+     bool readByShaders{};
+@@ -1367,20 +1425,38 @@ struct Selection
+     Policy::Convention convention{Policy::Convention::Unknown};
+     float clearDepth{};
+     bool cleared{};
+-    bool aliasedAway{};
++    bool seen{};        ///< used by the lists run since the previous present
++    bool aliasedAway{}; ///< ...and its memory given to another resource at their end
++    uint64_t writes{};
++    bool settledSinceClear{};
++    bool everSettled{};
+ };
+ Selection s_selection;
+-ID3D12Resource* s_lastLogged{};
+ std::string s_candidatesText;
++Policy::History s_history;
++/// The description of every buffer the history remembers, by its id.
++std::unordered_map<uint64_t, D3D12_RESOURCE_DESC> s_descs;
++std::chrono::steady_clock::time_point s_lastSwitchLog{};
+ 
+ ID3D12GraphicsCommandList* s_frameList{};
+ float s_overlayWidth{1.0F};
+ float s_overlayHeight{1.0F};
+ uint64_t s_present{};
+-uint64_t s_selectedAt{};
+ uint64_t s_lastScreenAt{};
+ uint64_t s_lastFence{};
+-bool s_copied{};
++bool s_copied{}; ///< the copy was made at this present
++
++/// What the overlay's copy holds: which buffer it came from, at which of its
++/// writes, at which present, and the part of it the game drew. Screens are tested
++/// against it at every present until a newer copy is made, for at most
++/// Policy::kCopyFreshForPresents: a game with frame generation presents several
++/// images per frame it renders.
++ID3D12Resource* s_copyOf{};
++uint64_t s_copyWrites{};
++uint64_t s_copyPresent{};
++uint32_t s_waitsSinceCopy{};
++float s_copyExtent[2]{};
++bool s_copyUsable{}; ///< for this present: there is a copy, and it is fresh
+ 
+ bool s_testOn{true};
+ bool s_debugView{};
+@@ -1420,6 +1496,7 @@ struct Counters
+ {
+     uint64_t presents{};
+     uint64_t copies{};
++    uint64_t waits{}; ///< presents at which the chosen buffer was mid-frame, so the last copy was kept
+     uint64_t screens{};
+     uint64_t screensTested{};
+     uint64_t switches{};
+@@ -1781,11 +1858,13 @@ UINT FootprintTexelBytes(const DXGI_FORMAT aFormat)
+ 
+ /// Copies the depth under a few points in the middle of a screen to a readback
+ /// buffer, with the screen's own inverse view depth at each, for the calibration.
++/// Only at a present that copied the depth: then the screen's corners and the depth
++/// are of the same moment, which at the presents in between (frame generation's)
++/// they are not quite.
+ void RecordSamples(ID3D12GraphicsCommandList* const aList, const SD::Constants& aConstants,
+                    const float (&aCorners)[8])
+ {
+-    if (s_copy.texture == nullptr || (s_present % kCalibrateEvery) != 0 ||
+-        s_calibration.Direction() == Policy::Convention::Unknown)
++    if (s_copy.texture == nullptr || !s_copied || s_calibration.Direction() == Policy::Convention::Unknown)
+     {
+         return;
+     }
+@@ -1824,8 +1903,8 @@ void RecordSamples(ID3D12GraphicsCommandList* const aList, const SD::Constants&
+     {
+         return;
+     }
+-    const float scaleX = s_selection.extent[0] / s_overlayWidth;
+-    const float scaleY = s_selection.extent[1] / s_overlayHeight;
++    const float scaleX = s_copyExtent[0] / s_overlayWidth;
++    const float scaleY = s_copyExtent[1] / s_overlayHeight;
+     const size_t index = static_cast<size_t>(slot - s_slots.data());
+     const UINT64 base = static_cast<UINT64>(index) * kSamplesPerSlot * kSampleStride;
+     Transition(aList, s_copy.texture, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, s_copy.state,
+@@ -1852,8 +1931,8 @@ void RecordSamples(ID3D12GraphicsCommandList* const aList, const SD::Constants&
+                                    (static_cast<double>(aConstants.plane[1]) * pixel.y) + aConstants.plane[2];
+             const float texelX = std::floor(pixel.x * scaleX);
+             const float texelY = std::floor(pixel.y * scaleY);
+-            if (!(texelX >= 0.0F) || !(texelY >= 0.0F) || texelX >= s_selection.extent[0] ||
+-                texelY >= s_selection.extent[1] || !(inverse > 0.0))
++            if (!(texelX >= 0.0F) || !(texelY >= 0.0F) || texelX >= s_copyExtent[0] ||
++                texelY >= s_copyExtent[1] || !(inverse > 0.0))
+             {
+                 continue;
+             }
+@@ -1917,11 +1996,11 @@ Frame CurrentFrame()
+     Frame frame;
+     frame.overlay[0] = s_overlayWidth;
+     frame.overlay[1] = s_overlayHeight;
+-    frame.depth = s_copied && s_copy.texture != nullptr;
++    frame.depth = s_copyUsable && s_copy.texture != nullptr;
+     if (frame.depth)
+     {
+-        frame.extent[0] = s_selection.extent[0];
+-        frame.extent[1] = s_selection.extent[1];
++        frame.extent[0] = s_copyExtent[0];
++        frame.extent[1] = s_copyExtent[1];
+         frame.texture[0] = static_cast<float>(s_copy.desc.Width);
+         frame.texture[1] = static_cast<float>(s_copy.desc.Height);
+     }
+@@ -2062,17 +2141,17 @@ void LogStatus()
+                              Policy::Describe(s_selection.convention));
+     }
+     Log(LogLevel::Info,
+-        std::format("status: buffer {}; model {}; test {}; last 30 s: {} presents, {} copies, {} screens drawn, "
+-                    "{} through the test, {} samples used, {} switches, {} presents without a buffer, {} draws into "
+-                    "views made before the hooks, {} aliased.",
++        std::format("status: buffer {}; model {}; test {}; last 30 s: {} presents, {} copies, {} waits for a "
++                    "finished frame, {} screens drawn, {} through the test, {} samples used, {} switches, {} presents "
++                    "without a buffer, {} draws into views made before the hooks, {} aliased.",
+                     chosen,
+                     s_calibration.Locked()
+                         ? std::format("device = {} + {:.5f} / z", s_calibration.A(), s_calibration.B())
+                         : std::format("measuring ({} samples, spread {:.1f} %)", s_calibration.Groups(),
+                                       s_calibration.LastSpread() * 100.0),
+                     s_testOn ? "on" : "off", is.presents - was.presents, is.copies - was.copies,
+-                    is.screens - was.screens, is.screensTested - was.screensTested, is.groupsUsed - was.groupsUsed,
+-                    is.switches - was.switches, is.noCandidate - was.noCandidate,
++                    is.waits - was.waits, is.screens - was.screens, is.screensTested - was.screensTested,
++                    is.groupsUsed - was.groupsUsed, is.switches - was.switches, is.noCandidate - was.noCandidate,
+                     is.unresolvedDraws - was.unresolvedDraws, is.aliased - was.aliased));
+     s_countersAtStatus = s_counters;
+     s_lastStatus = now;
+@@ -2082,68 +2161,80 @@ void LogStatus()
+ 
+ void Choose(FrameRecord& aFrame)
+ {
+-    std::vector<Policy::Candidate> candidates;
+-    std::vector<ID3D12Resource*> resources;
+-    std::vector<Track> tracks;
++    // This present's work, per buffer.
++    std::vector<Policy::Candidate> present;
++    for (const auto& [resource, use] : aFrame.uses)
+     {
+-        const std::scoped_lock lock(s_frameMutex);
+-        for (const auto& [resource, use] : aFrame.uses)
++        if (!use.haveDesc)
+         {
+-            if (!use.haveDesc)
+-            {
+-                continue;
+-            }
+-            Policy::Candidate candidate;
+-            candidate.id = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(resource));
+-            candidate.width = static_cast<uint32_t>(std::min<UINT64>(use.desc.Width, 0xFFFFFFFFULL));
+-            candidate.height = use.desc.Height;
+-            candidate.format = static_cast<uint32_t>(use.desc.Format);
+-            candidate.samples = use.desc.SampleDesc.Count;
+-            candidate.mipLevels = use.desc.MipLevels;
+-            candidate.arraySize = use.desc.DepthOrArraySize;
+-            candidate.depthStencil = (use.desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL) != 0;
+-            candidate.twoDimensional = use.desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+-            candidate.draws = use.draws;
+-            candidate.indirectDraws = use.indirect;
+-            candidate.vertices = use.vertices;
+-            candidate.viewportWidth = use.viewportWidth;
+-            candidate.viewportHeight = use.viewportHeight;
+-            candidate.readByShaders = use.readByShaders;
+-            candidates.push_back(candidate);
+-            resources.push_back(resource);
+-            const auto found = s_tracks.find(resource);
+-            tracks.push_back(found != s_tracks.end() ? found->second : Track{});
+-        }
+-    }
+-    const std::vector<size_t> ranked = Policy::Rank(candidates, s_overlayWidth, s_overlayHeight);
+-    const size_t chosen = Policy::Choose(candidates, ranked,
++            continue;
++        }
++        Policy::Candidate candidate;
++        candidate.id = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(resource));
++        candidate.width = static_cast<uint32_t>(std::min<UINT64>(use.desc.Width, 0xFFFFFFFFULL));
++        candidate.height = use.desc.Height;
++        candidate.format = static_cast<uint32_t>(use.desc.Format);
++        candidate.samples = use.desc.SampleDesc.Count;
++        candidate.mipLevels = use.desc.MipLevels;
++        candidate.arraySize = use.desc.DepthOrArraySize;
++        candidate.depthStencil = (use.desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL) != 0;
++        candidate.twoDimensional = use.desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D;
++        candidate.draws = use.draws;
++        candidate.indirectDraws = use.indirect;
++        candidate.vertices = use.vertices;
++        candidate.viewportWidth = use.viewportWidth;
++        candidate.viewportHeight = use.viewportHeight;
++        candidate.readByShaders = use.readByShaders;
++        present.push_back(candidate);
++        s_descs[candidate.id] = use.desc;
++    }
++    // Chosen by the work of the last several presents, not this one's: with frame
++    // generation the game's frame spans several, the scene's buffer drawn in one
++    // of them and small passes' buffers in others.
++    s_history.Add(present);
++    const std::vector<Policy::Candidate>& summed = s_history.Candidates();
++    std::erase_if(s_descs, [&](const auto& aEntry) {
++        return std::none_of(summed.begin(), summed.end(),
++                            [&](const Policy::Candidate& aCandidate) { return aCandidate.id == aEntry.first; });
++    });
++    const std::vector<size_t> ranked = Policy::Rank(summed, s_overlayWidth, s_overlayHeight);
++    const size_t chosen = Policy::Choose(summed, ranked,
+                                          static_cast<uint64_t>(reinterpret_cast<uintptr_t>(s_selection.resource)),
+                                          s_override);
+     // For the debug view: the top of the list.
+     s_candidatesText.clear();
+     for (size_t place = 0; s_debugView && place < ranked.size() && place < 4; ++place)
+     {
+-        const auto& candidate = candidates[ranked[place]];
++        const auto& candidate = summed[ranked[place]];
+         const Policy::Extent extent = Policy::DrawnExtent(candidate);
+-        s_candidatesText += std::format("{}{} {}: {} draws, {} vertices{}\n", ranked[place] == chosen ? "> " : "  ",
+-                                        place + 1, DescribeResource(aFrame.uses[resources[ranked[place]]].desc,
+-                                                                    extent.width, extent.height),
+-                                        candidate.draws, candidate.vertices,
+-                                        candidate.readByShaders ? ", sampled" : "");
++        const auto desc = s_descs.find(candidate.id);
++        s_candidatesText += std::format(
++            "{}{} {}: {} draws, {} vertices{}\n", ranked[place] == chosen ? "> " : "  ", place + 1,
++            desc != s_descs.end() ? DescribeResource(desc->second, extent.width, extent.height) : std::string("?"),
++            candidate.draws, candidate.vertices, candidate.readByShaders ? ", sampled" : "");
+     }
+-    if (chosen >= candidates.size())
++    const auto desc = chosen < summed.size() ? s_descs.find(summed[chosen].id) : s_descs.end();
++    if (desc == s_descs.end())
+     {
+         ++s_counters.noCandidate;
++        s_selection.seen = false; // nothing of the game's to touch at this present
+         return;
+     }
+-    const Policy::Candidate& candidate = candidates[chosen];
+-    const Track& track = tracks[chosen];
+-    ID3D12Resource* const resource = resources[chosen];
+-    const FrameUse& use = aFrame.uses[resource];
++    const Policy::Candidate& candidate = summed[chosen];
++    auto* const resource = reinterpret_cast<ID3D12Resource*>(static_cast<uintptr_t>(candidate.id));
++    Track track;
++    {
++        const std::scoped_lock lock(s_frameMutex);
++        if (const auto found = s_tracks.find(resource); found != s_tracks.end())
++        {
++            track = found->second;
++        }
++    }
++    const auto use = aFrame.uses.find(resource);
+     const Policy::Extent extent = Policy::DrawnExtent(candidate);
+     Selection selection;
+     selection.resource = resource;
+-    selection.desc = use.desc;
++    selection.desc = desc->second;
+     selection.family = Policy::FamilyOf(candidate.format);
+     selection.extent[0] = extent.width;
+     selection.extent[1] = extent.height;
+@@ -2160,8 +2251,8 @@ void Choose(FrameRecord& aFrame)
+     {
+         selection.state[1] = selection.state[0];
+     }
+-    selection.cleared = use.cleared || track.cleared;
+-    selection.clearDepth = use.cleared ? use.clearDepth : track.clearDepth;
++    selection.cleared = track.cleared;
++    selection.clearDepth = track.clearDepth;
+     selection.convention = selection.cleared ? Policy::FromClear(selection.clearDepth) : Policy::Convention::Unknown;
+     if (selection.convention == Policy::Convention::Unknown)
+     {
+@@ -2177,17 +2268,23 @@ void Choose(FrameRecord& aFrame)
+         WarnOnce(s_warnedState, "no state change of the depth buffer has been seen; it is taken to be in DEPTH_WRITE "
+                                 "at present.");
+     }
++    selection.seen = use != aFrame.uses.end();
++    selection.aliasedAway = selection.seen && use->second.aliasedAway;
++    selection.writes = track.writes;
++    selection.settledSinceClear = track.settledSinceClear;
++    selection.everSettled = track.everSettled;
+     if (resource != s_selection.resource)
+     {
+         ++s_counters.switches;
+-        if (resource != s_lastLogged)
++        const auto now = std::chrono::steady_clock::now();
++        if (s_lastSwitchLog == std::chrono::steady_clock::time_point{} || now - s_lastSwitchLog >= kSwitchLogEvery)
+         {
+-            s_lastLogged = resource;
++            s_lastSwitchLog = now;
+             Log(LogLevel::Info,
+-                std::format("the scene's depth buffer is {} {}: {} draws, {} vertices, {} indirect{}; cleared to {}; "
+-                            "state at present {}{}. Ranked: {}",
+-                            Hex(resource), DescribeResource(use.desc, extent.width, extent.height), candidate.draws,
+-                            candidate.vertices, candidate.indirectDraws,
++                std::format("the scene's depth buffer is {} {}: {} draws, {} vertices, {} indirect over the last few "
++                            "presents{}; cleared to {}; state at present {}{}; the best of {}.",
++                            Hex(resource), DescribeResource(selection.desc, extent.width, extent.height),
++                            candidate.draws, candidate.vertices, candidate.indirectDraws,
+                             candidate.readByShaders ? ", also sampled by the game" : "",
+                             selection.cleared ? std::format("{}", selection.clearDepth) : std::string("(not seen)"),
+                             StateName(selection.state[0]),
+@@ -2196,16 +2293,13 @@ void Choose(FrameRecord& aFrame)
+                             ranked.size()));
+         }
+     }
+-    selection.aliasedAway = use.aliasedAway;
+     s_selection = selection;
+-    s_selectedAt = s_present;
+     s_calibration.SetConvention(selection.convention);
+-    if (use.aliasedAway)
++    if (selection.aliasedAway)
+     {
+         ++s_counters.aliased;
+         WarnOnce(s_warnedAliased, "the game gave the depth buffer's memory to another resource after drawing with "
+-                                  "it, so at present it does not hold the scene: screens are drawn without the test "
+-                                  "in such frames.");
++                                  "it, so at present it does not hold the scene: the last copy is kept.");
+     }
+ }
+ } // namespace
+@@ -2328,6 +2422,16 @@ void OnGraphicsShutdown()
+     s_planeBytes = 0;
+     s_slots = {};
+     s_selection = Selection{};
++    s_history.Clear();
++    s_descs.clear();
++    s_lastSwitchLog = {};
++    s_copyOf = nullptr;
++    s_copyWrites = 0;
++    s_copyPresent = 0;
++    s_waitsSinceCopy = 0;
++    s_copyExtent[0] = 0.0F;
++    s_copyExtent[1] = 0.0F;
++    s_copyUsable = false;
+     SafeRelease(s_device);
+     s_viewCpu = {};
+     s_viewGpu = {};
+@@ -2339,6 +2443,7 @@ void PrepareFrame(ID3D12GraphicsCommandList* const aCommands, const uint64_t aCo
+     ++s_present;
+     s_frameList = aCommands;
+     s_copied = false;
++    s_copyUsable = false;
+     s_overlayWidth = std::max(1.0F, aOverlayWidth);
+     s_overlayHeight = std::max(1.0F, aOverlayHeight);
+     FrameRecord frame;
+@@ -2363,20 +2468,42 @@ void PrepareFrame(ID3D12GraphicsCommandList* const aCommands, const uint64_t aCo
+     PollKeys();
+     Choose(frame);
+     LogStatus();
+-    if (s_selectedAt != s_present || s_selection.resource == nullptr)
+-    {
+-        return;
+-    }
+     const bool wanted = s_debugView || (s_lastScreenAt != 0 && s_present <= s_lastScreenAt + kCopyWhileScreensWithin);
+-    if (!wanted || s_selection.aliasedAway || !EnsureCopy(s_selection.desc, s_selection.family))
+-    {
+-        return;
+-    }
+-    s_copied = RecordCopy(aCommands);
+-    if (s_copied)
+-    {
+-        ++s_counters.copies;
++    if (wanted && s_selection.resource != nullptr)
++    {
++        Policy::CopyInputs inputs;
++        inputs.seenThisPresent = s_selection.seen;
++        inputs.writtenSinceCopy = s_copyOf != s_selection.resource || s_copyWrites != s_selection.writes;
++        inputs.aliasedAway = s_selection.aliasedAway;
++        inputs.everSettled = s_selection.everSettled;
++        inputs.settledSinceClear = s_selection.settledSinceClear;
++        inputs.readOnlyNow = s_selection.stateKnown && IsReadOnly(s_selection.state[0]);
++        inputs.waits = s_waitsSinceCopy;
++        if (Policy::ShouldCopy(inputs))
++        {
++            if (EnsureCopy(s_selection.desc, s_selection.family) && RecordCopy(aCommands))
++            {
++                s_copied = true;
++                ++s_counters.copies;
++                s_copyOf = s_selection.resource;
++                s_copyWrites = s_selection.writes;
++                s_copyPresent = s_present;
++                s_waitsSinceCopy = 0;
++                s_copyExtent[0] = s_selection.extent[0];
++                s_copyExtent[1] = s_selection.extent[1];
++            }
++        }
++        else if (inputs.seenThisPresent && inputs.writtenSinceCopy && !inputs.aliasedAway)
++        {
++            ++s_counters.waits; // mid-frame: the last finished frame's copy is kept
++            ++s_waitsSinceCopy;
++        }
+     }
++    // The copy is used at every present until a newer one replaces it: with frame
++    // generation most presents show an image the game did not render, and no depth
++    // is drawn for them.
++    s_copyUsable = s_copy.texture != nullptr && s_copyOf != nullptr &&
++                   s_present - s_copyPresent <= Policy::kCopyFreshForPresents;
+ }
+ 
+ void FrameSubmitted(const uint64_t aFenceValue)
+@@ -2387,9 +2514,9 @@ void FrameSubmitted(const uint64_t aFenceValue)
+         return;
+     }
+     s_lastFence = aFenceValue;
+-    if (s_copied)
++    if (s_copied || s_copyUsable)
+     {
+-        s_copy.lastFence = aFenceValue;
++        s_copy.lastFence = aFenceValue; // written or read by this frame
+     }
+     for (auto& slot : s_slots)
+     {
+@@ -2415,9 +2542,9 @@ bool DrawScreen(ImDrawList& aDraw, const D3D12_GPU_DESCRIPTOR_HANDLE aPicture, c
+     }
+     // Remembered before anything can refuse, so the next present copies the depth.
+     s_lastScreenAt = s_present + 1;
+-    // Only while a buffer was found lately: otherwise this is the old drawing with
+-    // more steps, and the old drawing is the one known to work.
+-    if (s_selection.resource == nullptr || s_present - s_selectedAt > 2)
++    // Only while there is a recent copy of the game's depth: otherwise this is the
++    // old drawing with more steps, and the old drawing is the one known to work.
++    if (!s_copyUsable)
+     {
+         return false;
+     }
+@@ -2448,10 +2575,10 @@ void DrawOverlay(ImDrawList& aForeground, const float aOverlayWidth, const float
+     }
+     const float margin = 16.0F;
+     std::string text = "TV depth (Ctrl+Shift: F10 view, F11 test, F9 next buffer)\n";
+-    if (s_selection.resource != nullptr && s_present - s_selectedAt <= 2)
++    if (s_copyUsable)
+     {
+         const float width = std::max(64.0F, aOverlayWidth * 0.3F);
+-        const float height = width * (s_selection.extent[1] / std::max(1.0F, s_selection.extent[0]));
++        const float height = width * (s_copyExtent[1] / std::max(1.0F, s_copyExtent[0]));
+         ScreenDraw draw;
+         const float left = margin;
+         const float top = margin;
+diff --git a/client/src/webui/SceneDepthPolicy.hpp b/client/src/webui/SceneDepthPolicy.hpp
+index 4593061f..0556c01d 100644
+--- a/client/src/webui/SceneDepthPolicy.hpp
++++ b/client/src/webui/SceneDepthPolicy.hpp
+@@ -10,8 +10,10 @@
+ //   * Which buffer. A game draws into several depth buffers a frame: shadow maps,
+ //     the scene, sometimes a buffer for the interface. SceneDepth.cpp counts, per
+ //     buffer, the draws the game makes while it is bound (the method ReShade's
+-//     generic depth add-on uses, which works on this game); `Rank` keeps the ones
+-//     shaped like the picture and orders them by that work.
++//     generic depth add-on uses, which works on this game); `History` sums that
++//     work over the last several presents (a frame can span several), and `Rank`
++//     keeps the ones shaped like the picture and orders them by it. `ShouldCopy`
++//     says when the chosen buffer holds a finished frame worth copying.
+ //   * What a value means. Every perspective projection stores device = A + B / z
+ //     for view depth z. The direction (A) follows from the value the buffer is
+ //     cleared to; B is the camera's near plane, which nothing in the overlay
+@@ -347,6 +349,182 @@ struct Extent
+     return best;
+ }
+ 
++/// Each buffer's work over the last several presents, rather than in one.
++///
++/// A game whose frames span several presents draws into its scene's buffer in some
++/// of them only. With frame generation the game renders one frame for every two to
++/// four images presented, and its work lands between whichever presents it falls
++/// between: the scene's in one, a small pass's in the next, nothing in a third.
++/// Judged one present at a time, the choice took turns between the scene and the
++/// small pass, and had nothing at all in between. Here every remembered buffer's
++/// counts shrink by `kKeep` at each present and that present's are added: the
++/// scene's buffer stays the one that did the most work, and a present with no depth
++/// work changes nothing. `Candidates()` are these sums, for `Rank` and `Choose`.
++class History
++{
++public:
++    static constexpr double kKeep = 0.875;  ///< per present: the work of about the last eight
++    static constexpr double kForget = 0.05; ///< a buffer whose draws have shrunk below this is forgotten
++    static constexpr size_t kCapacity = 32;
++
++    /// One present's candidates: what each buffer did since the previous present.
++    void Add(std::span<const Candidate> aPresent)
++    {
++        for (Entry& entry : m_entries)
++        {
++            entry.draws *= kKeep;
++            entry.indirect *= kKeep;
++            entry.vertices *= kKeep;
++            entry.read *= kKeep;
++        }
++        for (const Candidate& candidate : aPresent)
++        {
++            Entry* entry = Find(candidate.id);
++            if (entry != nullptr && !SameShape(entry->latest, candidate))
++            {
++                *entry = Entry{}; // another buffer, made where a gone one was
++            }
++            if (entry == nullptr)
++            {
++                entry = Make();
++            }
++            const float viewportWidth = candidate.viewportWidth >= 1.0F ? candidate.viewportWidth
++                                                                        : entry->latest.viewportWidth;
++            const float viewportHeight = candidate.viewportHeight >= 1.0F ? candidate.viewportHeight
++                                                                          : entry->latest.viewportHeight;
++            entry->latest = candidate;
++            entry->latest.viewportWidth = viewportWidth;
++            entry->latest.viewportHeight = viewportHeight;
++            entry->draws += candidate.draws;
++            entry->indirect += candidate.indirectDraws;
++            entry->vertices += static_cast<double>(candidate.vertices);
++            entry->read += candidate.readByShaders ? 1.0 : 0.0;
++        }
++        std::erase_if(m_entries, [](const Entry& aEntry) { return aEntry.draws < kForget; });
++        m_candidates.clear();
++        for (const Entry& entry : m_entries)
++        {
++            Candidate sum = entry.latest;
++            sum.draws = Round32(entry.draws);
++            sum.indirectDraws = Round32(entry.indirect);
++            sum.vertices = static_cast<uint64_t>(std::min(std::floor(entry.vertices + 0.5), 1.8e19));
++            sum.readByShaders = entry.read >= 0.25;
++            m_candidates.push_back(sum);
++        }
++    }
++
++    [[nodiscard]] const std::vector<Candidate>& Candidates() const { return m_candidates; }
++
++    void Clear()
++    {
++        m_entries.clear();
++        m_candidates.clear();
++    }
++
++private:
++    struct Entry
++    {
++        Candidate latest; ///< its shape, format and viewport, from its last use
++        double draws{};
++        double indirect{};
++        double vertices{};
++        double read{};
++    };
++
++    [[nodiscard]] static bool SameShape(const Candidate& aLeft, const Candidate& aRight)
++    {
++        return aLeft.width == aRight.width && aLeft.height == aRight.height && aLeft.format == aRight.format &&
++               aLeft.samples == aRight.samples && aLeft.mipLevels == aRight.mipLevels &&
++               aLeft.arraySize == aRight.arraySize && aLeft.depthStencil == aRight.depthStencil &&
++               aLeft.twoDimensional == aRight.twoDimensional;
++    }
++
++    [[nodiscard]] static uint32_t Round32(const double aValue)
++    {
++        return static_cast<uint32_t>(std::min(std::floor(aValue + 0.5), 4294967295.0));
++    }
++
++    Entry* Find(const uint64_t aId)
++    {
++        for (Entry& entry : m_entries)
++        {
++            if (entry.latest.id == aId)
++            {
++                return &entry;
++            }
++        }
++        return nullptr;
++    }
++
++    /// Room for a buffer not seen before: a new entry, or the idlest one's.
++    Entry* Make()
++    {
++        if (m_entries.size() < kCapacity)
++        {
++            return &m_entries.emplace_back();
++        }
++        Entry* idlest = &m_entries.front();
++        for (Entry& entry : m_entries)
++        {
++            if (entry.draws < idlest->draws)
++            {
++                idlest = &entry;
++            }
++        }
++        *idlest = Entry{};
++        return idlest;
++    }
++
++    std::vector<Entry> m_entries;
++    std::vector<Candidate> m_candidates;
++};
++
++// -- when to copy -------------------------------------------------------------------
++
++/// What is known at a present about the chosen buffer.
++struct CopyInputs
++{
++    bool seenThisPresent{};   ///< the lists run since the last present drew into it, cleared it or moved it
++    bool writtenSinceCopy{};  ///< drawn into or cleared since the overlay last copied it (or never copied)
++    bool aliasedAway{};       ///< its memory belongs to another resource at present
++    bool everSettled{};       ///< the game has been seen to move it into a read-only state
++    bool settledSinceClear{}; ///< ...since its last clear: this frame's depth is finished
++    bool readOnlyNow{};       ///< in a read-only state at present
++    uint32_t waits{};         ///< presents since the last copy at which it had changed but was mid-frame
++};
++
++/// A buffer found mid-frame at this many presents in a row is copied anyway, so a
++/// game with an order this does not expect loses steadiness, not the test.
++inline constexpr uint32_t kForceCopyAfterWaits = 8;
++
++/// A copy is used for the screens drawn at every present until a newer one is made,
++/// for at most this many presents: several frames of a game showing four images per
++/// frame it renders, and a fraction of a second at any rate, so a scene the game has
++/// stopped drawing does not keep hiding screens.
++inline constexpr uint64_t kCopyFreshForPresents = 30;
++
++/// Copy the chosen buffer at this present, or keep the copy the overlay has.
++///
++/// Only a buffer the game used since the last present is touched (one it has let go
++/// of may be gone), and only when it changed since the last copy. A buffer the game
++/// reads afterwards, as a scene's depth is read by its lighting, ambient occlusion
++/// and upscaler, is copied only once its frame's depth is finished: moved into a
++/// read-only state since its last clear, or left in one. A frame whose work spans
++/// presents would otherwise be copied half drawn, and whatever was drawn last (a
++/// hand, a body) would flicker in front of the screen.
++[[nodiscard]] inline bool ShouldCopy(const CopyInputs& aInputs)
++{
++    if (!aInputs.seenThisPresent || !aInputs.writtenSinceCopy || aInputs.aliasedAway)
++    {
++        return false;
++    }
++    if (!aInputs.everSettled || aInputs.settledSinceClear || aInputs.readOnlyNow)
++    {
++        return true;
++    }
++    return aInputs.waits >= kForceCopyAfterWaits;
++}
++
+ // -- what a value means -------------------------------------------------------------
+ 
+ enum class Convention : uint8_t
+diff --git a/client/tests/SceneDepthPolicyTests.cpp b/client/tests/SceneDepthPolicyTests.cpp
+index d01f68b7..ec914796 100644
+--- a/client/tests/SceneDepthPolicyTests.cpp
++++ b/client/tests/SceneDepthPolicyTests.cpp
+@@ -175,6 +175,199 @@ void Stickiness()
+     CHECK(Policy::Choose(none, ranked, 0, -1) == none.size());
+ }
+ 
++/// One present's choice over the history, as SceneDepth makes it.
++uint64_t ChooseOver(const Policy::History& aHistory, const uint64_t aPrevious)
++{
++    const auto& summed = aHistory.Candidates();
++    const auto ranked = Policy::Rank(summed, 2560, 1600);
++    const size_t index = Policy::Choose(summed, ranked, aPrevious, -1);
++    return index < summed.size() ? summed[index].id : 0;
++}
++
++void FrameGeneration()
++{
++    // What the game's log showed with frame generation: about four presents for each
++    // frame the game renders. The scene's buffer (D32_S8 at a third of 2560x1600,
++    // ~2400 draws) is drawn between one pair of presents, a small pass's buffer
++    // (D32, 119 draws) between the next, and nothing between the other two.
++    Policy::Candidate scene = Buffer(1, 853, 533, 2390, 3700000);
++    scene.indirectDraws = 42;
++    scene.readByShaders = true;
++    Policy::Candidate small = Buffer(2, 853, 533, 119, 21858);
++    small.format = Policy::Dxgi::kR32Typeless;
++    small.readByShaders = true;
++
++    // One present at a time, the small pass's present chooses the small buffer:
++    // the choice took turns with every present, and the copy with it.
++    const std::vector<Policy::Candidate> alone = {small};
++    const auto rankedAlone = Policy::Rank(alone, 2560, 1600);
++    CHECK(alone[Policy::Choose(alone, rankedAlone, 1, -1)].id == 2);
++
++    // Over the history it is the scene's buffer at every present, from the first.
++    Policy::History history;
++    uint64_t chosen = 0;
++    for (int present = 0; present < 64; ++present)
++    {
++        std::vector<Policy::Candidate> now;
++        if (present % 4 == 0)
++        {
++            now.push_back(scene);
++        }
++        else if (present % 4 == 1)
++        {
++            now.push_back(small);
++        }
++        history.Add(now);
++        chosen = ChooseOver(history, chosen);
++        CHECK(chosen == 1);
++    }
++
++    // A new scene buffer (the game changed resolution): the old one is left within
++    // a few frames, and the new one kept from then on.
++    Policy::Candidate next = Buffer(3, 1280, 800, 2390, 3700000);
++    next.readByShaders = true;
++    int switchedAt = -1;
++    for (int present = 0; present < 48; ++present)
++    {
++        std::vector<Policy::Candidate> now;
++        if (present % 4 == 0)
++        {
++            now.push_back(next);
++        }
++        history.Add(now);
++        chosen = ChooseOver(history, chosen);
++        if (chosen == 3 && switchedAt < 0)
++        {
++            switchedAt = present;
++        }
++        if (switchedAt >= 0)
++        {
++            CHECK(chosen == 3);
++        }
++    }
++    CHECK(switchedAt >= 0 && switchedAt <= 16);
++
++    // Gone buffers fade, and are forgotten once their work has shrunk to nothing.
++    for (int present = 0; present < 96; ++present)
++    {
++        std::vector<Policy::Candidate> now;
++        if (present % 4 == 0)
++        {
++            now.push_back(next);
++        }
++        history.Add(now);
++        CHECK(ChooseOver(history, chosen) == 3);
++    }
++    CHECK(history.Candidates().size() == 1 && history.Candidates()[0].id == 3);
++}
++
++void HistoryKeeping()
++{
++    // A present's counts are added, earlier ones shrink by kKeep a present.
++    Policy::History history;
++    const std::vector<Policy::Candidate> one = {Buffer(5, 2560, 1600, 100, 8000)};
++    history.Add(one);
++    CHECK(history.Candidates().size() == 1 && history.Candidates()[0].draws == 100);
++    history.Add({});
++    CHECK(history.Candidates()[0].draws == 88); // 87.5, rounded
++    CHECK(history.Candidates()[0].vertices == 7000);
++
++    // The viewport of the last present that drew is kept through presents that did not.
++    std::vector<Policy::Candidate> drawn = {Buffer(6, 2560, 1600, 50, 5000)};
++    drawn[0].viewportWidth = 1706.0F;
++    drawn[0].viewportHeight = 1066.0F;
++    history.Add(drawn);
++    history.Add({});
++    for (const auto& candidate : history.Candidates())
++    {
++        if (candidate.id == 6)
++        {
++            CHECK(candidate.viewportWidth == 1706.0F && candidate.viewportHeight == 1066.0F);
++        }
++    }
++
++    // Another buffer made where a gone one was (same address, another shape): its
++    // counts start again.
++    const std::vector<Policy::Candidate> reshaped = {Buffer(5, 1280, 800, 10, 300)};
++    history.Add(reshaped);
++    for (const auto& candidate : history.Candidates())
++    {
++        if (candidate.id == 5)
++        {
++            CHECK(candidate.width == 1280 && candidate.draws == 10);
++        }
++    }
++
++    // A buffer drawn once stops counting as drawn after a few presents, and is
++    // forgotten after a few more.
++    Policy::History once;
++    once.Add(std::vector<Policy::Candidate>{Buffer(7, 2560, 1600, 1, 6)});
++    for (int present = 0; present < 6; ++present)
++    {
++        once.Add({});
++    }
++    CHECK(once.Candidates().size() == 1);
++    CHECK(Policy::Judge(once.Candidates()[0], 2560, 1600) == Policy::Verdict::NotDrawn);
++    for (int present = 0; present < 20; ++present)
++    {
++        once.Add({});
++    }
++    CHECK(once.Candidates().empty());
++
++    // At most kCapacity remembered.
++    Policy::History many;
++    std::vector<Policy::Candidate> crowd;
++    for (uint64_t id = 1; id <= Policy::History::kCapacity + 8; ++id)
++    {
++        crowd.push_back(Buffer(id, 2560, 1600, static_cast<uint32_t>(id), id * 10));
++    }
++    many.Add(crowd);
++    CHECK(many.Candidates().size() == Policy::History::kCapacity);
++}
++
++void CopyTiming()
++{
++    Policy::CopyInputs finished;
++    finished.seenThisPresent = true;
++    finished.writtenSinceCopy = true;
++    finished.everSettled = true;
++    finished.settledSinceClear = true;
++    CHECK(Policy::ShouldCopy(finished));
++
++    // Not used since the last present (it may be gone), not changed since the last
++    // copy, or its memory given away: the copy the overlay has is kept.
++    Policy::CopyInputs inputs = finished;
++    inputs.seenThisPresent = false;
++    CHECK(!Policy::ShouldCopy(inputs));
++    inputs = finished;
++    inputs.writtenSinceCopy = false;
++    CHECK(!Policy::ShouldCopy(inputs));
++    inputs = finished;
++    inputs.aliasedAway = true;
++    CHECK(!Policy::ShouldCopy(inputs));
++
++    // Mid-frame (cleared and drawn into, not yet done with): kept, unless it has been
++    // mid-frame at so many presents in a row that a game with an odd order would
++    // never get a copy.
++    Policy::CopyInputs midFrame = finished;
++    midFrame.settledSinceClear = false;
++    midFrame.waits = 1;
++    CHECK(!Policy::ShouldCopy(midFrame));
++    midFrame.readOnlyNow = true; // left where nothing writes it
++    CHECK(Policy::ShouldCopy(midFrame));
++    midFrame.readOnlyNow = false;
++    midFrame.waits = Policy::kForceCopyAfterWaits;
++    CHECK(Policy::ShouldCopy(midFrame));
++
++    // A game that never reads its depth: copied whenever it changed.
++    Policy::CopyInputs neverRead = finished;
++    neverRead.everSettled = false;
++    neverRead.settledSinceClear = false;
++    CHECK(Policy::ShouldCopy(neverRead));
++    // A copy outlives the presents a forced one can take to come.
++    CHECK(Policy::kCopyFreshForPresents > Policy::kForceCopyAfterWaits * 2);
++}
++
+ /// The points one screen gives: the glass at `aDepth` metres (reversed, infinite
+ /// far, near plane `aNear`), some of them covered by something at `aCover` metres.
+ std::vector<Policy::Sample> Screen(const double aNear, const double aDepth, const size_t aCovered, const double aCover)
+@@ -291,7 +484,10 @@ int main()
+     Shapes();
+     Ranking();
+     Stickiness();
++    FrameGeneration();
++    HistoryKeeping();
++    CopyTiming();
+     Calibration();
+-    std::cout << "SceneDepthPolicy: buffer choice and depth calibration hold\n";
++    std::cout << "SceneDepthPolicy: buffer choice, copy timing and depth calibration hold\n";
+     return 0;
+ }
+-- 
+2.34.1
+

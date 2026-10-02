@@ -1,0 +1,2238 @@
+From 0039cb7c47d094f61c739e191fd70c1e0adb48a0 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 1 Oct 2026 02:00:00 +0000
+Subject: [PATCH] Draw a television's picture in perspective, not bent along a
+ diagonal
+
+DrawSurfaceQuad handed ImGui a television's four projected corners as one image
+quad. ImGui splits it into two triangles and interpolates the texture linearly in
+screen space, which a perspective projection does not: the picture was right at
+the four corners and bent everywhere between them, kinked along the diagonal the
+triangles share, and the bend changed as the player walked round the set. That is
+the report -- the picture moves when the screen is looked at from another angle --
+and it is invisible to every log: the screen is in the right place, the right
+size, drawing every frame. Seen square it is exact, which is how a set is usually
+checked. Measured from ImGui's own vertex output against a pinhole ground truth,
+it is 102 px on a 1.16 m television 1.5 m away turned 50 degrees, and 307 px on
+the 150 ft cinema seen 35 degrees off-axis.
+
+The four corners determine the plane's whole map to the screen (a homography,
+closed form). ScreenTessellation.hpp solves it, bounds its second derivatives in
+closed form, and picks the smallest grid of cells inside which linear
+interpolation errs by less than 0.75 px, capped at 48 x 48; PerspectiveImage.hpp
+queues that grid with exact vertices. A set seen square is one cell -- the same
+single quad and four vertices as before -- and a quad the map refuses (non-finite,
+degenerate, or not convex, which is what a corner behind the eye looks like after
+the divide) is drawn exactly as before. Cells wholly outside the view are not
+queued. The cells share one descriptor and tint, so ImGui merges them into one
+draw command: the most oblique set costs 9216 vertices and still one draw.
+
+The pointer was already placed perspective-exactly (MediaScreens interpolates the
+world corners and projects), so on an oblique set the cursor and the element it
+appeared to be over disagreed by the same error; drawing the picture correctly
+makes them agree.
+
+Tests, both registered beside ScreenMotion's:
+
+  * Open77.ScreenTessellation.Tests -- the arithmetic against an independent
+    pinhole model: four corners reproduce the interior, the chosen grid is within
+    the bound it reports and the bound within the tolerance below the cap, the
+    bound is not vacuous against brute force, the grid is watertight, culling and
+    every refusal.
+  * Open77.PerspectiveImage.Tests -- the drawing, through a real ImGui draw list:
+    a set seen square is the identical single quad; an oblique one puts every
+    texel the GPU would sample within the tolerance of where the plane puts it
+    (102 px -> 0.43 px), in one draw command, watertight, uvs covering the whole
+    picture; a set seen from behind; the cinema partly out of view (307 px ->
+    0.51 px, cells out of view skipped); a crossed quad and a NaN corner drawn as
+    before.
+
+Not done here, and unchanged by this: depth. The overlay pass still has no depth
+buffer, so a screen is still drawn over anything between it and the camera --
+hands, bodies, walls. That needs the game's depth at the moment the overlay
+draws, which a capture has to locate first.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Qum3jofThN9KuYZN8xcYdD
+---
+ client/CMakeLists.txt                    |   17 +
+ client/src/webui/PerspectiveImage.hpp    |   85 ++
+ client/src/webui/ScreenTessellation.hpp  |  475 +++++++++
+ client/src/webui/WebUiService.cpp        |   23 +-
+ client/src/webui/WebUiService.hpp        |   11 +-
+ client/tests/PerspectiveImageTests.cpp   |  364 +++++++
+ client/tests/ScreenTessellationTests.cpp | 1110 ++++++++++++++++++++++
+ 7 files changed, 2071 insertions(+), 14 deletions(-)
+ create mode 100644 client/src/webui/PerspectiveImage.hpp
+ create mode 100644 client/src/webui/ScreenTessellation.hpp
+ create mode 100644 client/tests/PerspectiveImageTests.cpp
+ create mode 100644 client/tests/ScreenTessellationTests.cpp
+
+diff --git a/client/CMakeLists.txt b/client/CMakeLists.txt
+index a02172a1..d954c9a1 100644
+--- a/client/CMakeLists.txt
++++ b/client/CMakeLists.txt
+@@ -972,6 +972,23 @@ if(BUILD_TESTING)
+     set_target_properties(Open77.ScreenMotion.Tests PROPERTIES FOLDER "Tests")
+     add_test(NAME Open77.ScreenMotion.Tests COMMAND Open77.ScreenMotion.Tests)
+ 
++    # The grid a television's picture is drawn as, so that it lies in its own plane
++    # instead of bending along a diagonal as the player walks round the set. Pure
++    # arithmetic, like the two above: a bent picture is invisible to every log.
++    add_executable(Open77.ScreenTessellation.Tests tests/ScreenTessellationTests.cpp)
++    target_include_directories(Open77.ScreenTessellation.Tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
++    set_target_properties(Open77.ScreenTessellation.Tests PROPERTIES FOLDER "Tests")
++    add_test(NAME Open77.ScreenTessellation.Tests COMMAND Open77.ScreenTessellation.Tests)
++
++    # What DrawSurfaceQuad hands the GPU with that grid, read back from a real ImGui
++    # draw list: every texel within a pixel of where the plane puts it, one draw
++    # command, and a set seen square still drawn as the single quad it always was.
++    add_executable(Open77.PerspectiveImage.Tests tests/PerspectiveImageTests.cpp)
++    target_include_directories(Open77.PerspectiveImage.Tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
++    target_link_libraries(Open77.PerspectiveImage.Tests PRIVATE Open77.ImGui)
++    set_target_properties(Open77.PerspectiveImage.Tests PROPERTIES FOLDER "Tests")
++    add_test(NAME Open77.PerspectiveImage.Tests COMMAND Open77.PerspectiveImage.Tests)
++
+     add_executable(Open77.SwimmingPresentation.Tests tests/SwimmingPresentationTests.cpp)
+     target_include_directories(Open77.SwimmingPresentation.Tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src" "${PROJECT_SOURCE_DIR}/core/include")
+     target_compile_features(Open77.SwimmingPresentation.Tests PRIVATE cxx_std_20)
+diff --git a/client/src/webui/PerspectiveImage.hpp b/client/src/webui/PerspectiveImage.hpp
+new file mode 100644
+index 00000000..3c1ce0c1
+--- /dev/null
++++ b/client/src/webui/PerspectiveImage.hpp
+@@ -0,0 +1,85 @@
++#pragma once
++
++// A WebUI surface drawn onto a world quad IN PERSPECTIVE.
++//
++// ---------------------------------------------------------------------------
++// WHY THIS IS NOT ONE `AddImageQuad`
++// ---------------------------------------------------------------------------
++//
++// `WebUiService::DrawSurfaceQuad` used to hand ImGui a television's four
++// projected corners as one image quad. ImGui splits that into two triangles and
++// interpolates the texture LINEARLY in screen space, which a perspective
++// projection does not: the picture was right at the four corners and bent
++// everywhere between them, along the diagonal where the two triangles meet, and
++// the bend changed as the player walked round the set -- which is how it was
++// reported: the screen moves when it is looked at from a different angle. Head-on
++// it is exactly right, which is how a television is usually checked. On the
++// 150 ft cinema seen from the side it is hundreds of pixels.
++//
++// `ScreenTessellation` turns the four corners into the plane's own map (a
++// homography) and picks the smallest grid of cells inside which linear
++// interpolation errs by less than a pixel; this draws that grid, every vertex
++// exact. A head-on screen is one cell -- the single quad drawn before, with the
++// same four vertices -- and a quad the map refuses (a corner behind the eye) is
++// drawn exactly as before too.
++//
++// Consecutive `AddImageQuad` calls with one texture merge into one draw command,
++// so the grid is still a single draw: 9216 vertices for the most oblique set the
++// cap allows, which a 16-bit index addresses even before the DX12 backend's
++// vertex offsets.
++//
++// Its own header, with ImGui in it, so a test can drive exactly the calls
++// `DrawSurfaceQuad` makes into a real `ImDrawList` and read back what the GPU is
++// handed (`tests/PerspectiveImageTests.cpp`); `ScreenTessellation.hpp` stays free
++// of ImGui and of the engine.
++
++#include "ScreenTessellation.hpp"
++
++#include <imgui.h>
++
++namespace op77::WorldOverlay::PerspectiveImage
++{
++/// Queues `aTexture` over `aCorners` -- eight floats in pixels, top-left,
++/// top-right, bottom-right, bottom-left: the texture's (0,0), (1,0), (1,1) and
++/// (0,1) -- with `aTint` on every vertex.
++///
++/// Returns the cells per side it drew: 1 for a head-on quad or one the map
++/// refuses (one `AddImageQuad`, exactly as before), more for an oblique one.
++/// Cells wholly outside the draw list's clip rectangle are not queued, which is
++/// most of the grid when a large set fills the view.
++inline int Add(ImDrawList& aDraw, const ImTextureID aTexture, const float (&aCorners)[8],
++               const ImU32 aTint)
++{
++    namespace Tess = ScreenTessellation;
++    Tess::Homography map;
++    if (Tess::Solve(aCorners, map) == Tess::Status::Ok)
++    {
++        const Tess::Choice choice = Tess::ChooseCells(map);
++        if (choice.cells > 1)
++        {
++            const ImVec2 clipMin = aDraw.GetClipRectMin();
++            const ImVec2 clipMax = aDraw.GetClipRectMax();
++            const Tess::Rect visible{clipMin.x, clipMin.y, clipMax.x, clipMax.y};
++            Tess::ForEachCell(map, choice.cells, choice.cells, &visible,
++                              [&aDraw, aTexture, aTint](const Tess::Point (&aAt)[4],
++                                                        const Tess::Point (&aUv)[4]) {
++                                  aDraw.AddImageQuad(aTexture,
++                                                     ImVec2(aAt[0].x, aAt[0].y),
++                                                     ImVec2(aAt[1].x, aAt[1].y),
++                                                     ImVec2(aAt[2].x, aAt[2].y),
++                                                     ImVec2(aAt[3].x, aAt[3].y),
++                                                     ImVec2(aUv[0].x, aUv[0].y),
++                                                     ImVec2(aUv[1].x, aUv[1].y),
++                                                     ImVec2(aUv[2].x, aUv[2].y),
++                                                     ImVec2(aUv[3].x, aUv[3].y), aTint);
++                              });
++            return choice.cells;
++        }
++    }
++    aDraw.AddImageQuad(aTexture, ImVec2(aCorners[0], aCorners[1]),
++                       ImVec2(aCorners[2], aCorners[3]), ImVec2(aCorners[4], aCorners[5]),
++                       ImVec2(aCorners[6], aCorners[7]), ImVec2(0.0F, 0.0F),
++                       ImVec2(1.0F, 0.0F), ImVec2(1.0F, 1.0F), ImVec2(0.0F, 1.0F), aTint);
++    return 1;
++}
++} // namespace op77::WorldOverlay::PerspectiveImage
+diff --git a/client/src/webui/ScreenTessellation.hpp b/client/src/webui/ScreenTessellation.hpp
+new file mode 100644
+index 00000000..15e765d7
+--- /dev/null
++++ b/client/src/webui/ScreenTessellation.hpp
+@@ -0,0 +1,475 @@
++#pragma once
++
++// Drawing a world screen so the picture lies IN the plane it is a picture of.
++//
++// ---------------------------------------------------------------------------
++// THE PROBLEM THIS SOLVES
++// ---------------------------------------------------------------------------
++//
++// A television is a rectangle in the world and the overlay draws it as ONE image
++// quad: four projected corners, two triangles, and texture coordinates that ImGui
++// interpolates LINEARLY IN SCREEN SPACE, because an ImGui vertex carries a
++// position, a uv and a colour and no `w`. A plane seen in perspective needs the
++// interpolation done in homogeneous space. The two agree at the four corners and
++// nowhere else, so every texel between them lands somewhere other than where the
++// plane puts it. That is the affine texture warp, and it is large:
++// `tools/quad-affine-error.py` in the open77-tv repository measures it for the
++// television catalogue, at 1920x1080 and a 60 degree vertical field of view --
++//
++//     1.16 m television at 1.5 m, turned 30 degrees      up to  76 px, mean  45 px
++//     1.16 m television at 1.5 m, turned 50 degrees      up to 103 px, mean  57 px
++//     cinema.100ft at 20.4 m, turned 35 degrees          up to 384 px, mean 224 px
++//
++// Head-on it is exactly zero, which is why nobody sees it standing square to a set
++// and everybody sees it walking past one. What it looks like is a picture with no
++// depth: a flat sticker whose grid lines do not converge, kinked along one
++// diagonal, sliding over the cabinet it is meant to sit in.
++//
++// It has a second symptom that is easier to misread. The pointer is placed by
++// `Api::MediaScreens` by interpolating the WORLD corners and projecting the result
++// (perspective-exact), while the picture under it is drawn affinely. The cursor
++// therefore sits where the plane says page pixel (u, v) is, and the page element
++// that will actually receive the click is drawn somewhere else -- by the error
++// above, tens of pixels on an oblique set. You aim at one button and click another.
++// Drawing the picture correctly is what makes the two agree again.
++//
++// ---------------------------------------------------------------------------
++// WHAT THIS DOES
++// ---------------------------------------------------------------------------
++//
++// It needs nothing the producer does not already publish. Four projected corners
++// of a planar rectangle determine the whole plane-to-screen map: it is a
++// homography, and the unit-square-to-quad solution is closed form (Heckbert,
++// "Fundamentals of Texture Mapping and Image Warping", 1989). So the renderer can
++// subdivide the quad in TEXTURE space, place every grid vertex with the
++// homography, and hand ImGui small cells whose vertices are exact. Inside a cell
++// the linear interpolation is wrong by a bounded amount, and that amount falls
++// with the square of the cell count.
++//
++// The cell count is not a constant. `ChooseCells` derives it from a closed-form,
++// rigorous bound on the homography's second derivatives, so a set seen head-on
++// costs one quad -- exactly what is drawn today, bit for bit -- and a set seen
++// edge-on costs as many as the tolerance demands, up to a cap. The bound is an
++// UPPER bound (it cannot under-subdivide) and it is not vacuous: against brute
++// force it asks for 1.4x the cells strictly needed at the median, 2x at the 90th
++// percentile and 2.5x at worst over random scenes, and never fewer. Both claims are
++// pinned in `tests/ScreenTessellationTests.cpp`. (Cost goes with the square of the
++// cell count, so the median set is drawn with about twice the cells it strictly
++// needs: a 1.16 m television seen from 1.5 m and turned 30 degrees is 17 cells a
++// side where 14 suffice, and its one-quad error of 76 px falls under 0.75.)
++//
++// What is NOT here, and what it would take, is written down rather than implied:
++//
++//   * DEPTH. This makes the picture geometrically right. It does not make it
++//     disappear behind a wall, a hand or a person; the overlay pass still has no
++//     depth buffer. See `docs/depth-and-occlusion.md` in open77-tv.
++//   * A CORNER BEHIND THE CAMERA. Any quad with a corner behind the eye is refused
++//     (`CrossesCameraPlane`): the four corners fix the homography, its denominator
++//     is each corner's own view depth, and a corner behind the eye makes that
++//     denominator change sign. More generally `Solve` accepts a quad only if it
++//     is convex -- a projective map that is finite on a convex set keeps it
++//     convex -- and the tests throw random quads at it to check that nothing
++//     non-convex gets through. What four 2-D points cannot reveal is a quad wholly
++//     BEHIND the eye: it projects to the point-reflection of one in front and looks
++//     like any other. The producer rules that out before it projects (`depth <=
++//     0.05` on the centre in MediaScreens.cpp; the centre is the mean of the
++//     corners, so a centre in front puts at least one corner in front). What
++//     `Camera::ProjectPoints` returns for a corner behind the eye is the engine's
++//     own `gameCameraSystem::ProjectPoint`: the plain divide is refused here, and a
++//     point the engine refuses is written as zero (`api/Camera.cpp`), which lands
++//     the corner at the centre of the view -- a wrong but well-formed quad that
++//     was drawn wrongly before this too. A refused quad is drawn exactly as before
++//     (`PerspectiveImage::Add`). Clipping the quad against the near plane and drawing
++//     the clipped polygon is the real answer for a very large screen seen from very
++//     close, and is not attempted here.
++//   * A CAPPED GRID. `kMaximumCells` bounds the work. Past it the error is
++//     reduced, not removed, and `Choice::errorBoundPixels` reports what is left.
++//
++// Pure and free of the engine and of ImGui, for the same reason
++// `ScreenMotion.hpp` and `api/ScreenQuad.hpp` are: it is arithmetic that a
++// session cannot verify and a test can.
++
++#include <algorithm>
++#include <array>
++#include <cmath>
++#include <cstddef>
++#include <cstdint>
++#include <utility>
++
++namespace op77::WorldOverlay::ScreenTessellation
++{
++/// Hard ceiling on cells per side. 48 x 48 is 2304 image quads for one screen,
++/// which is well inside what a frame can afford for the one or two screens that
++/// are ever this oblique, and is the most anything here will ask the draw list for.
++inline constexpr int kMaximumCells = 48;
++
++/// How far, in pixels, a texel may land from where perspective puts it.
++/// Three quarters of a pixel is below what a bilinearly filtered picture can show.
++inline constexpr float kDefaultTolerancePixels = 0.75F;
++
++/// The smallest ratio of the nearest corner's depth to the farthest that is still
++/// treated as a quad in front of the camera. Past it the near corner is ten
++/// thousand times closer than the far one and its projection is not a number a
++/// float can place a texel with.
++inline constexpr double kMinimumDepthRatio = 1.0e-4;
++
++/// Corner coordinates beyond this are refused as not finite. A corner a million
++/// pixels away is a perspective divide that has already gone wrong upstream.
++inline constexpr double kMaximumCoordinate = 1.0e6;
++
++struct Point
++{
++    float x{};
++    float y{};
++};
++
++enum class Status : std::uint8_t
++{
++    Ok,
++    /// A corner is NaN, infinite or absurdly far away.
++    NotFinite,
++    /// The four corners do not span an area: collinear, coincident, or an edge-on
++    /// panel collapsed to a line.
++    Degenerate,
++    /// The homography's denominator is zero or negative somewhere on the quad, i.e.
++    /// the plane crosses the camera's own plane inside the rectangle. The corners
++    /// are not the image of a rectangle seen through a camera, and no grid built
++    /// from them would be.
++    CrossesCameraPlane,
++};
++
++[[nodiscard]] inline const char* Describe(const Status aStatus)
++{
++    switch (aStatus)
++    {
++    case Status::Ok: return "ok";
++    case Status::NotFinite: return "not_finite";
++    case Status::Degenerate: return "degenerate";
++    case Status::CrossesCameraPlane: return "crosses_camera_plane";
++    }
++    return "unknown";
++}
++
++/// The map from texture space (u right, v DOWN, both 0..1) to pixels:
++///
++///     x = (a u + b v + c) / (g u + h v + 1)
++///     y = (d u + e v + f) / (g u + h v + 1)
++///
++/// The denominator is the corner's view depth relative to corner 0's, so it is
++/// linear in (u, v) and positive everywhere on a quad that is in front of the eye.
++struct Homography
++{
++    double a{1.0}, b{0.0}, c{0.0};
++    double d{0.0}, e{1.0}, f{0.0};
++    double g{0.0}, h{0.0};
++
++    [[nodiscard]] double Denominator(const double aU, const double aV) const
++    {
++        return (g * aU) + (h * aV) + 1.0;
++    }
++
++    [[nodiscard]] Point Apply(const double aU, const double aV) const
++    {
++        const double w = Denominator(aU, aV);
++        return Point{static_cast<float>(((a * aU) + (b * aV) + c) / w),
++                     static_cast<float>(((d * aU) + (e * aV) + f) / w)};
++    }
++};
++
++/// Solves the unit square -> quad homography. `aCorners` is eight floats in TEXTURE
++/// order -- top-left, top-right, bottom-right, bottom-left, i.e. the corners of
++/// uv (0,0), (1,0), (1,1), (0,1) -- in pixels, which is exactly what
++/// `WebUiService::DrawSurfaceQuad` receives. A mirrored quad (the player is behind
++/// the panel, or the picture was turned over) is a legitimate input.
++///
++/// Every refusal leaves `aOut` untouched, so a caller that ignores the status
++/// draws whatever it drew before.
++[[nodiscard]] inline Status Solve(const float (&aCorners)[8], Homography& aOut)
++{
++    double p[4][2]{};
++    for (int corner = 0; corner < 4; ++corner)
++    {
++        for (int axis = 0; axis < 2; ++axis)
++        {
++            const double value = static_cast<double>(aCorners[(corner * 2) + axis]);
++            if (!std::isfinite(value) || std::abs(value) > kMaximumCoordinate)
++            {
++                return Status::NotFinite;
++            }
++            p[corner][axis] = value;
++        }
++    }
++
++    double extent = 0.0;
++    for (int corner = 1; corner < 4; ++corner)
++    {
++        extent = std::max(extent, std::abs(p[corner][0] - p[0][0]));
++        extent = std::max(extent, std::abs(p[corner][1] - p[0][1]));
++    }
++    if (!(extent > 1.0e-3))
++    {
++        return Status::Degenerate;
++    }
++
++    const double x0 = p[0][0], y0 = p[0][1];
++    const double x1 = p[1][0], y1 = p[1][1];
++    const double x2 = p[2][0], y2 = p[2][1];
++    const double x3 = p[3][0], y3 = p[3][1];
++
++    // How far the quad is from a parallelogram. Zero for an affine image, and
++    // then the solution below has g = h = 0 and this draws the one quad it always
++    // did.
++    const double sx = x0 - x1 + x2 - x3;
++    const double sy = y0 - y1 + y2 - y3;
++    const double dx1 = x1 - x2, dx2 = x3 - x2;
++    const double dy1 = y1 - y2, dy2 = y3 - y2;
++    const double det = (dx1 * dy2) - (dx2 * dy1);
++    if (!(std::abs(det) > 1.0e-7 * extent * extent))
++    {
++        return Status::Degenerate;
++    }
++
++    Homography out;
++    out.g = ((sx * dy2) - (dx2 * sy)) / det;
++    out.h = ((dx1 * sy) - (sx * dy1)) / det;
++    out.a = x1 - x0 + (out.g * x1);
++    out.b = x3 - x0 + (out.h * x3);
++    out.c = x0;
++    out.d = y1 - y0 + (out.g * y1);
++    out.e = y3 - y0 + (out.h * y3);
++    out.f = y0;
++
++    // The denominator is linear, so its extremes on the square are at the corners.
++    const double w[4] = {1.0, 1.0 + out.g, 1.0 + out.g + out.h, 1.0 + out.h};
++    const double nearest = std::min(std::min(w[0], w[1]), std::min(w[2], w[3]));
++    const double farthest = std::max(std::max(w[0], w[1]), std::max(w[2], w[3]));
++    if (!std::isfinite(nearest) || !std::isfinite(farthest))
++    {
++        return Status::NotFinite;
++    }
++    if (!(nearest > 0.0) || !(nearest / farthest >= kMinimumDepthRatio))
++    {
++        return Status::CrossesCameraPlane;
++    }
++
++    aOut = out;
++    return Status::Ok;
++}
++
++/// The six second partial derivatives of the map at (u, v).
++///
++/// Closed form. With X, Y, W the numerators and denominator above, every second
++/// derivative is a linear function of (u, v) over W cubed:
++///
++///     x_uu = -2 g Nu / W^3            x_vv = -2 h Nv / W^3
++///     x_uv = (D W - 2 h Nu) / W^3
++///
++///     D = a h - b g,   Nu = D v + (a - c g),   Nv = -D u + (b - c h)
++///
++/// and the same with (d, e, f) for y. Exposed so a test can check it against finite
++/// differences: the bound below is only as good as this, and a transcription slip
++/// here would be an error bound that is quietly wrong.
++struct SecondDerivatives
++{
++    double xuu{}, xuv{}, xvv{};
++    double yuu{}, yuv{}, yvv{};
++};
++
++[[nodiscard]] inline SecondDerivatives Derivatives(const Homography& aMap, const double aU,
++                                                   const double aV)
++{
++    const double w = aMap.Denominator(aU, aV);
++    const double w3 = w * w * w;
++    const auto component = [&](const double aP, const double aQ, const double aR, double& aUU,
++                               double& aUV, double& aVV) {
++        const double ratio = (aP * aMap.h) - (aQ * aMap.g);
++        const double nu = (ratio * aV) + (aP - (aR * aMap.g));
++        const double nv = (-ratio * aU) + (aQ - (aR * aMap.h));
++        aUU = (-2.0 * aMap.g * nu) / w3;
++        aVV = (-2.0 * aMap.h * nv) / w3;
++        aUV = ((ratio * w) - (2.0 * aMap.h * nu)) / w3;
++    };
++    SecondDerivatives out;
++    component(aMap.a, aMap.b, aMap.c, out.xuu, out.xuv, out.xvv);
++    component(aMap.d, aMap.e, aMap.f, out.yuu, out.yuv, out.yvv);
++    return out;
++}
++
++/// An upper bound, over the whole unit square, on the magnitude of each second
++/// derivative of the map (as a pixel vector).
++///
++/// Each numerator is linear in (u, v), so its largest magnitude is at a corner, and
++/// the denominator is smallest at the nearest corner -- so taking the corner
++/// numerators over the NEAREST corner's W cubed bounds every interior point. That is
++/// where the error lives anyway: the bound is tight because the curvature, in texel
++/// terms, is concentrated at the corner closest to the eye.
++struct Curvature
++{
++    double uu{}; ///< bounds |(x_uu, y_uu)|
++    double uv{}; ///< bounds |(x_uv, y_uv)|
++    double vv{}; ///< bounds |(x_vv, y_vv)|
++};
++
++[[nodiscard]] inline Curvature CurvatureBound(const Homography& aMap)
++{
++    constexpr double kCorners[4][2] = {{0.0, 0.0}, {1.0, 0.0}, {1.0, 1.0}, {0.0, 1.0}};
++    double nearest = aMap.Denominator(0.0, 0.0);
++    for (const auto& corner : kCorners)
++    {
++        nearest = std::min(nearest, aMap.Denominator(corner[0], corner[1]));
++    }
++    double xuu = 0.0, xuv = 0.0, xvv = 0.0, yuu = 0.0, yuv = 0.0, yvv = 0.0;
++    for (const auto& corner : kCorners)
++    {
++        const double w = aMap.Denominator(corner[0], corner[1]);
++        // Derivatives() divides by this corner's W^3; scale back to the nearest's.
++        const double rescale = std::pow(w / nearest, 3.0);
++        const SecondDerivatives here = Derivatives(aMap, corner[0], corner[1]);
++        xuu = std::max(xuu, std::abs(here.xuu) * rescale);
++        xuv = std::max(xuv, std::abs(here.xuv) * rescale);
++        xvv = std::max(xvv, std::abs(here.xvv) * rescale);
++        yuu = std::max(yuu, std::abs(here.yuu) * rescale);
++        yuv = std::max(yuv, std::abs(here.yuv) * rescale);
++        yvv = std::max(yvv, std::abs(here.yvv) * rescale);
++    }
++    return Curvature{std::hypot(xuu, yuu), std::hypot(xuv, yuv), std::hypot(xvv, yvv)};
++}
++
++/// A rigorous upper bound, in pixels, on how far any texel lands from where the
++/// homography puts it when the quad is drawn as `aCellsU` x `aCellsV` cells with
++/// exact vertices, each cell split into two triangles the way `AddImageQuad` does.
++///
++/// Linear interpolation over a triangle errs by the barycentric mean of the Taylor
++/// remainders at its vertices, and for the right triangle of a cell with legs
++/// p = 1/cellsU and q = 1/cellsV that mean is at most
++///
++///     (A p^2 + 2 B p q + C q^2) / 8
++///
++/// with A, B, C the `Curvature` bounds. The mixed term is real, not slack: a
++/// function like u*v is not reproduced by two triangles however the cell is split.
++[[nodiscard]] inline double ErrorBound(const Homography& aMap, const int aCellsU,
++                                       const int aCellsV)
++{
++    const Curvature k = CurvatureBound(aMap);
++    const double p = 1.0 / static_cast<double>(std::max(1, aCellsU));
++    const double q = 1.0 / static_cast<double>(std::max(1, aCellsV));
++    return ((k.uu * p * p) + (2.0 * k.uv * p * q) + (k.vv * q * q)) / 8.0;
++}
++
++struct Choice
++{
++    /// Cells per side. 1 means "draw the one quad", and is what a head-on screen
++    /// and every affine image gets.
++    int cells{1};
++    /// The bound at `cells`, in pixels. At most the tolerance unless `capped`.
++    double errorBoundPixels{0.0};
++    /// The tolerance asked for more than the cap allows. Worth logging once per
++    /// screen: it names the set and the angle where the picture is still not exact.
++    bool capped{false};
++};
++
++/// The smallest square grid whose error bound is within `aTolerancePixels`.
++[[nodiscard]] inline Choice ChooseCells(const Homography& aMap,
++                                        const float aTolerancePixels = kDefaultTolerancePixels,
++                                        const int aMaximumCells = kMaximumCells)
++{
++    const double tolerance = std::max(0.05, static_cast<double>(aTolerancePixels));
++    const int ceiling = std::clamp(aMaximumCells, 1, kMaximumCells);
++    const Curvature k = CurvatureBound(aMap);
++    const double sum = k.uu + (2.0 * k.uv) + k.vv;
++
++    Choice out;
++    out.cells = 1;
++    if (std::isfinite(sum) && sum > 8.0 * tolerance)
++    {
++        const double wanted = std::ceil(std::sqrt(sum / (8.0 * tolerance)));
++        out.capped = wanted > static_cast<double>(ceiling);
++        out.cells = static_cast<int>(std::min(wanted, static_cast<double>(ceiling)));
++    }
++    else if (!std::isfinite(sum))
++    {
++        out.cells = ceiling;
++        out.capped = true;
++    }
++    out.cells = std::clamp(out.cells, 1, ceiling);
++    out.errorBoundPixels = ErrorBound(aMap, out.cells, out.cells);
++    return out;
++}
++
++/// A pixel-space rectangle. Used to skip cells that cannot reach the screen, which
++/// matters when a large set fills the view and most of its grid is behind you.
++struct Rect
++{
++    float minX{};
++    float minY{};
++    float maxX{};
++    float maxY{};
++};
++
++/// Calls `aVisit(positions, uvs)` once per cell, each an array of four `Point`s in
++/// texture order -- top-left, top-right, bottom-right, bottom-left -- which is the
++/// argument order of `ImDrawList::AddImageQuad`. A cell whose four corners all lie
++/// on the far side of one edge of `aCull` is skipped; pass nullptr to visit all.
++///
++/// Every vertex is computed once per grid node, so two neighbouring cells hold the
++/// SAME float pair for their shared corners and the picture is watertight.
++///
++/// The grid is cells x cells of the same homography `Solve` returned; with
++/// `aCellsU = aCellsV = 1` the single cell's corners are the four inputs.
++template <class Visit>
++inline void ForEachCell(const Homography& aMap, const int aCellsU, const int aCellsV,
++                        const Rect* const aCull, Visit&& aVisit)
++{
++    const int cellsU = std::clamp(aCellsU, 1, kMaximumCells);
++    const int cellsV = std::clamp(aCellsV, 1, kMaximumCells);
++    const double stepU = 1.0 / static_cast<double>(cellsU);
++    const double stepV = 1.0 / static_cast<double>(cellsV);
++
++    std::array<Point, kMaximumCells + 1> above{};
++    std::array<Point, kMaximumCells + 1> below{};
++    for (int column = 0; column <= cellsU; ++column)
++    {
++        above[static_cast<std::size_t>(column)] =
++            aMap.Apply(column == cellsU ? 1.0 : column * stepU, 0.0);
++    }
++    for (int row = 1; row <= cellsV; ++row)
++    {
++        const double v = row == cellsV ? 1.0 : row * stepV;
++        for (int column = 0; column <= cellsU; ++column)
++        {
++            below[static_cast<std::size_t>(column)] =
++                aMap.Apply(column == cellsU ? 1.0 : column * stepU, v);
++        }
++        const float v0 = static_cast<float>((row - 1) * stepV);
++        const float v1 = static_cast<float>(v);
++        for (int column = 0; column < cellsU; ++column)
++        {
++            const auto left = static_cast<std::size_t>(column);
++            const Point positions[4] = {above[left], above[left + 1], below[left + 1],
++                                        below[left]};
++            if (aCull != nullptr)
++            {
++                const bool outside =
++                    (std::max(std::max(positions[0].x, positions[1].x),
++                              std::max(positions[2].x, positions[3].x)) < aCull->minX) ||
++                    (std::min(std::min(positions[0].x, positions[1].x),
++                              std::min(positions[2].x, positions[3].x)) > aCull->maxX) ||
++                    (std::max(std::max(positions[0].y, positions[1].y),
++                              std::max(positions[2].y, positions[3].y)) < aCull->minY) ||
++                    (std::min(std::min(positions[0].y, positions[1].y),
++                              std::min(positions[2].y, positions[3].y)) > aCull->maxY);
++                if (outside)
++                {
++                    continue;
++                }
++            }
++            const float u0 = static_cast<float>(column * stepU);
++            const float u1 =
++                static_cast<float>(column + 1 == cellsU ? 1.0 : (column + 1) * stepU);
++            const Point uvs[4] = {Point{u0, v0}, Point{u1, v0}, Point{u1, v1}, Point{u0, v1}};
++            aVisit(positions, uvs);
++        }
++        std::swap(above, below);
++    }
++}
++} // namespace op77::WorldOverlay::ScreenTessellation
+diff --git a/client/src/webui/WebUiService.cpp b/client/src/webui/WebUiService.cpp
+index 45e5ea51..17b7a23d 100644
+--- a/client/src/webui/WebUiService.cpp
++++ b/client/src/webui/WebUiService.cpp
+@@ -4,6 +4,7 @@
+ #include <op77/Core/WebUiUrl.hpp>
+ #include <op77/Core/WebUiKeyCapture.hpp>
+ #include <op77/Core/MapScreen.hpp>
++#include "webui/PerspectiveImage.hpp"
+ #include "webui/ScreenInput.hpp"
+ 
+ #include <Windows.h>
+@@ -3041,10 +3042,6 @@ bool DrawSurfaceQuad(const WebUI::SurfaceId aSurface, const float (&aCorners)[8]
+     if (!ringVisible && (!surface->texture || surface->uploadedSequence == 0)) return false;
+ 
+     auto* const draw = ImGui::GetBackgroundDrawList();
+-    const ImVec2 topLeft{aCorners[0], aCorners[1]};
+-    const ImVec2 topRight{aCorners[2], aCorners[3]};
+-    const ImVec2 bottomRight{aCorners[4], aCorners[5]};
+-    const ImVec2 bottomLeft{aCorners[6], aCorners[7]};
+     const ImU32 tint = IM_COL32(255, 255, 255, aAlpha);
+     const bool premultiplied = s_premultipliedPso != nullptr;
+     // CEF output is premultiplied, so a straight-alpha blend darkens every
+@@ -3056,19 +3053,25 @@ bool DrawSurfaceQuad(const WebUI::SurfaceId aSurface, const float (&aCorners)[8]
+     surface->gpuUsePending.store(true, std::memory_order_release);
+     const uint32_t slot = surface->ringConsumer.Active() ? surface->ringConsumer.VisibleSlot()
+                                                          : GpuRingConsumer::kNoSlot;
++    // In perspective, not as one image quad: ImGui interpolates a texture linearly
++    // in SCREEN space, so a single quad bends the picture along its diagonal on any
++    // set not seen square, and the bend moves as the player walks round it.
++    // `PerspectiveImage::Add` draws a set seen square as exactly that one quad and
++    // an oblique one as a grid of cells with exact vertices, each within a pixel of
++    // where the plane puts its texels. The cells share this frame's descriptor and
++    // tint, and merge into one draw command.
+     if (slot != GpuRingConsumer::kNoSlot && surface->ring.Valid())
+     {
+         surface->drawnSlot = slot;
+-        draw->AddImageQuad(static_cast<ImTextureID>(surface->ring.gpuDescriptors[slot].ptr),
+-                           topLeft, topRight, bottomRight, bottomLeft,
+-                           {0.0F, 0.0F}, {1.0F, 0.0F}, {1.0F, 1.0F}, {0.0F, 1.0F}, tint);
++        static_cast<void>(::op77::WorldOverlay::PerspectiveImage::Add(
++            *draw, static_cast<ImTextureID>(surface->ring.gpuDescriptors[slot].ptr), aCorners,
++            tint));
+     }
+     else
+     {
+         surface->cpuUsePending = true;
+-        draw->AddImageQuad(static_cast<ImTextureID>(surface->gpuDescriptor.ptr),
+-                           topLeft, topRight, bottomRight, bottomLeft,
+-                           {0.0F, 0.0F}, {1.0F, 0.0F}, {1.0F, 1.0F}, {0.0F, 1.0F}, tint);
++        static_cast<void>(::op77::WorldOverlay::PerspectiveImage::Add(
++            *draw, static_cast<ImTextureID>(surface->gpuDescriptor.ptr), aCorners, tint));
+     }
+     if (premultiplied) draw->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
+     return true;
+diff --git a/client/src/webui/WebUiService.hpp b/client/src/webui/WebUiService.hpp
+index 2c03181c..40356192 100644
+--- a/client/src/webui/WebUiService.hpp
++++ b/client/src/webui/WebUiService.hpp
+@@ -262,10 +262,13 @@ void Draw(float aViewportWidth, float aViewportHeight);
+ //
+ // This lives here, next to `Draw`, and not in `WorldOverlay` on purpose. It is
+ // the same operation as `Draw` performs -- pick the GPU ring slot or the CPU
+-// upload, queue an `AddImageQuad` into the current frame's background draw list,
+-// wrap the whole thing in the premultiplied-alpha pipeline state -- and the two
+-// must not drift apart. `Draw` decides the texture; nothing outside this file
+-// should be handling a descriptor handle.
++// upload, queue the picture into the current frame's background draw list, wrap
++// the whole thing in the premultiplied-alpha pipeline state -- and the two must
++// not drift apart. `Draw` decides the texture; nothing outside this file should
++// be handling a descriptor handle. The picture is queued in perspective: one
++// image quad for a set seen square, a grid of them for an oblique one, so the
++// texture lies in the plane of the quad rather than bending across it
++// (`PerspectiveImage.hpp`).
+ //
+ // `aCorners` is eight floats: top-left, top-right, bottom-right, bottom-left, in
+ // the caller's pixel space, already projected by a game-thread producer. `aAlpha`
+diff --git a/client/tests/PerspectiveImageTests.cpp b/client/tests/PerspectiveImageTests.cpp
+new file mode 100644
+index 00000000..755dcd10
+--- /dev/null
++++ b/client/tests/PerspectiveImageTests.cpp
+@@ -0,0 +1,364 @@
++// Pins what `WebUiService::DrawSurfaceQuad` hands the GPU for a television, by
++// making the same calls into a real ImGui draw list and reading the list back.
++//
++// `ScreenTessellationTests` proves the arithmetic. This proves the drawing: that
++// the vertices ImGui will upload put every texel where the plane puts it, through
++// ImGui's own `AddImageQuad`, its own vertex layout and its own merging of draw
++// commands -- the part a test of the arithmetic cannot see and a session cannot
++// measure, because a bent picture logs exactly like a straight one.
++//
++// The ground truth shares nothing with the code under test: a pinhole camera, a
++// flat rectangle, and a small rasteriser that interpolates each recorded
++// triangle's uvs LINEARLY in screen space -- which is what the GPU does with
++// ImGui's vertices, since they carry no w. For every sample of every triangle,
++// the texel the GPU would fetch there is sent through the pinhole to where the
++// plane really puts it, and the distance between the two is the error.
++
++#include "webui/PerspectiveImage.hpp"
++
++#include <imgui.h>
++
++#include <algorithm>
++#include <cmath>
++#include <cstdlib>
++#include <iostream>
++#include <map>
++#include <utility>
++
++#define CHECK(x)                                                                         \
++    do                                                                                   \
++    {                                                                                    \
++        if (!(x))                                                                        \
++        {                                                                                \
++            std::cerr << "Failed line " << __LINE__ << ": " #x "\n";                     \
++            std::exit(1);                                                                \
++        }                                                                                \
++    } while (0)
++
++namespace
++{
++namespace PI = op77::WorldOverlay::PerspectiveImage;
++namespace Tess = op77::WorldOverlay::ScreenTessellation;
++
++// M_PI is POSIX, not C++; MSVC only has it behind _USE_MATH_DEFINES.
++constexpr double kPi = 3.14159265358979323846;
++constexpr float kWidth = 1920.0F;
++constexpr float kHeight = 1080.0F;
++// Any id: what matters is that the draw comes back with the one it was given.
++constexpr ImTextureID kPicture = 0x5A17;
++constexpr ImU32 kTint = IM_COL32(255, 255, 255, 200);
++
++struct Vec3
++{
++    double x{}, y{}, z{};
++};
++
++Vec3 Plus(const Vec3& aLeft, const Vec3& aRight)
++{
++    return {aLeft.x + aRight.x, aLeft.y + aRight.y, aLeft.z + aRight.z};
++}
++
++Vec3 Times(const Vec3& aVector, const double aScale)
++{
++    return {aVector.x * aScale, aVector.y * aScale, aVector.z * aScale};
++}
++
++struct Pixel
++{
++    double x{}, y{};
++};
++
++/// A pinhole at the origin looking down +z, y up, a 60 degree vertical field, onto
++/// a 1920 x 1080 view: the scene the figures in `ScreenTessellation.hpp` use.
++Pixel Project(const Vec3& aPoint)
++{
++    const double focal = (static_cast<double>(kHeight) * 0.5) / std::tan(30.0 * kPi / 180.0);
++    return {(static_cast<double>(kWidth) * 0.5) + (focal * aPoint.x / aPoint.z),
++            (static_cast<double>(kHeight) * 0.5) - (focal * aPoint.y / aPoint.z)};
++}
++
++/// A flat rectangle: its centre and its half extents along its own right and up.
++struct Rectangle
++{
++    Vec3 centre;
++    Vec3 right;
++    Vec3 up;
++
++    /// The point of the plane that texel (u, v) belongs to: u right, v DOWN, 0..1.
++    [[nodiscard]] Vec3 At(const double aU, const double aV) const
++    {
++        return Plus(centre, Plus(Times(right, (2.0 * aU) - 1.0), Times(up, 1.0 - (2.0 * aV))));
++    }
++};
++
++/// A `aWidth` x `aHeight` m rectangle `aDistance` m ahead, turned `aYawDegrees` about
++/// the vertical (0 faces the camera; past 90 it is seen from behind), its centre
++/// moved `aAside` m to the right.
++Rectangle Turned(const double aWidth, const double aHeight, const double aDistance,
++                 const double aYawDegrees, const double aAside = 0.0)
++{
++    const double yaw = aYawDegrees * kPi / 180.0;
++    return Rectangle{{aAside, 0.0, aDistance},
++                     {std::cos(yaw) * aWidth * 0.5, 0.0, std::sin(yaw) * aWidth * 0.5},
++                     {0.0, aHeight * 0.5, 0.0}};
++}
++
++/// The eight floats `DrawSurfaceQuad` receives: the texture's corners, projected.
++void CornersOf(const Rectangle& aRectangle, float (&aOut)[8])
++{
++    constexpr double kTexture[4][2] = {{0.0, 0.0}, {1.0, 0.0}, {1.0, 1.0}, {0.0, 1.0}};
++    for (int corner = 0; corner < 4; ++corner)
++    {
++        const Pixel at = Project(aRectangle.At(kTexture[corner][0], kTexture[corner][1]));
++        aOut[corner * 2] = static_cast<float>(at.x);
++        aOut[(corner * 2) + 1] = static_cast<float>(at.y);
++    }
++}
++
++/// A draw list as the background list is during a frame: empty, clipped to the view.
++struct Frame
++{
++    ImDrawList list{ImGui::GetDrawListSharedData()};
++
++    Frame()
++    {
++        list._ResetForNewFrame();
++        list.PushClipRect(ImVec2(0.0F, 0.0F), ImVec2(kWidth, kHeight), false);
++    }
++};
++
++/// The vertices of every triangle that draws the picture, in index order.
++template <class Visit>
++void ForEachPictureTriangle(const ImDrawList& aList, Visit&& aVisit)
++{
++    for (const ImDrawCmd& command : aList.CmdBuffer)
++    {
++        if (command.UserCallback != nullptr || command.TextureId != kPicture)
++        {
++            continue;
++        }
++        for (unsigned int element = 0; element + 2 < command.ElemCount; element += 3)
++        {
++            const auto vertex = [&](const unsigned int aOffset) -> const ImDrawVert& {
++                const unsigned int index =
++                    static_cast<unsigned int>(aList.IdxBuffer[static_cast<int>(
++                        command.IdxOffset + element + aOffset)]) +
++                    command.VtxOffset;
++                return aList.VtxBuffer[static_cast<int>(index)];
++            };
++            aVisit(vertex(0), vertex(1), vertex(2));
++        }
++    }
++}
++
++/// How far, in pixels, the worst-placed texel the GPU would draw lands from where
++/// the plane puts it: each triangle sampled on a barycentric grid, its uv
++/// interpolated linearly in screen space, and the texel fetched there sent through
++/// the pinhole.
++double WorstTexelError(const ImDrawList& aList, const Rectangle& aRectangle)
++{
++    constexpr int kSteps = 8;
++    double worst = 0.0;
++    ForEachPictureTriangle(aList, [&](const ImDrawVert& aA, const ImDrawVert& aB,
++                                      const ImDrawVert& aC) {
++        for (int i = 0; i <= kSteps; ++i)
++        {
++            for (int j = 0; i + j <= kSteps; ++j)
++            {
++                const double b = static_cast<double>(i) / kSteps;
++                const double c = static_cast<double>(j) / kSteps;
++                const double a = 1.0 - b - c;
++                const double x = (a * aA.pos.x) + (b * aB.pos.x) + (c * aC.pos.x);
++                const double y = (a * aA.pos.y) + (b * aB.pos.y) + (c * aC.pos.y);
++                const double u = (a * aA.uv.x) + (b * aB.uv.x) + (c * aC.uv.x);
++                const double v = (a * aA.uv.y) + (b * aB.uv.y) + (c * aC.uv.y);
++                const Pixel truth = Project(aRectangle.At(u, v));
++                worst = std::max(worst, std::hypot(truth.x - x, truth.y - y));
++            }
++        }
++    });
++    return worst;
++}
++
++int PictureVertices(const ImDrawList& aList)
++{
++    int count = 0;
++    ForEachPictureTriangle(aList, [&count](const ImDrawVert&, const ImDrawVert&,
++                                          const ImDrawVert&) { count += 3; });
++    return count;
++}
++
++/// What the overlay drew before: one image quad over the four corners.
++double OneQuadError(const Rectangle& aRectangle)
++{
++    float corners[8]{};
++    CornersOf(aRectangle, corners);
++    Frame frame;
++    frame.list.AddImageQuad(kPicture, ImVec2(corners[0], corners[1]),
++                            ImVec2(corners[2], corners[3]), ImVec2(corners[4], corners[5]),
++                            ImVec2(corners[6], corners[7]), ImVec2(0.0F, 0.0F),
++                            ImVec2(1.0F, 0.0F), ImVec2(1.0F, 1.0F), ImVec2(0.0F, 1.0F),
++                            kTint);
++    return WorstTexelError(frame.list, aRectangle);
++}
++
++/// The bound `ScreenTessellation` reports for these corners.
++Tess::Choice ChoiceFor(const float (&aCorners)[8])
++{
++    Tess::Homography map;
++    CHECK(Tess::Solve(aCorners, map) == Tess::Status::Ok);
++    return Tess::ChooseCells(map);
++}
++} // namespace
++
++int main()
++{
++    ImGui::CreateContext();
++
++    // Head-on, a television is the one quad it always was: the same four vertices
++    // in the same order with the same uvs, so nothing changes for a set seen square.
++    {
++        const Rectangle tv = Turned(1.16, 0.66, 1.5, 0.0);
++        float corners[8]{};
++        CornersOf(tv, corners);
++        Frame frame;
++        CHECK(PI::Add(frame.list, kPicture, corners, kTint) == 1);
++        CHECK(frame.list.VtxBuffer.Size == 4);
++        CHECK(frame.list.IdxBuffer.Size == 6);
++        CHECK(PictureVertices(frame.list) == 6);
++        const ImVec2 uvs[4] = {{0.0F, 0.0F}, {1.0F, 0.0F}, {1.0F, 1.0F}, {0.0F, 1.0F}};
++        for (int corner = 0; corner < 4; ++corner)
++        {
++            const ImDrawVert& vertex = frame.list.VtxBuffer[corner];
++            CHECK(vertex.pos.x == corners[corner * 2]);
++            CHECK(vertex.pos.y == corners[(corner * 2) + 1]);
++            CHECK(vertex.uv.x == uvs[corner].x && vertex.uv.y == uvs[corner].y);
++            CHECK(vertex.col == kTint);
++        }
++        CHECK(WorstTexelError(frame.list, tv) < 0.01);
++    }
++
++    // Turned 50 degrees at 1.5 m: one quad bends the picture by about a hundred
++    // pixels; the grid puts every texel within the tolerance of where the plane does.
++    {
++        const Rectangle tv = Turned(1.16, 0.66, 1.5, 50.0);
++        float corners[8]{};
++        CornersOf(tv, corners);
++        const double before = OneQuadError(tv);
++        CHECK(before > 60.0);
++
++        Frame frame;
++        const int cells = PI::Add(frame.list, kPicture, corners, kTint);
++        const Tess::Choice choice = ChoiceFor(corners);
++        CHECK(cells == choice.cells);
++        CHECK(cells > 1 && !choice.capped);
++        // Wholly on screen, so every cell is queued: four vertices and six indices
++        // a cell, every one carrying the picture and the tint.
++        CHECK(frame.list.VtxBuffer.Size == 4 * cells * cells);
++        CHECK(PictureVertices(frame.list) == 6 * cells * cells);
++        for (const ImDrawVert& vertex : frame.list.VtxBuffer)
++        {
++            CHECK(vertex.col == kTint);
++            CHECK(vertex.uv.x >= 0.0F && vertex.uv.x <= 1.0F);
++            CHECK(vertex.uv.y >= 0.0F && vertex.uv.y <= 1.0F);
++        }
++        const double after = WorstTexelError(frame.list, tv);
++        std::cout << "television at 50 degrees: one quad " << before << " px, " << cells
++                  << " x " << cells << " cells " << after << " px\n";
++        CHECK(after <= static_cast<double>(Tess::kDefaultTolerancePixels) + 0.01);
++        CHECK(after <= choice.errorBoundPixels + 0.01);
++
++        // One draw: the cells merge into a single command, so the grid costs one
++        // draw call however many cells it has.
++        int commands = 0;
++        for (const ImDrawCmd& command : frame.list.CmdBuffer)
++        {
++            if (command.ElemCount > 0)
++            {
++                ++commands;
++                CHECK(command.TextureId == kPicture);
++            }
++        }
++        CHECK(commands == 1);
++
++        // Watertight: every vertex standing for the same texel stands at the same
++        // pixel, bit for bit, so two cells can never open a seam between them.
++        std::map<std::pair<float, float>, std::pair<float, float>> placed;
++        for (const ImDrawVert& vertex : frame.list.VtxBuffer)
++        {
++            const auto key = std::make_pair(vertex.uv.x, vertex.uv.y);
++            const auto at = std::make_pair(vertex.pos.x, vertex.pos.y);
++            const auto [found, inserted] = placed.emplace(key, at);
++            CHECK(inserted || found->second == at);
++        }
++        // ... and the grid covers the whole picture, corner to corner.
++        CHECK(placed.count({0.0F, 0.0F}) == 1 && placed.count({1.0F, 1.0F}) == 1);
++        CHECK(placed.count({1.0F, 0.0F}) == 1 && placed.count({0.0F, 1.0F}) == 1);
++        CHECK(static_cast<int>(placed.size()) == (cells + 1) * (cells + 1));
++    }
++
++    // Seen from behind -- a set whose record declares no front is drawn from both
++    // sides -- the quad arrives mirrored, and is drawn in perspective all the same.
++    {
++        const Rectangle tv = Turned(1.16, 0.66, 1.5, 210.0);
++        float corners[8]{};
++        CornersOf(tv, corners);
++        Frame frame;
++        const int cells = PI::Add(frame.list, kPicture, corners, kTint);
++        CHECK(cells > 1);
++        CHECK(OneQuadError(tv) > 20.0);
++        CHECK(WorstTexelError(frame.list, tv) <= ChoiceFor(corners).errorBoundPixels + 0.01);
++    }
++
++    // The 150 ft cinema seen from the side and partly out of view: the cells that
++    // cannot reach the view are not queued, and the ones that are drawn are within
++    // the bound the grid reports for itself (the cap holds the count; what is left
++    // over is reported, not hidden).
++    {
++        const Rectangle cinema = Turned(45.72, 26.0131, 30.6, 35.0, 14.0);
++        float corners[8]{};
++        CornersOf(cinema, corners);
++        const Tess::Choice choice = ChoiceFor(corners);
++        Frame frame;
++        const int cells = PI::Add(frame.list, kPicture, corners, kTint);
++        CHECK(cells == choice.cells);
++        const int queued = frame.list.VtxBuffer.Size / 4;
++        CHECK(queued > 0 && queued < cells * cells);
++        const double before = OneQuadError(cinema);
++        const double after = WorstTexelError(frame.list, cinema);
++        std::cout << "cinema at 35 degrees: one quad " << before << " px, " << cells << " x "
++                  << cells << " cells (" << queued << " in view) " << after << " px, bound "
++                  << choice.errorBoundPixels << " px\n";
++        CHECK(before > 100.0);
++        CHECK(after <= choice.errorBoundPixels + 0.01);
++        CHECK(after < before / 20.0);
++    }
++
++    // A quad the map refuses -- here crossed over itself, the shape a corner behind
++    // the eye takes after the divide -- is drawn exactly as before: one image quad
++    // over the corners as given.
++    {
++        const float crossed[8] = {100.0F, 100.0F, 900.0F, 800.0F, 900.0F, 100.0F, 100.0F, 800.0F};
++        Frame frame;
++        CHECK(PI::Add(frame.list, kPicture, crossed, kTint) == 1);
++        CHECK(frame.list.VtxBuffer.Size == 4);
++        for (int corner = 0; corner < 4; ++corner)
++        {
++            CHECK(frame.list.VtxBuffer[corner].pos.x == crossed[corner * 2]);
++            CHECK(frame.list.VtxBuffer[corner].pos.y == crossed[(corner * 2) + 1]);
++        }
++    }
++
++    // Not a number is refused the same way, rather than spread over a grid.
++    {
++        const float broken[8] = {std::nanf(""), 100.0F, 900.0F, 100.0F,
++                                 900.0F,        800.0F, 100.0F, 800.0F};
++        Frame frame;
++        CHECK(PI::Add(frame.list, kPicture, broken, kTint) == 1);
++        CHECK(frame.list.VtxBuffer.Size == 4);
++    }
++
++    ImGui::DestroyContext();
++    std::cout << "PerspectiveImageTests: all checks passed\n";
++    return 0;
++}
+diff --git a/client/tests/ScreenTessellationTests.cpp b/client/tests/ScreenTessellationTests.cpp
+new file mode 100644
+index 00000000..63143e63
+--- /dev/null
++++ b/client/tests/ScreenTessellationTests.cpp
+@@ -0,0 +1,1110 @@
++// Pins the arithmetic that makes a television's picture lie in its own plane.
++//
++// The failure this exists for is the affine texture warp, and it is invisible in
++// every way a log can report: the screen is in the right place, the right size,
++// on the right prop, drawing every frame, and the picture on it is bent. Head-on
++// it is exact, which is why it survives a session of standing in front of a set.
++//
++// So this file does not test the subdivision against itself. It builds an
++// independent ground truth -- a pinhole camera and a planar rectangle, nothing
++// shared with the code under test -- projects the four corners the way the
++// producer does, hands ONLY those eight floats to `Solve`, and then asks, over a
++// dense sample of the quad, how far the picture `AddImageQuad` would draw is from
++// the pinhole's own answer. Three claims are pinned that way:
++//
++//   * four projected corners are enough: `Solve` reproduces the interior;
++//   * the cell count `ChooseCells` picks is enough: the measured error never
++//     exceeds the bound it reports, and within the cap never exceeds the tolerance;
++//   * the bound is not vacuous: it is within a small factor of what is measured, so
++//     it cannot be satisfied by subdividing everything forty-eight ways.
++//
++// The same scenes reproduce the numbers quoted in the header and in open77-tv's
++// `tools/quad-affine-error.py`, so a documented figure cannot drift from the code.
++
++#include "webui/ScreenTessellation.hpp"
++
++#include <algorithm>
++#include <array>
++#include <cmath>
++#include <cstdint>
++#include <cstdlib>
++#include <cstring>
++#include <iostream>
++#include <string>
++#include <vector>
++
++using namespace op77::WorldOverlay::ScreenTessellation;
++
++#define CHECK(x)                                                                         \
++    do                                                                                   \
++    {                                                                                    \
++        if (!(x))                                                                        \
++        {                                                                                \
++            std::cerr << "Failed line " << __LINE__ << ": " #x "\n";                     \
++            std::exit(1);                                                                \
++        }                                                                                \
++    } while (0)
++
++namespace
++{
++// M_PI is POSIX, not C++; MSVC only has it behind _USE_MATH_DEFINES.
++constexpr double kPi = 3.14159265358979323846;
++
++using Vec2 = std::array<double, 2>;
++
++struct Vec3
++{
++    double x{}, y{}, z{};
++};
++
++Vec3 operator+(const Vec3& a, const Vec3& b)
++{
++    return {a.x + b.x, a.y + b.y, a.z + b.z};
++}
++Vec3 operator*(const Vec3& a, const double s)
++{
++    return {a.x * s, a.y * s, a.z * s};
++}
++
++/// Pinhole camera at the origin looking down +Z, Y up, X right.
++struct Camera
++{
++    double width;
++    double height;
++    double focal;
++
++    Camera(const double aWidth, const double aHeight, const double aVerticalFovDegrees)
++        : width(aWidth), height(aHeight),
++          focal((aHeight / 2.0) / std::tan(aVerticalFovDegrees * kPi / 360.0))
++    {
++    }
++
++    [[nodiscard]] Vec2 Project(const Vec3& aPoint) const
++    {
++        return {(width / 2.0) + (focal * aPoint.x / aPoint.z),
++                (height / 2.0) - (focal * aPoint.y / aPoint.z)};
++    }
++};
++
++/// A rectangle in view space. (u, v) is texture space: u to the right, v DOWN.
++struct Rectangle
++{
++    Vec3 centre;
++    Vec3 right;
++    Vec3 up;
++    double width;
++    double height;
++
++    [[nodiscard]] Vec3 At(const double aU, const double aV) const
++    {
++        return centre + (right * ((aU - 0.5) * width)) + (up * ((0.5 - aV) * height));
++    }
++
++    [[nodiscard]] double NearestDepth() const
++    {
++        double nearest = 1.0e30;
++        for (const auto& corner : {At(0, 0), At(1, 0), At(1, 1), At(0, 1)})
++        {
++            nearest = std::min(nearest, corner.z);
++        }
++        return nearest;
++    }
++};
++
++/// The rectangle of open77-tv's `tools/quad-affine-error.py`: centred on the optical
++/// axis and turned `aYawDegrees` about the vertical. yaw 0 faces the camera.
++Rectangle Turned(const double aWidth, const double aHeight, const double aDistance,
++                 const double aYawDegrees)
++{
++    const double yaw = aYawDegrees * kPi / 180.0;
++    return Rectangle{{0.0, 0.0, aDistance},
++                     {std::cos(yaw), 0.0, std::sin(yaw)},
++                     {0.0, 1.0, 0.0},
++                     aWidth,
++                     aHeight};
++}
++
++Vec3 RotateY(const Vec3& v, const double a)
++{
++    return {(v.x * std::cos(a)) + (v.z * std::sin(a)), v.y,
++            (-v.x * std::sin(a)) + (v.z * std::cos(a))};
++}
++Vec3 RotateX(const Vec3& v, const double a)
++{
++    return {v.x, (v.y * std::cos(a)) - (v.z * std::sin(a)),
++            (v.y * std::sin(a)) + (v.z * std::cos(a))};
++}
++Vec3 RotateZ(const Vec3& v, const double a)
++{
++    return {(v.x * std::cos(a)) - (v.y * std::sin(a)),
++            (v.x * std::sin(a)) + (v.y * std::cos(a)), v.z};
++}
++
++/// A rectangle turned about all three axes and placed off the optical axis: the
++/// general case, which is what a player walking round a set produces.
++Rectangle Placed(const double aWidth, const double aHeight, const Vec3& aCentre,
++                 const double aYawDegrees, const double aPitchDegrees, const double aRollDegrees)
++{
++    const double yaw = aYawDegrees * kPi / 180.0;
++    const double pitch = aPitchDegrees * kPi / 180.0;
++    const double roll = aRollDegrees * kPi / 180.0;
++    const auto turn = [&](const Vec3& axis) {
++        return RotateZ(RotateX(RotateY(axis, yaw), pitch), roll);
++    };
++    return Rectangle{aCentre, turn({1.0, 0.0, 0.0}), turn({0.0, 1.0, 0.0}), aWidth, aHeight};
++}
++
++/// The four corners in texture order, as the producer publishes them: pixels, eight
++/// floats, top-left, top-right, bottom-right, bottom-left.
++void CornersOf(const Camera& aCamera, const Rectangle& aRectangle, float (&aOut)[8])
++{
++    constexpr double kUV[4][2] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
++    for (int corner = 0; corner < 4; ++corner)
++    {
++        const Vec2 pixel = aCamera.Project(aRectangle.At(kUV[corner][0], kUV[corner][1]));
++        aOut[corner * 2] = static_cast<float>(pixel[0]);
++        aOut[corner * 2 + 1] = static_cast<float>(pixel[1]);
++    }
++}
++
++struct Lcg
++{
++    std::uint64_t state;
++    double Next()
++    {
++        state = (state * 6364136223846793005ULL) + 1442695040888963407ULL;
++        return static_cast<double>(state >> 11) / 9007199254740992.0;
++    }
++    double Range(const double aLow, const double aHigh)
++    {
++        return aLow + ((aHigh - aLow) * Next());
++    }
++};
++
++/// A random scene in front of a 1920x1080, 60 degree camera. Every corner is at
++/// least 0.3 m deep, so the rectangle is one a camera could actually see.
++struct Scene
++{
++    Camera camera{1920.0, 1080.0, 60.0};
++    Rectangle rectangle{};
++    float corners[8]{};
++};
++
++Scene RandomScene(Lcg& aRandom)
++{
++    for (;;)
++    {
++        Scene scene;
++        const double width = std::exp(aRandom.Range(std::log(0.3), std::log(30.0)));
++        const double height = width * aRandom.Range(0.3, 1.2);
++        const double distance = std::exp(aRandom.Range(std::log(0.8), std::log(40.0)));
++        const Vec3 centre{aRandom.Range(-0.6, 0.6) * distance, aRandom.Range(-0.3, 0.3) * distance,
++                          distance};
++        scene.rectangle = Placed(width, height, centre, aRandom.Range(-80.0, 80.0),
++                                 aRandom.Range(-35.0, 35.0), aRandom.Range(-25.0, 25.0));
++        if (scene.rectangle.NearestDepth() < 0.3)
++        {
++            continue;
++        }
++        CornersOf(scene.camera, scene.rectangle, scene.corners);
++        return scene;
++    }
++}
++
++/// Where texel (s, t) lands when a quad is drawn as cellsU x cellsV cells, each
++/// cell split the way `ImDrawList::AddImageQuad` splits it -- (TL, TR, BR) and
++/// (TL, BR, BL) -- with vertices from `aVertex` and texture coordinates
++/// interpolated linearly in screen space.
++template <class Vertex>
++Vec2 Drawn(const Vertex& aVertex, const int aCellsU, const int aCellsV, const double aS,
++           const double aT)
++{
++    const int i = std::min(static_cast<int>(aS * aCellsU), aCellsU - 1);
++    const int j = std::min(static_cast<int>(aT * aCellsV), aCellsV - 1);
++    const double s0 = static_cast<double>(i) / aCellsU;
++    const double s1 = static_cast<double>(i + 1) / aCellsU;
++    const double t0 = static_cast<double>(j) / aCellsV;
++    const double t1 = static_cast<double>(j + 1) / aCellsV;
++    const double ls = (aS - s0) / (s1 - s0);
++    const double lt = (aT - t0) / (t1 - t0);
++    const Point tl = aVertex(s0, t0), tr = aVertex(s1, t0), br = aVertex(s1, t1),
++                bl = aVertex(s0, t1);
++    const auto mix = [](const double w0, const Point& p0, const double w1, const Point& p1,
++                        const double w2, const Point& p2) {
++        return Vec2{(w0 * p0.x) + (w1 * p1.x) + (w2 * p2.x),
++                    (w0 * p0.y) + (w1 * p1.y) + (w2 * p2.y)};
++    };
++    if (ls >= lt)
++    {
++        return mix(1.0 - ls, tl, ls - lt, tr, lt, br);
++    }
++    return mix(1.0 - lt, tl, ls, br, lt - ls, bl);
++}
++
++/// The largest distance, over a dense sample of the quad, between the picture the
++/// grid draws and the pinhole's own answer.
++double MeasuredError(const Scene& aScene, const Homography& aMap, const int aCells,
++                     const int aSamplesPerCell = 4)
++{
++    const auto vertex = [&](const double u, const double v) { return aMap.Apply(u, v); };
++    const int samples = aCells * aSamplesPerCell;
++    double worst = 0.0;
++    for (int row = 0; row <= samples; ++row)
++    {
++        for (int column = 0; column <= samples; ++column)
++        {
++            const double s = static_cast<double>(column) / samples;
++            const double t = static_cast<double>(row) / samples;
++            const Vec2 drawn = Drawn(vertex, aCells, aCells, s, t);
++            const Vec2 truth = aScene.camera.Project(aScene.rectangle.At(s, t));
++            worst = std::max(worst, std::hypot(drawn[0] - truth[0], drawn[1] - truth[1]));
++        }
++    }
++    return worst;
++}
++
++/// `Apply` in double, for finite differences: the float `Point` is too coarse to
++/// difference twice.
++Vec2 ApplyDouble(const Homography& aMap, const double aU, const double aV)
++{
++    const double w = aMap.Denominator(aU, aV);
++    return {((aMap.a * aU) + (aMap.b * aV) + aMap.c) / w,
++            ((aMap.d * aU) + (aMap.e * aV) + aMap.f) / w};
++}
++
++bool SameBits(const Point& aLeft, const Point& aRight)
++{
++    return std::memcmp(&aLeft, &aRight, sizeof(Point)) == 0;
++}
++
++int CellCount(const Homography& aMap, const int aCells, const Rect* const aCull)
++{
++    int visited = 0;
++    ForEachCell(aMap, aCells, aCells, aCull, [&](const Point (&)[4], const Point (&)[4]) {
++        ++visited;
++    });
++    return visited;
++}
++
++/// The cross product at each vertex of the quad taken in order, i.e. twice the signed
++/// area of the triangle a corner makes with its two neighbours.
++void VertexCrosses(const float (&aCorners)[8], double (&aOut)[4])
++{
++    for (int vertex = 0; vertex < 4; ++vertex)
++    {
++        const int a = vertex;
++        const int b = (vertex + 1) % 4;
++        const int c = (vertex + 2) % 4;
++        const double abx = static_cast<double>(aCorners[b * 2]) - aCorners[a * 2];
++        const double aby = static_cast<double>(aCorners[b * 2 + 1]) - aCorners[a * 2 + 1];
++        const double bcx = static_cast<double>(aCorners[c * 2]) - aCorners[b * 2];
++        const double bcy = static_cast<double>(aCorners[c * 2 + 1]) - aCorners[b * 2 + 1];
++        aOut[vertex] = (abx * bcy) - (aby * bcx);
++    }
++}
++
++/// Every vertex turns the same way, and none is straight.
++bool IsStrictlyConvex(const float (&aCorners)[8])
++{
++    double cross[4];
++    VertexCrosses(aCorners, cross);
++    const bool positive = cross[0] > 0.0 && cross[1] > 0.0 && cross[2] > 0.0 && cross[3] > 0.0;
++    const bool negative = cross[0] < 0.0 && cross[1] < 0.0 && cross[2] < 0.0 && cross[3] < 0.0;
++    return positive || negative;
++}
++
++/// How close a convex quad is to having a straight vertex: the smallest vertex cross
++/// product over the largest. Near zero is a sliver.
++double ThinnessRatio(const float (&aCorners)[8])
++{
++    double cross[4];
++    VertexCrosses(aCorners, cross);
++    double smallest = 1.0e300;
++    double largest = 0.0;
++    for (const double value : cross)
++    {
++        smallest = std::min(smallest, std::abs(value));
++        largest = std::max(largest, std::abs(value));
++    }
++    return largest > 0.0 ? smallest / largest : 0.0;
++}
++} // namespace
++
++int main()
++{
++    // ------------------------------------------------ the documented numbers
++    // The figures in the header of ScreenTessellation.hpp and in the output of
++    // tools/quad-affine-error.py are the error of ONE quad (cells = 1). They are
++    // reproduced here from the pinhole, so neither can drift from the other.
++    {
++        const Camera camera{1920.0, 1080.0, 60.0};
++        struct Case
++        {
++            double width, height, distance, yaw, expected, slack;
++        };
++        const Case cases[] = {
++            {1.16, 0.66, 1.5, 0.0, 0.0, 0.05},
++            {1.16, 0.66, 1.5, 30.0, 76.0, 2.0},
++            {1.16, 0.66, 1.5, 50.0, 103.0, 2.0},
++            {30.48, 17.34, 20.4, 35.0, 384.0, 6.0},
++        };
++        for (const auto& item : cases)
++        {
++            Scene scene;
++            scene.rectangle = Turned(item.width, item.height, item.distance, item.yaw);
++            CornersOf(camera, scene.rectangle, scene.corners);
++            Homography map;
++            CHECK(Solve(scene.corners, map) == Status::Ok);
++            // One cell is the quad as drawn today: corners exact, interior affine.
++            const double error = MeasuredError(scene, map, 1, 128);
++            CHECK(std::abs(error - item.expected) <= item.slack);
++        }
++    }
++
++    // ------------------------------------------ four corners determine the plane
++    {
++        Lcg random{0x5EEDULL};
++        double worst = 0.0;
++        for (int index = 0; index < 400; ++index)
++        {
++            const Scene scene = RandomScene(random);
++            Homography map;
++            CHECK(Solve(scene.corners, map) == Status::Ok);
++            // The corners themselves, to float rounding.
++            constexpr int kUV[4][2] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
++            for (int corner = 0; corner < 4; ++corner)
++            {
++                const Point at = map.Apply(kUV[corner][0], kUV[corner][1]);
++                const double scale =
++                    std::max({1.0, std::abs(static_cast<double>(scene.corners[corner * 2])),
++                              std::abs(static_cast<double>(scene.corners[corner * 2 + 1]))});
++                CHECK(std::abs(static_cast<double>(at.x) - scene.corners[corner * 2]) <=
++                      (1.0e-6 * scale) + 1.0e-3);
++                CHECK(std::abs(static_cast<double>(at.y) - scene.corners[corner * 2 + 1]) <=
++                      (1.0e-6 * scale) + 1.0e-3);
++            }
++            // The interior, which no corner told it about. Judged where a picture
++            // can be seen: both coordinates within a generous ten screens, so float
++            // quantisation of a corner a million pixels away cannot decide it.
++            double extent = 0.0;
++            for (const float value : scene.corners)
++            {
++                extent = std::max(extent, std::abs(static_cast<double>(value)));
++            }
++            if (extent > 1.0e4)
++            {
++                continue;
++            }
++            for (int probe = 0; probe < 25; ++probe)
++            {
++                const double s = random.Next();
++                const double t = random.Next();
++                const Point at = map.Apply(s, t);
++                const Vec2 truth = scene.camera.Project(scene.rectangle.At(s, t));
++                const double error = std::hypot(static_cast<double>(at.x) - truth[0],
++                                                static_cast<double>(at.y) - truth[1]);
++                worst = std::max(worst, error);
++                CHECK(error <= 0.25);
++            }
++        }
++        // Not a bound anyone relies on -- a record of how exact it actually is.
++        CHECK(worst < 0.25);
++    }
++
++    // ------------------------------------------ an affine image is one plain quad
++    {
++        // A parallelogram is what an orthographic or head-on-and-distant view
++        // produces. It must come out as the one quad that is drawn today.
++        const float parallelogram[8] = {100.0F, 100.0F, 500.0F, 140.0F,
++                                        520.0F, 360.0F, 120.0F, 320.0F};
++        Homography map;
++        CHECK(Solve(parallelogram, map) == Status::Ok);
++        CHECK(std::abs(map.g) < 1.0e-12 && std::abs(map.h) < 1.0e-12);
++        const Choice choice = ChooseCells(map);
++        CHECK(choice.cells == 1 && !choice.capped && choice.errorBoundPixels < 1.0e-6);
++
++        int visited = 0;
++        ForEachCell(map, choice.cells, choice.cells, nullptr,
++                    [&](const Point (&positions)[4], const Point (&uvs)[4]) {
++                        ++visited;
++                        for (int corner = 0; corner < 4; ++corner)
++                        {
++                            CHECK(positions[corner].x == parallelogram[corner * 2]);
++                            CHECK(positions[corner].y == parallelogram[corner * 2 + 1]);
++                        }
++                        CHECK(uvs[0].x == 0.0F && uvs[0].y == 0.0F);
++                        CHECK(uvs[1].x == 1.0F && uvs[1].y == 0.0F);
++                        CHECK(uvs[2].x == 1.0F && uvs[2].y == 1.0F);
++                        CHECK(uvs[3].x == 0.0F && uvs[3].y == 1.0F);
++                    });
++        CHECK(visited == 1);
++    }
++
++    // ------------------------------------------ head-on costs nothing, turned costs
++    {
++        const Camera camera{1920.0, 1080.0, 60.0};
++        int previous = 0;
++        for (const double yaw : {0.0, 10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0})
++        {
++            Scene scene;
++            scene.rectangle = Turned(1.16, 0.66, 1.5, yaw);
++            CornersOf(camera, scene.rectangle, scene.corners);
++            Homography map;
++            CHECK(Solve(scene.corners, map) == Status::Ok);
++            const Choice choice = ChooseCells(map);
++            CHECK(choice.cells >= previous);
++            CHECK(!choice.capped);
++            previous = choice.cells;
++            if (yaw == 0.0)
++            {
++                CHECK(choice.cells == 1);
++            }
++            if (yaw == 30.0)
++            {
++                // tools/quad-affine-error.py: 12 cells strictly needed for 1 px and
++                // 17 for 0.5 px. The bound asks for a little more, never less.
++                CHECK(choice.cells >= 14 && choice.cells <= 22);
++            }
++        }
++        CHECK(previous > 14);
++    }
++
++    // ------------------------------------------ the bound is rigorous, and useful
++    {
++        Lcg random{0xB0075ULL};
++        int scenes = 0;
++        int wide = 0;
++        std::vector<double> ratios;
++        for (int index = 0; index < 500; ++index)
++        {
++            const Scene scene = RandomScene(random);
++            Homography map;
++            CHECK(Solve(scene.corners, map) == Status::Ok);
++            const Choice choice = ChooseCells(map);
++            const double measured = MeasuredError(scene, map, choice.cells);
++            ++scenes;
++            // Rigorous: the error is never more than the bound says. The 0.02 px is
++            // float rounding of eight corners, not slack in the maths.
++            CHECK(measured <= choice.errorBoundPixels + 0.02);
++            if (!choice.capped)
++            {
++                CHECK(choice.errorBoundPixels <= static_cast<double>(kDefaultTolerancePixels) + 1e-9);
++                CHECK(measured <= static_cast<double>(kDefaultTolerancePixels) + 0.02);
++            }
++            else
++            {
++                ++wide;
++                CHECK(choice.cells == kMaximumCells);
++                CHECK(choice.errorBoundPixels > static_cast<double>(kDefaultTolerancePixels));
++            }
++            if (choice.cells >= 4 && !choice.capped)
++            {
++                ratios.push_back(measured / choice.errorBoundPixels);
++            }
++        }
++        CHECK(scenes == 500);
++        CHECK(ratios.size() > 50);
++        // Useful: measured error is a healthy fraction of the bound, so the grid is
++        // not being bought at several times what the tolerance needs. The median of
++        // measured/bound is about 0.5 for this model; it must not fall below a
++        // quarter, which would be a bound requiring twice the cells.
++        std::sort(ratios.begin(), ratios.end());
++        CHECK(ratios[ratios.size() / 2] >= 0.25);
++        // And it is not absurd the other way: it is an upper bound, to float noise.
++        CHECK(ratios.back() <= 1.05);
++        (void)wide;
++    }
++
++    // ------------------------------------------ the cell count against brute force
++    // The claim in the header, measured directly: for each scene find by brute force the
++    // smallest grid whose measured error is within the tolerance, and compare it with
++    // what `ChooseCells` asks for. Never fewer (that would be the bound lying), and not
++    // wildly more (that would be a bound that can be satisfied by doing everything).
++    // Measured over 1500 scenes while writing this: median 1.4x, 90th percentile 2.0x,
++    // worst 2.5x, never below 1x.
++    {
++        Lcg random{0xFEEDULL};
++        std::vector<double> asked;
++        for (int index = 0; index < 400; ++index)
++        {
++            const Scene scene = RandomScene(random);
++            Homography map;
++            CHECK(Solve(scene.corners, map) == Status::Ok);
++            const Choice choice = ChooseCells(map);
++            if (choice.capped)
++            {
++                continue;
++            }
++            int needed = 0;
++            for (int cells = 1; cells <= kMaximumCells; ++cells)
++            {
++                if (MeasuredError(scene, map, cells, 6) <= static_cast<double>(kDefaultTolerancePixels))
++                {
++                    needed = cells;
++                    break;
++                }
++            }
++            CHECK(needed >= 1);
++            CHECK(choice.cells >= needed);
++            if (choice.cells > 1 || needed > 1)
++            {
++                asked.push_back(static_cast<double>(choice.cells) / needed);
++            }
++        }
++        CHECK(asked.size() > 150);
++        std::sort(asked.begin(), asked.end());
++        CHECK(asked.front() >= 1.0);
++        CHECK(asked[asked.size() / 2] <= 1.7);
++        CHECK(asked.back() <= 3.0);
++    }
++
++    // ------------------------------------------ the cap is honoured and reported
++    {
++        const Camera camera{1920.0, 1080.0, 60.0};
++        Scene scene;
++        scene.rectangle = Turned(30.48, 17.34, 20.4, 60.0); // cinema.100ft, 60 degrees
++        CornersOf(camera, scene.rectangle, scene.corners);
++        Homography map;
++        CHECK(Solve(scene.corners, map) == Status::Ok);
++        const Choice choice = ChooseCells(map);
++        CHECK(choice.capped && choice.cells == kMaximumCells);
++        CHECK(choice.errorBoundPixels > static_cast<double>(kDefaultTolerancePixels));
++        // Still an improvement of two orders of magnitude over the one quad.
++        const double oneQuad = MeasuredError(scene, map, 1, 64);
++        const double capped = MeasuredError(scene, map, choice.cells, 2);
++        CHECK(oneQuad > 600.0);
++        CHECK(capped < 12.0);
++        CHECK(capped <= choice.errorBoundPixels + 0.05);
++        // A lower cap is honoured exactly.
++        const Choice low = ChooseCells(map, kDefaultTolerancePixels, 10);
++        CHECK(low.cells == 10 && low.capped);
++        // A cap above the ceiling is clamped to it, never obeyed.
++        const Choice high = ChooseCells(map, kDefaultTolerancePixels, 10000);
++        CHECK(high.cells == kMaximumCells);
++    }
++
++    // ------------------------------------------ the grid is exact and watertight
++    {
++        Lcg random{0xC311ULL};
++        for (int index = 0; index < 40; ++index)
++        {
++            const Scene scene = RandomScene(random);
++            Homography map;
++            CHECK(Solve(scene.corners, map) == Status::Ok);
++            const int cellsU = 1 + static_cast<int>(random.Range(0.0, 9.0));
++            const int cellsV = 1 + static_cast<int>(random.Range(0.0, 9.0));
++
++            struct Cell
++            {
++                Point positions[4];
++                Point uvs[4];
++            };
++            std::vector<Cell> cells;
++            ForEachCell(map, cellsU, cellsV, nullptr,
++                        [&](const Point (&positions)[4], const Point (&uvs)[4]) {
++                            Cell cell;
++                            std::memcpy(cell.positions, positions, sizeof(cell.positions));
++                            std::memcpy(cell.uvs, uvs, sizeof(cell.uvs));
++                            cells.push_back(cell);
++                        });
++            CHECK(static_cast<int>(cells.size()) == cellsU * cellsV);
++
++            for (int row = 0; row < cellsV; ++row)
++            {
++                for (int column = 0; column < cellsU; ++column)
++                {
++                    const Cell& cell = cells[static_cast<std::size_t>((row * cellsU) + column)];
++                    // Every vertex is the homography at its own uv.
++                    for (int corner = 0; corner < 4; ++corner)
++                    {
++                        const Point expected =
++                            map.Apply(static_cast<double>(cell.uvs[corner].x),
++                                      static_cast<double>(cell.uvs[corner].y));
++                        CHECK(std::abs(expected.x - cell.positions[corner].x) <= 1.0e-3F *
++                              std::max(1.0F, std::abs(expected.x)));
++                        CHECK(std::abs(expected.y - cell.positions[corner].y) <= 1.0e-3F *
++                              std::max(1.0F, std::abs(expected.y)));
++                    }
++                    // The right neighbour shares its left edge, bit for bit.
++                    if (column + 1 < cellsU)
++                    {
++                        const Cell& next = cells[static_cast<std::size_t>((row * cellsU) + column + 1)];
++                        CHECK(SameBits(cell.positions[1], next.positions[0]));
++                        CHECK(SameBits(cell.positions[2], next.positions[3]));
++                        CHECK(cell.uvs[1].x == next.uvs[0].x && cell.uvs[2].x == next.uvs[3].x);
++                    }
++                    // The cell below shares its top edge.
++                    if (row + 1 < cellsV)
++                    {
++                        const Cell& below = cells[static_cast<std::size_t>(((row + 1) * cellsU) + column)];
++                        CHECK(SameBits(cell.positions[3], below.positions[0]));
++                        CHECK(SameBits(cell.positions[2], below.positions[1]));
++                        CHECK(cell.uvs[3].y == below.uvs[0].y && cell.uvs[2].y == below.uvs[1].y);
++                    }
++                }
++            }
++            // The uvs tile the unit square exactly, ending on 1.0 and not on 0.99999.
++            CHECK(cells.front().uvs[0].x == 0.0F && cells.front().uvs[0].y == 0.0F);
++            CHECK(cells.back().uvs[2].x == 1.0F && cells.back().uvs[2].y == 1.0F);
++            // The outer corners are the four inputs.
++            for (int corner = 0; corner < 4; ++corner)
++            {
++                const Cell& outer = corner == 0 ? cells.front()
++                    : corner == 1 ? cells[static_cast<std::size_t>(cellsU - 1)]
++                    : corner == 2 ? cells.back()
++                                  : cells[static_cast<std::size_t>((cellsV - 1) * cellsU)];
++                const Point& got = outer.positions[corner];
++                const double scale =
++                    std::max({1.0, std::abs(static_cast<double>(scene.corners[corner * 2])),
++                              std::abs(static_cast<double>(scene.corners[corner * 2 + 1]))});
++                CHECK(std::abs(static_cast<double>(got.x) - scene.corners[corner * 2]) <=
++                      (1.0e-6 * scale) + 1.0e-3);
++                CHECK(std::abs(static_cast<double>(got.y) - scene.corners[corner * 2 + 1]) <=
++                      (1.0e-6 * scale) + 1.0e-3);
++            }
++        }
++    }
++
++    // ------------------------------------------ culling skips only the invisible
++    {
++        const Camera camera{1920.0, 1080.0, 60.0};
++        Scene scene;
++        // A big set close enough that much of it is outside the frame.
++        scene.rectangle = Turned(12.0, 6.8, 6.0, 35.0);
++        CornersOf(camera, scene.rectangle, scene.corners);
++        Homography map;
++        CHECK(Solve(scene.corners, map) == Status::Ok);
++        const int cells = 16;
++        const Rect frame{0.0F, 0.0F, 1920.0F, 1080.0F};
++
++        int kept = 0;
++        ForEachCell(map, cells, cells, &frame, [&](const Point (&positions)[4], const Point (&)[4]) {
++            ++kept;
++            // A kept cell may not be wholly outside on any one side.
++            float lowX = positions[0].x, highX = positions[0].x;
++            float lowY = positions[0].y, highY = positions[0].y;
++            for (const auto& point : positions)
++            {
++                lowX = std::min(lowX, point.x);
++                highX = std::max(highX, point.x);
++                lowY = std::min(lowY, point.y);
++                highY = std::max(highY, point.y);
++            }
++            CHECK(!(highX < frame.minX) && !(lowX > frame.maxX));
++            CHECK(!(highY < frame.minY) && !(lowY > frame.maxY));
++        });
++        CHECK(kept > 0 && kept < cells * cells);
++
++        // And every cell that does touch the frame was kept: compare to a full walk.
++        int touching = 0;
++        ForEachCell(map, cells, cells, nullptr, [&](const Point (&positions)[4], const Point (&)[4]) {
++            float lowX = positions[0].x, highX = positions[0].x;
++            float lowY = positions[0].y, highY = positions[0].y;
++            for (const auto& point : positions)
++            {
++                lowX = std::min(lowX, point.x);
++                highX = std::max(highX, point.x);
++                lowY = std::min(lowY, point.y);
++                highY = std::max(highY, point.y);
++            }
++            if (!(highX < frame.minX) && !(lowX > frame.maxX) && !(highY < frame.minY) &&
++                !(lowY > frame.maxY))
++            {
++                ++touching;
++            }
++        });
++        CHECK(touching == kept);
++
++        const Rect everything{-1.0e9F, -1.0e9F, 1.0e9F, 1.0e9F};
++        CHECK(CellCount(map, cells, &everything) == cells * cells);
++        CHECK(CellCount(map, cells, nullptr) == cells * cells);
++
++        // A rectangle the quad never reaches. Coordinates are bounded by
++        // kMaximumCoordinate (1e6), so 2e6..3e6 is empty by construction. (An earlier
++        // draft used a small off-screen box, but this quad is bigger than the frame and
++        // does extend under it - the culler was right and the test was wrong.)
++        const Rect nothing{2.0e6F, 2.0e6F, 3.0e6F, 3.0e6F};
++        CHECK(CellCount(map, cells, &nothing) == 0);
++
++        // For any other rectangle the culled walk must agree with a full walk that
++        // tests each cell against it: off-screen boxes the quad does reach, slivers,
++        // and a box strictly inside the frame.
++        const Rect boxes[] = {
++            {-100.0F, -100.0F, -50.0F, -50.0F},
++            {-5000.0F, 400.0F, -10.0F, 500.0F},
++            {900.0F, 500.0F, 1000.0F, 600.0F},
++            {1919.0F, 0.0F, 1921.0F, 1080.0F},
++            {0.0F, 1079.0F, 1920.0F, 1081.0F},
++            {-50.0F, -50.0F, 5.0F, 5.0F},
++        };
++        for (const Rect& box : boxes)
++        {
++            int expected = 0;
++            ForEachCell(map, cells, cells, nullptr,
++                        [&](const Point (&positions)[4], const Point (&)[4]) {
++                float lowX = positions[0].x, highX = positions[0].x;
++                float lowY = positions[0].y, highY = positions[0].y;
++                for (const auto& point : positions)
++                {
++                    lowX = std::min(lowX, point.x);
++                    highX = std::max(highX, point.x);
++                    lowY = std::min(lowY, point.y);
++                    highY = std::max(highY, point.y);
++                }
++                if (!(highX < box.minX) && !(lowX > box.maxX) && !(highY < box.minY) &&
++                    !(lowY > box.maxY))
++                {
++                    ++expected;
++                }
++            });
++            CHECK(CellCount(map, cells, &box) == expected);
++        }
++    }
++
++    // ------------------------------------------ what is not a screen is refused
++    {
++        const Camera camera{1920.0, 1080.0, 60.0};
++        Scene good;
++        good.rectangle = Turned(1.16, 0.66, 1.5, 30.0);
++        CornersOf(camera, good.rectangle, good.corners);
++
++        // A refusal leaves the output alone: a caller that ignores the status draws
++        // what it drew before.
++        const auto untouched = [](const Homography& map) {
++            return map.a == 7.0 && map.b == 8.0 && map.c == 9.0 && map.d == 1.0 &&
++                   map.e == 2.0 && map.f == 3.0 && map.g == 0.25 && map.h == 0.5;
++        };
++        const auto sentinel = [] {
++            Homography map;
++            map.a = 7.0, map.b = 8.0, map.c = 9.0, map.d = 1.0;
++            map.e = 2.0, map.f = 3.0, map.g = 0.25, map.h = 0.5;
++            return map;
++        };
++
++        float broken[8];
++        std::memcpy(broken, good.corners, sizeof(broken));
++        broken[3] = std::nanf("");
++        Homography map = sentinel();
++        CHECK(Solve(broken, map) == Status::NotFinite && untouched(map));
++
++        std::memcpy(broken, good.corners, sizeof(broken));
++        broken[0] = INFINITY;
++        CHECK(Solve(broken, map) == Status::NotFinite && untouched(map));
++
++        std::memcpy(broken, good.corners, sizeof(broken));
++        broken[5] = 2.0e7F;
++        CHECK(Solve(broken, map) == Status::NotFinite && untouched(map));
++
++        const float coincident[8] = {10, 10, 10, 10, 10, 10, 10, 10};
++        CHECK(Solve(coincident, map) == Status::Degenerate && untouched(map));
++
++        const float collinear[8] = {0, 0, 100, 100, 200, 200, 300, 300};
++        CHECK(Solve(collinear, map) == Status::Degenerate && untouched(map));
++
++        // A bow-tie: two adjacent corners swapped. This is what a corner behind the
++        // camera very often looks like after the perspective divide, and it must not
++        // be drawn as a picture.
++        float bowtie[8];
++        std::memcpy(bowtie, good.corners, sizeof(bowtie));
++        std::swap(bowtie[2], bowtie[4]);
++        std::swap(bowtie[3], bowtie[5]);
++        CHECK(Solve(bowtie, map) == Status::CrossesCameraPlane && untouched(map));
++
++        // A concave "dart": the bottom-right corner pulled inside the triangle the
++        // other three make. (An earlier draft of this test used a shape that only
++        // looked like an arrowhead and was convex, so it was - correctly - accepted.
++        // `IsStrictlyConvex` is here so that the shape's concavity is checked rather
++        // than eyeballed.)
++        const float dart[8] = {100, 100, 500, 100, 250, 200, 100, 500};
++        CHECK(!IsStrictlyConvex(dart));
++        Homography dartMap = sentinel();
++        CHECK(Solve(dart, dartMap) == Status::CrossesCameraPlane && untouched(dartMap));
++
++        // And a convex shape that is merely lopsided is a screen.
++        const float lopsided[8] = {100, 100, 500, 100, 450, 450, 100, 500};
++        CHECK(IsStrictlyConvex(lopsided));
++        Homography lopsidedMap = sentinel();
++        CHECK(Solve(lopsided, lopsidedMap) == Status::Ok);
++
++        CHECK(std::string(Describe(Status::Ok)) == "ok");
++        CHECK(std::string(Describe(Status::NotFinite)) == "not_finite");
++        CHECK(std::string(Describe(Status::Degenerate)) == "degenerate");
++        CHECK(std::string(Describe(Status::CrossesCameraPlane)) == "crosses_camera_plane");
++    }
++
++    // ------------------------------------------ a screen is accepted exactly when it is convex
++    // Not a property of the implementation but of the geometry: a projective map that
++    // is finite on a convex set keeps it convex, and a convex quadrilateral is always
++    // the image of a square under such a map. So `Solve` must never accept a quad whose
++    // corners, taken in texture order, are not convex, and must accept every convex one
++    // except the near-degenerate ones whose depth ratio is below kMinimumDepthRatio.
++    // Random quads in a box make the check independent of any camera model.
++    {
++        Lcg random{0xC0DEULL};
++        long convexAccepted = 0;
++        long convexRefused = 0;
++        long concaveRefused = 0;
++        for (int index = 0; index < 300000; ++index)
++        {
++            float corners[8];
++            for (float& value : corners)
++            {
++                value = static_cast<float>(random.Range(0.0, 2000.0));
++            }
++            Homography map;
++            const Status status = Solve(corners, map);
++            if (IsStrictlyConvex(corners))
++            {
++                if (status == Status::Ok)
++                {
++                    ++convexAccepted;
++                }
++                else
++                {
++                    ++convexRefused;
++                    // Only a sliver may be refused: one whose thinnest corner is under
++                    // a thousandth of its fattest.
++                    CHECK(ThinnessRatio(corners) < 1.0e-3);
++                }
++            }
++            else
++            {
++                CHECK(status != Status::Ok);
++                ++concaveRefused;
++            }
++        }
++        // The fuzz must actually have visited both populations (about 23% of random
++        // quads are convex), and almost every convex quad must have been accepted.
++        CHECK(convexAccepted > 50000);
++        CHECK(concaveRefused > 150000);
++        CHECK(convexRefused * 1000 < convexAccepted);
++    }
++
++    // ------------------------------------------ a corner behind the camera
++    // The producer drops a screen whose CENTRE is behind the eye (depth <= 0.05 in
++    // MediaScreens.cpp). A centre in front does not keep the corners in front - a wall
++    // sized screen seen from close has one edge beside and behind the viewer - and what
++    // reaches `Solve` then is the plain perspective divide of a corner with negative
++    // depth. It must be refused, not drawn as a picture.
++    {
++        const Camera camera{1920.0, 1080.0, 60.0};
++        Lcg random{0xBE41DULL};
++        int visited = 0;
++        int crossing = 0;
++        for (int index = 0; index < 20000 && visited < 2000; ++index)
++        {
++            const double width = random.Range(3.0, 40.0);
++            const double height = width * random.Range(0.3, 1.0);
++            const double distance = random.Range(0.3, 4.0);
++            const Vec3 centre{random.Range(-1.0, 1.0) * distance,
++                              random.Range(-0.5, 0.5) * distance, distance};
++            const Rectangle rectangle =
++                Placed(width, height, centre, random.Range(-89.0, 89.0),
++                       random.Range(-30.0, 30.0), random.Range(-20.0, 20.0));
++            // The producer's gate passes (centre in front) and a corner is clearly behind.
++            if (rectangle.centre.z <= 0.05 || rectangle.NearestDepth() > -0.05)
++            {
++                continue;
++            }
++            float corners[8];
++            CornersOf(camera, rectangle, corners);
++            Homography map;
++            const Status status = Solve(corners, map);
++            // NotFinite is a refusal too (a corner a hair behind the eye projects to
++            // an absurd coordinate); what matters is that it is never Ok.
++            CHECK(status == Status::CrossesCameraPlane || status == Status::NotFinite);
++            crossing += status == Status::CrossesCameraPlane ? 1 : 0;
++            ++visited;
++        }
++        CHECK(visited >= 500);
++        CHECK(crossing * 10 >= visited * 9);
++
++        // What the corners cannot reveal, pinned so nobody mistakes it for a bug in
++        // `Solve`: a screen wholly behind the eye projects to the point-reflection of
++        // one in front, and is accepted. The centre-depth gate upstream is what keeps
++        // that from ever being drawn.
++        Scene reflected;
++        reflected.rectangle = Turned(1.16, 0.66, -1.5, 30.0);
++        CornersOf(camera, reflected.rectangle, reflected.corners);
++        Homography map;
++        CHECK(Solve(reflected.corners, map) == Status::Ok);
++    }
++
++    // ------------------------------------------ a mirrored quad is a legitimate quad
++    {
++        const Camera camera{1920.0, 1080.0, 60.0};
++        Scene scene;
++        scene.rectangle = Turned(1.16, 0.66, 1.5, 40.0);
++        CornersOf(camera, scene.rectangle, scene.corners);
++        // The picture turned over: texture left on the panel's right. This is what
++        // `ScreenQuad::Orient` produces when the player walks round to the back.
++        const float mirrored[8] = {scene.corners[2], scene.corners[3], scene.corners[0],
++                                   scene.corners[1], scene.corners[6], scene.corners[7],
++                                   scene.corners[4], scene.corners[5]};
++        Homography original, flipped;
++        CHECK(Solve(scene.corners, original) == Status::Ok);
++        CHECK(Solve(mirrored, flipped) == Status::Ok);
++        CHECK(ChooseCells(original).cells == ChooseCells(flipped).cells);
++        const Point at = flipped.Apply(0.0, 0.0);
++        CHECK(std::abs(at.x - scene.corners[2]) < 1.0e-3F && std::abs(at.y - scene.corners[3]) < 1.0e-3F);
++    }
++
++    // ------------------------------------------ the closed-form curvature is right
++    {
++        Lcg random{0xD1FFULL};
++        for (int index = 0; index < 60; ++index)
++        {
++            const Scene scene = RandomScene(random);
++            double extent = 0.0;
++            for (const float value : scene.corners)
++            {
++                extent = std::max(extent, std::abs(static_cast<double>(value)));
++            }
++            if (extent > 1.0e4)
++            {
++                continue;
++            }
++            Homography map;
++            CHECK(Solve(scene.corners, map) == Status::Ok);
++            const Curvature bound = CurvatureBound(map);
++            for (int probe = 0; probe < 40; ++probe)
++            {
++                const double u = random.Range(0.05, 0.95);
++                const double v = random.Range(0.05, 0.95);
++                const SecondDerivatives analytic = Derivatives(map, u, v);
++
++                // Central differences, in double.
++                const double step = 1.0e-3;
++                const Vec2 centre = ApplyDouble(map, u, v);
++                const Vec2 right = ApplyDouble(map, u + step, v), left = ApplyDouble(map, u - step, v);
++                const Vec2 down = ApplyDouble(map, u, v + step), up = ApplyDouble(map, u, v - step);
++                const Vec2 rd = ApplyDouble(map, u + step, v + step), ru = ApplyDouble(map, u + step, v - step);
++                const Vec2 ld = ApplyDouble(map, u - step, v + step), lu = ApplyDouble(map, u - step, v - step);
++                const double xuu = (right[0] - (2.0 * centre[0]) + left[0]) / (step * step);
++                const double yuu = (right[1] - (2.0 * centre[1]) + left[1]) / (step * step);
++                const double xvv = (down[0] - (2.0 * centre[0]) + up[0]) / (step * step);
++                const double yvv = (down[1] - (2.0 * centre[1]) + up[1]) / (step * step);
++                const double xuv = (rd[0] - ru[0] - ld[0] + lu[0]) / (4.0 * step * step);
++                const double yuv = (rd[1] - ru[1] - ld[1] + lu[1]) / (4.0 * step * step);
++                const auto close = [](const double a, const double b) {
++                    return std::abs(a - b) <= 2.0e-3 * (1.0 + std::abs(b));
++                };
++                CHECK(close(analytic.xuu, xuu) && close(analytic.yuu, yuu));
++                CHECK(close(analytic.xvv, xvv) && close(analytic.yvv, yvv));
++                CHECK(close(analytic.xuv, xuv) && close(analytic.yuv, yuv));
++
++                // And the corner-based bound really bounds every interior point.
++                CHECK(std::hypot(analytic.xuu, analytic.yuu) <= (bound.uu * (1.0 + 1.0e-9)) + 1.0e-9);
++                CHECK(std::hypot(analytic.xuv, analytic.yuv) <= (bound.uv * (1.0 + 1.0e-9)) + 1.0e-9);
++                CHECK(std::hypot(analytic.xvv, analytic.yvv) <= (bound.vv * (1.0 + 1.0e-9)) + 1.0e-9);
++            }
++        }
++    }
++
++    // ------------------------------------------ the bound covers the whole square, not just the corners
++    // The curvature bound is built from the four corners, scaled to the NEAREST corner's
++    // depth. The scaling is what makes it a bound: a function N(u,v)/W(u,v)^3 with N and W
++    // both linear can peak in the interior of the square, and in a minority of scenes
++    // (about one in a hundred here) it peaks above every corner value taken at the
++    // corner's own depth - by up to three times. Sample a dense grid, corners and edges
++    // included, in many scenes, require the bound to hold everywhere, and require that the
++    // generator really does produce scenes where the naive corner maximum would have been
++    // exceeded, so this test cannot quietly lose its teeth.
++    {
++        Lcg random{0xB0DDULL};
++        int scenes = 0;
++        int naiveWouldFail = 0;
++        constexpr int kGrid = 16;
++        for (int index = 0; index < 30000; ++index)
++        {
++            const Scene scene = RandomScene(random);
++            Homography map;
++            if (Solve(scene.corners, map) != Status::Ok)
++            {
++                continue;
++            }
++            ++scenes;
++            const Curvature bound = CurvatureBound(map);
++
++            double interiorUU = 0.0, interiorUV = 0.0, interiorVV = 0.0;
++            for (int row = 0; row <= kGrid; ++row)
++            {
++                for (int column = 0; column <= kGrid; ++column)
++                {
++                    const SecondDerivatives d =
++                        Derivatives(map, static_cast<double>(column) / kGrid,
++                                    static_cast<double>(row) / kGrid);
++                    interiorUU = std::max(interiorUU, std::hypot(d.xuu, d.yuu));
++                    interiorUV = std::max(interiorUV, std::hypot(d.xuv, d.yuv));
++                    interiorVV = std::max(interiorVV, std::hypot(d.xvv, d.yvv));
++                }
++            }
++            CHECK(interiorUU <= (bound.uu * (1.0 + 1.0e-9)) + 1.0e-9);
++            CHECK(interiorUV <= (bound.uv * (1.0 + 1.0e-9)) + 1.0e-9);
++            CHECK(interiorVV <= (bound.vv * (1.0 + 1.0e-9)) + 1.0e-9);
++
++            // The same bound built without the depth scaling: each corner's own value.
++            double cornerXUU = 0.0, cornerXUV = 0.0, cornerXVV = 0.0;
++            double cornerYUU = 0.0, cornerYUV = 0.0, cornerYVV = 0.0;
++            for (const auto& corner : {std::array<double, 2>{0, 0}, std::array<double, 2>{1, 0},
++                                       std::array<double, 2>{1, 1}, std::array<double, 2>{0, 1}})
++            {
++                const SecondDerivatives d = Derivatives(map, corner[0], corner[1]);
++                cornerXUU = std::max(cornerXUU, std::abs(d.xuu));
++                cornerXUV = std::max(cornerXUV, std::abs(d.xuv));
++                cornerXVV = std::max(cornerXVV, std::abs(d.xvv));
++                cornerYUU = std::max(cornerYUU, std::abs(d.yuu));
++                cornerYUV = std::max(cornerYUV, std::abs(d.yuv));
++                cornerYVV = std::max(cornerYVV, std::abs(d.yvv));
++            }
++            const double naiveUU = std::hypot(cornerXUU, cornerYUU);
++            const double naiveUV = std::hypot(cornerXUV, cornerYUV);
++            const double naiveVV = std::hypot(cornerXVV, cornerYVV);
++            if (interiorUU > naiveUU * (1.0 + 1.0e-9) || interiorUV > naiveUV * (1.0 + 1.0e-9) ||
++                interiorVV > naiveVV * (1.0 + 1.0e-9))
++            {
++                ++naiveWouldFail;
++            }
++        }
++        CHECK(scenes > 20000);
++        CHECK(naiveWouldFail >= 10);
++    }
++
++    // ------------------------------------------ a corner a hair in front of the eye
++    // In front of the camera, so the denominator is positive - but the nearest corner is
++    // more than ten thousand times closer than the farthest, so its projection is a
++    // number no float can place a texel with. Refused, and the threshold is pinned from
++    // both sides. (Depth 0.002 and 0.004 against 30 m: ratios of 6.7e-5 and 1.3e-4
++    // against the limit of 1e-4.)
++    {
++        const Camera camera{1920.0, 1080.0, 60.0};
++        const auto cornersFor = [&](const double aNearDepth, float (&aOut)[8]) {
++            const Vec3 world[4] = {{0.4, 0.3, aNearDepth},
++                                   {8.0, 0.3, 30.0},
++                                   {8.0, -0.3, 30.0},
++                                   {0.4, -0.3, aNearDepth}};
++            for (int corner = 0; corner < 4; ++corner)
++            {
++                const Vec2 pixel = camera.Project(world[corner]);
++                aOut[corner * 2] = static_cast<float>(pixel[0]);
++                aOut[corner * 2 + 1] = static_cast<float>(pixel[1]);
++            }
++        };
++        float corners[8];
++        Homography map;
++
++        cornersFor(0.002, corners);
++        CHECK(IsStrictlyConvex(corners));
++        CHECK(Solve(corners, map) == Status::CrossesCameraPlane);
++
++        cornersFor(0.004, corners);
++        CHECK(IsStrictlyConvex(corners));
++        CHECK(Solve(corners, map) == Status::Ok);
++        // and what it accepts it can subdivide without overflowing the grid.
++        const Choice choice = ChooseCells(map);
++        CHECK(choice.cells >= 1 && choice.cells <= kMaximumCells);
++    }
++
++    std::cout << "ScreenTessellation: corners, bound, cap, watertight grid, culling and refusals OK\n";
++    return 0;
++}
+
+base-commit: 36772b3b88404ffa9467bb2d06fcf1abd47568d9
+-- 
+2.34.1
+

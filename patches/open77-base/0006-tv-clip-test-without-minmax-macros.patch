@@ -1,0 +1,41 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 1 Oct 2026 20:50:50 -0500
+Subject: [PATCH] Build the near-plane clipping test without Windows' min and
+ max macros
+
+The first Visual Studio build of 0005 stopped in Open77.ScreenClip.Tests with
+C2589 ("illegal token on right side of '::'") wherever the test calls
+std::min or std::max. The test draws the depth pass's fan, so it includes
+ScreenDepthPass.hpp, which brings in d3d12.h on Windows and with it the
+Windows headers' min and max macros. Open77.Client and the other tests that
+include Windows headers define NOMINMAX (and WIN32_LEAN_AND_MEAN); this target
+now does too.
+
+Reproduced here by giving MinGW's d3d12.h the macros MSVC's headers define
+(MinGW's own C++ library defines NOMINMAX itself, so it did not show it):
+the test fails as on Windows without the definition and compiles with it.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01SGDf5e3noD7RiVDkPCENkG
+---
+ client/CMakeLists.txt | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/client/CMakeLists.txt b/client/CMakeLists.txt
+index e013803..a069d12 100644
+--- a/client/CMakeLists.txt
++++ b/client/CMakeLists.txt
+@@ -1019,6 +1019,9 @@ if(BUILD_TESTING)
+     # screen is in Open77.PerspectiveImage.Tests.
+     add_executable(Open77.ScreenClip.Tests tests/ScreenClipTests.cpp)
+     target_include_directories(Open77.ScreenClip.Tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
++    # It draws the depth pass's fan (ScreenDepthPass.hpp), whose header brings in
++    # d3d12.h and with it Windows' `min` and `max` macros on Windows.
++    target_compile_definitions(Open77.ScreenClip.Tests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+     set_target_properties(Open77.ScreenClip.Tests PROPERTIES FOLDER "Tests")
+     add_test(NAME Open77.ScreenClip.Tests COMMAND Open77.ScreenClip.Tests)
+ 
+-- 
+2.43.0
+

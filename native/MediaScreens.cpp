@@ -5,6 +5,7 @@
 #include "api/Props.hpp"
 #include "api/WorldQuery.hpp"
 #include "engine/RttiAccess.hpp"
+#include "webui/ScreenClip.hpp"
 #include "webui/ScreenInput.hpp"
 #include "webui/WorldOverlay.hpp"
 #include "world/EntityService.hpp"
@@ -243,6 +244,193 @@ bool Occluded(const RED4ext::Vector4& aEye, const RED4ext::Vector4& aTarget,
     return blocked;
 }
 
+/// Where the pointer is DRAWN, when this is the screen the player has taken over.
+///
+/// CEF rasterises a page into a texture; the HOST paints the cursor. On a world
+/// quad there is no window to paint into, so the position is published for the
+/// overlay's cursor instead of being drawn as a second marker -- and it is computed
+/// from the SAME four world corners the page is composited with, interpolated in
+/// texture space (the orientation is the one just decided, so a mirrored or
+/// turned-over panel is not special-cased), which is the only way the one pointer
+/// a player sees and the picture it points at cannot disagree about where the
+/// click will land.
+void PublishPointer(const Entry& aEntry, const Camera::View& aView,
+                    const std::vector<RED4ext::Vector4>& aWorld)
+{
+    const WebUiService::ScreenInput::State input = WebUiService::ScreenInput::Get();
+    if (!input.active || input.surface != aEntry.definition.surface)
+    {
+        return;
+    }
+    const auto at = [&](const int aU, const int aV) -> const RED4ext::Vector4& {
+        return aWorld[ScreenQuad::CornerForTexture(aEntry.orientation, aU, aV)];
+    };
+    const auto& topLeft = at(0, 0);
+    const auto& topRight = at(1, 0);
+    const auto& bottomRight = at(1, 1);
+    const auto& bottomLeft = at(0, 1);
+    const float u = std::clamp(input.u, 0.0F, 1.0F);
+    const float v = std::clamp(input.v, 0.0F, 1.0F);
+    const auto lerp = [](const RED4ext::Vector4& aA, const RED4ext::Vector4& aB,
+                         const float aT) {
+        return RED4ext::Vector4{aA.X + (aB.X - aA.X) * aT, aA.Y + (aB.Y - aA.Y) * aT,
+                                aA.Z + (aB.Z - aA.Z) * aT, 0.0F};
+    };
+    const auto top = lerp(topLeft, topRight, u);
+    const auto bottom = lerp(bottomLeft, bottomRight, u);
+    const auto point = lerp(top, bottom, v);
+
+    RED4ext::Vector4 projectedCursor{};
+    if (Camera::ProjectPoint(point, projectedCursor) == Camera::Status::Ok &&
+        std::isfinite(projectedCursor.X) && std::isfinite(projectedCursor.Y))
+    {
+        const auto relativeCursor = Sub(point, aView.position);
+        const float cursorDepth = Dot(relativeCursor, aView.forward);
+        if (cursorDepth > 0.05F)
+        {
+            WebUiService::ScreenInput::PublishPointerOnScreen(
+                (projectedCursor.X + 1.0F) * 0.5F, (1.0F - projectedCursor.Y) * 0.5F);
+        }
+    }
+}
+
+/// The overlay item for a screen with part of it behind the camera.
+///
+/// Its four corners cannot be projected -- the engine refuses a point behind the
+/// eye and `Camera::ProjectPoints` writes it as the centre of the view -- so the
+/// screen is described by its plane's own map instead (`webui/ScreenClip.hpp`):
+/// the part of the panel in front of the camera's near plane is a polygon in the
+/// panel's own coordinates, four points inside it are projected by the engine like
+/// any corner, and with their view depths they fix the map from the picture's
+/// texture space to the view. `WorldOverlay` draws the part in front from it.
+///
+/// Everything a screen seen whole is checked for is checked here too, against the
+/// part that can be seen: occlusion is traced to its middle rather than to the
+/// panel's centre, which may be behind the eye.
+bool BuildClippedItem(Entry& aEntry, const Camera::View& aView,
+                      const std::vector<RED4ext::Vector4>& aWorld, const float (&aCornerDepth)[4],
+                      const float aDistance, WorldOverlay::Item& aOut, std::string& aReason)
+{
+    namespace Clip = WorldOverlay::ScreenClip;
+    // The panel's own axes as texture space for now: (a, b) = (0, 0) at its -right,
+    // -up corner, `a` along +right and `b` along +up. Which way round the picture
+    // goes is decided below, from where this part of it lands.
+    const int origin = ScreenQuad::CornerIndex(-1, -1);
+    const int alongRight = ScreenQuad::CornerIndex(+1, -1);
+    const int alongUp = ScreenQuad::CornerIndex(-1, +1);
+    const Clip::Polygon region = Clip::VisibleRegion(
+        aCornerDepth[origin], aCornerDepth[alongRight], aCornerDepth[alongUp]);
+    double samples[4][2]{};
+    if (!Clip::SamplePoints(region, samples))
+    {
+        aReason = "behind_camera";
+        return false;
+    }
+    const auto pointAt = [&](const double aA, const double aB) {
+        const auto& o = aWorld[origin];
+        const auto& r = aWorld[alongRight];
+        const auto& u = aWorld[alongUp];
+        return RED4ext::Vector4{
+            static_cast<float>(o.X + ((r.X - o.X) * aA) + ((u.X - o.X) * aB)),
+            static_cast<float>(o.Y + ((r.Y - o.Y) * aA) + ((u.Y - o.Y) * aB)),
+            static_cast<float>(o.Z + ((r.Z - o.Z) * aA) + ((u.Z - o.Z) * aB)), 1.0F};
+    };
+
+    std::array<RED4ext::Vector4, 4> points{};
+    double depths[4]{};
+    for (size_t index = 0; index < points.size(); ++index)
+    {
+        points[index] = pointAt(samples[index][0], samples[index][1]);
+        depths[index] = static_cast<double>(Dot(Sub(points[index], aView.position), aView.forward));
+    }
+    std::array<RED4ext::Vector4, 4> projected{};
+    if (Camera::ProjectPoints(
+            std::span<const RED4ext::Vector4>(points.data(), points.size()),
+            std::span<RED4ext::Vector4>(projected.data(), projected.size())) != Camera::Status::Ok)
+    {
+        aReason = "projection_unavailable";
+        return false;
+    }
+    double at[4][2]{};
+    for (size_t index = 0; index < projected.size(); ++index)
+    {
+        if (!std::isfinite(projected[index].X) || !std::isfinite(projected[index].Y))
+        {
+            aReason = "projection_not_finite";
+            return false;
+        }
+        // NDC to the overlay's 0..1 from the top-left, as for the corners.
+        at[index][0] = (static_cast<double>(projected[index].X) + 1.0) * 0.5;
+        at[index][1] = (1.0 - static_cast<double>(projected[index].Y)) * 0.5;
+    }
+    Clip::Map panel;
+    if (!Clip::SolveMap(samples, at, depths, Clip::kDefaultPositionTolerance, panel))
+    {
+        // The four points do not agree with one flat screen seen through one
+        // camera: the engine refused one of them, or the view moved under the
+        // projection. Not drawn this tick rather than drawn wrong.
+        aReason = "clip_unsolved";
+        return false;
+    }
+
+    // Which way round the picture goes: `ScreenQuad::Orient`'s own rule -- the
+    // picture's left on whichever side of the panel lands on the left of the
+    // frame, its top on whichever lands at the top -- asked where the panel is in
+    // front of the camera, through the map, rather than of corners that are not.
+    // Inside the deadband the previous answer stands, as it does there.
+    const std::array<double, 2> middle = region.Centroid();
+    const std::array<double, 2> slopes = Clip::Slopes(panel, middle[0], middle[1]);
+    if (std::abs(slopes[0]) > static_cast<double>(ScreenQuad::kOrientationDeadband))
+    {
+        aEntry.orientation.flipU = slopes[0] < 0.0;
+    }
+    if (std::abs(slopes[1]) > static_cast<double>(ScreenQuad::kOrientationDeadband))
+    {
+        aEntry.orientation.flipV = slopes[1] > 0.0;
+    }
+    // The picture's (u, v) in the panel's (a, b): a = u, or 1 - u when the picture
+    // is mirrored against the panel; b = 1 - v (the picture's top row on the +up
+    // edge), or v when it is turned over. `ScreenQuad::CornerForTexture`, as a map.
+    const bool flipU = aEntry.orientation.flipU;
+    const bool flipV = aEntry.orientation.flipV;
+    const Clip::Map map = Clip::Substituted(panel, flipU ? -1.0 : 1.0, flipU ? 1.0 : 0.0,
+                                            flipV ? 1.0 : -1.0, flipV ? 0.0 : 1.0);
+
+    // Hidden by a wall: traced to the middle of the part that can be seen.
+    const RED4ext::Vector4 middleWorld = pointAt(middle[0], middle[1]);
+    const auto toMiddle = Sub(middleWorld, aView.position);
+    const float middleDistance = std::sqrt(std::max(0.0F, Dot(toMiddle, toMiddle)));
+    if (Occluded(aView.position, middleWorld, middleDistance))
+    {
+        aReason = "occluded";
+        return false;
+    }
+
+    const Clip::Polygon visible = Clip::VisibleRegion(map);
+    if (visible.count < 3)
+    {
+        aReason = "behind_camera";
+        return false;
+    }
+    const std::array<double, 2> middleUv = visible.Centroid();
+    const std::array<double, 2> middleAt = map.Apply(middleUv[0], middleUv[1]);
+
+    aOut = WorldOverlay::Item{};
+    aOut.style = WorldOverlay::Style::Screen;
+    aOut.surface = aEntry.definition.surface;
+    aOut.clipped = true;
+    map.Store(aOut.map.data());
+    aOut.depth = static_cast<float>(map.Depth(middleUv[0], middleUv[1]));
+    aOut.distance = aDistance;
+    aOut.maximumDistance = kMaximumDistance;
+    aOut.x = static_cast<float>(middleAt[0]);
+    aOut.y = static_cast<float>(middleAt[1]);
+    aEntry.distance = aDistance;
+    aReason = "drawn_clipped";
+    PublishPointer(aEntry, aView, aWorld);
+    return true;
+}
+
 /// Builds the overlay item for one screen, or explains why there is none.
 bool BuildItem(
     Entry& aEntry,
@@ -320,10 +508,24 @@ bool BuildItem(
 
     const auto relative = Sub(centre, aView.position);
     const float depth = Dot(relative, aView.forward);
-    // Behind the camera, or close enough to the plane that the perspective
-    // divide whips the quad across the frame. Tested before the projection
-    // because it is one dot product against four matrix transforms.
-    if (depth <= 0.05F)
+    // How far in front of the camera each corner is. All of them behind it (or so
+    // close to its plane that nothing can be on screen) is a screen behind the
+    // camera. SOME of them behind it is a screen the player is standing right at
+    // -- along the 150 ft cinema, or against a set -- whose corners have no
+    // projection: it is drawn from its map instead (`BuildClippedItem`). Tested
+    // before the projection because it is four dot products against four matrix
+    // transforms.
+    float cornerDepth[4]{};
+    float nearestCorner = 0.0F;
+    float farthestCorner = 0.0F;
+    for (size_t index = 0; index < 4; ++index)
+    {
+        cornerDepth[index] = Dot(Sub(world[index], aView.position), aView.forward);
+        nearestCorner = index == 0 ? cornerDepth[index] : std::min(nearestCorner, cornerDepth[index]);
+        farthestCorner = index == 0 ? cornerDepth[index] : std::max(farthestCorner, cornerDepth[index]);
+    }
+    const auto nearPlane = static_cast<float>(WorldOverlay::ScreenClip::kNearDepth);
+    if (!(farthestCorner > nearPlane))
     {
         aReason = "behind_camera";
         return false;
@@ -333,6 +535,10 @@ bool BuildItem(
     {
         aReason = "out_of_range";
         return false;
+    }
+    if (!(nearestCorner >= nearPlane))
+    {
+        return BuildClippedItem(aEntry, aView, world, cornerDepth, distance, aOut, aReason);
     }
     if (Occluded(aView.position, centre, distance))
     {
@@ -394,52 +600,7 @@ bool BuildItem(
     aOut.y = (aOut.corners[1] + aOut.corners[3] + aOut.corners[5] + aOut.corners[7]) * 0.25F;
     aEntry.distance = distance;
     aReason = "drawn";
-
-    // Where the pointer is DRAWN, when this is the screen the player has taken
-    // over.
-    //
-    // CEF rasterises a page into a texture; the HOST paints the cursor. On a
-    // world quad there is no window to paint into, so the position is published
-    // for the overlay's cursor instead of being drawn as a second marker -- and
-    // it is computed from the SAME four world corners the page is composited
-    // with, interpolated in texture space (the orientation is the one `Orient`
-    // just decided, so a mirrored or turned-over panel is not special-cased),
-    // which is the only way the one pointer a player sees and the picture it
-    // points at cannot disagree about where the click will land.
-    const WebUiService::ScreenInput::State input = WebUiService::ScreenInput::Get();
-    if (input.active && input.surface == aEntry.definition.surface)
-    {
-        const auto at = [&](const int aU, const int aV) -> const RED4ext::Vector4& {
-            return world[ScreenQuad::CornerForTexture(aEntry.orientation, aU, aV)];
-        };
-        const auto& topLeft = at(0, 0);
-        const auto& topRight = at(1, 0);
-        const auto& bottomRight = at(1, 1);
-        const auto& bottomLeft = at(0, 1);
-        const float u = std::clamp(input.u, 0.0F, 1.0F);
-        const float v = std::clamp(input.v, 0.0F, 1.0F);
-        const auto lerp = [](const RED4ext::Vector4& aA, const RED4ext::Vector4& aB,
-                             const float aT) {
-            return RED4ext::Vector4{aA.X + (aB.X - aA.X) * aT, aA.Y + (aB.Y - aA.Y) * aT,
-                                    aA.Z + (aB.Z - aA.Z) * aT, 0.0F};
-        };
-        const auto top = lerp(topLeft, topRight, u);
-        const auto bottom = lerp(bottomLeft, bottomRight, u);
-        const auto point = lerp(top, bottom, v);
-
-        RED4ext::Vector4 projectedCursor{};
-        if (Camera::ProjectPoint(point, projectedCursor) == Camera::Status::Ok &&
-            std::isfinite(projectedCursor.X) && std::isfinite(projectedCursor.Y))
-        {
-            const auto relativeCursor = Sub(point, aView.position);
-            const float cursorDepth = Dot(relativeCursor, aView.forward);
-            if (cursorDepth > 0.05F)
-            {
-                WebUiService::ScreenInput::PublishPointerOnScreen(
-                    (projectedCursor.X + 1.0F) * 0.5F, (1.0F - projectedCursor.Y) * 0.5F);
-            }
-        }
-    }
+    PublishPointer(aEntry, aView, world);
     return true;
 }
 

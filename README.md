@@ -42,8 +42,23 @@ native/
   MediaScreens.hpp|cpp   the host-side module: bind a surface to a prop, project
                          its screen quad, publish overlay items, line-of-sight test
   ScreenQuad.hpp         the quad arithmetic and the declared-front (facing) gate
-  ScreenMotion.hpp       blending the last two projected corner sets at the frame
-                         being presented, so a moving set's picture does not step
+  ScreenMotion.hpp       blending the last two projected corner sets (or a cut
+                         screen's maps) at the frame being presented, so a
+                         moving set's picture does not step
+  ScreenTessellation.hpp the plane's own map from four projected corners, and the
+                         smallest grid that draws it within a pixel
+  PerspectiveImage.hpp   that grid into an ImGui draw list; and a screen cut at
+                         the camera, as cells halved until each is within a pixel
+  ScreenClip.hpp         a screen with part of it behind the camera: the part in
+                         front, and its map from points the engine can project
+  SceneDepth.hpp|cpp     finding the game's depth buffer, copying it at present,
+                         drawing a screen through it
+  SceneDepthPolicy.hpp   which buffer is the scene's, what its values mean, when
+                         to copy it
+  ScreenDepth.hpp, ScreenDepth.hlsli, ScreenDepthComposite.hlsl,
+  ScreenDepthShaderSource.hpp, ScreenDepthPass.hpp|cpp
+                         the pass that draws a picture behind what is in front of
+                         it, and the shader arithmetic the tests run as C++
   PagePolicy.hpp         which page may load what -- the CSP directives and the
                          host's own request gate, as one decision in one place
   TranscodePlan.hpp      what to do with a link this build cannot decode: the
@@ -61,14 +76,22 @@ native/
                          where on that screen the page pointer has landed
   AudioSink.hpp|cpp      browser audio into the game's mixer
 patches/                 TV-only hunks of the host-side seams (see docs/integration.md)
+  open77-base/           the picture fixes as a clean series for `git am` on
+                         open77-base main (its pull request #66)
 docs/
   integration.md         every seam, what it does, and the gotcha that bites
   webui-media-and-audio.md  what this CEF build can and cannot actually play
+  depth-and-occlusion.md the picture: in perspective, behind whatever is in front
+                         of it, and cut at the camera
 tests/
   MediaRecordsTests.cs          the catalogue suite inside the C# test host
   MediaPlacementIntegrationTests.cs  the placement path through the real resource
                                 host and the real prop registry
   ScreenQuadTests.cpp, ScreenMotionTests.cpp   the two pure host modules
+  ScreenTessellationTests.cpp, PerspectiveImageTests.cpp, ScreenDepthTests.cpp,
+  SceneDepthPolicyTests.cpp, ScreenDepthShaderSourceTests.cpp, ScreenClipTests.cpp
+                                the picture fixes, against ray-traced cameras and
+                                a real ImGui draw list
   TranscodePlanTests.cpp, DecoderE2ETests.cpp  the decode decision, and the real
                                 decoder over real HTTP (skips if ffmpeg is absent)
   WebUiAssetTests.cs            the wire between the page and the host's frame
@@ -365,6 +388,20 @@ existing code rather than a new system.
   player's own snapshot), but the yaw is accepted from the caller and clamped,
   because nothing in the player snapshot publishes a heading.
 
+## The picture
+
+A screen used to be one image quad over its four projected corners, drawn over
+everything after the game's frame. That bent the picture along its diagonal on
+any set not seen square, painted it over hands, bodies and door frames, and --
+with the near end of the cinema behind the camera -- shot it across the sky from
+the middle of the view. `docs/depth-and-occlusion.md` describes the three fixes:
+the picture in its plane's own perspective, behind whatever the game drew in
+front of it (from the game's own depth buffer), and cut at the camera's near
+plane. They are a patch series for open77-base in `patches/open77-base/`, and the
+files they add are mirrored in `native/` and `tests/`. One thing they do not
+change: where the game's HUD overlaps a screen, the picture is still drawn over
+it.
+
 ## Running the suite
 
 ```bash
@@ -448,4 +485,6 @@ where this was developed and verified. `open77_media/` and `native/` are
 verbatim; `patches/` holds only the television-relevant hunks of files that
 carry other unreleased work, selected mechanically by
 `tools/extract-tv-patches.py` and therefore not a clean patch series — apply
-them by hand.
+them by hand. The exception is `patches/open77-base/`: the picture fixes, which
+were made as commits on open77-base `main` and apply with `git am`; `native/` and
+`tests/` carry their files as that series leaves them.

@@ -95,11 +95,18 @@ inline constexpr double kMaximumHoldMilliseconds = 250.0;
 /// published. A fraction of exactly 1 returns `aTo` unchanged, which is what
 /// keeps a session that is not rate-mismatched drawing precisely what it drew
 /// before this seam existed.
-[[nodiscard]] inline std::array<float, 8> Blend(const std::array<float, 8>& aFrom,
-                                                const std::array<float, 8>& aTo,
+///
+/// Eight floats for a screen's corners; nine for the map of a screen with part of
+/// it behind the camera (`ScreenClip.hpp`). Its rows -- position times depth, and
+/// depth -- are affine in texture space and so is their blend, whose depth is
+/// positive wherever both samples' were: between the two ticks, every texel moves
+/// from where the first put it towards where the second does.
+template <std::size_t N>
+[[nodiscard]] inline std::array<float, N> Blend(const std::array<float, N>& aFrom,
+                                                const std::array<float, N>& aTo,
                                                 const float aFraction)
 {
-    std::array<float, 8> out = aTo;
+    std::array<float, N> out = aTo;
     if (!(aFraction < 1.0F) || !(aFraction > 0.0F))
     {
         // 0 draws the previous sample, 1 the new one, and anything outside is

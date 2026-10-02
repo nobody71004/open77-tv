@@ -1,0 +1,42 @@
+From 77f065bcc607f915638147fd4c2e13dfc5d29740 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 1 Oct 2026 10:09:10 +0000
+Subject: [PATCH] Keep the television depth shaders out of Visual Studio's
+ shader compiler
+
+The Visual Studio generator hands every .hlsl file in a target's sources to
+FXC, with entry point main and the project's default profile.
+ScreenDepthComposite.hlsl has two entry points (VSMain, PSMain) and is not
+compiled at build time at all: ScreenDepthPass compiles it at start-up from the
+text ScreenDepthShaderSource.hpp embeds. Listed in Open77.Client's sources it
+failed the build:
+
+    FXC : error X3501: 'main': entrypoint not found
+
+The two shader files stay where they are, beside the header that carries them,
+and Open77.ScreenDepthShaderSource.Tests still fails while the three disagree.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Qum3jofThN9KuYZN8xcYdD
+---
+ client/CMakeLists.txt | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/client/CMakeLists.txt b/client/CMakeLists.txt
+index 0fa3c02c..152fdf1b 100644
+--- a/client/CMakeLists.txt
++++ b/client/CMakeLists.txt
+@@ -1297,8 +1297,8 @@ target_sources(
+         src/webui/SceneDepth.hpp
+         src/webui/SceneDepthPolicy.hpp
+         src/webui/ScreenDepth.hpp
+-        src/webui/ScreenDepth.hlsli
+-        src/webui/ScreenDepthComposite.hlsl
++        # Not ScreenDepth.hlsli and ScreenDepthComposite.hlsl: Visual Studio would hand
++        # them to FXC. They are compiled at start-up from ScreenDepthShaderSource.hpp.
+         src/webui/ScreenDepthPass.cpp
+         src/webui/ScreenDepthPass.hpp
+         src/webui/ScreenDepthShaderSource.hpp
+-- 
+2.34.1
+
