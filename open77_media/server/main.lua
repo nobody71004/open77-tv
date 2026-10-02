@@ -144,6 +144,22 @@ local function payload(entry)
         volume = entry.volume,
         muted = entry.muted,
         paused = entry.paused,
+        -- Where in the programme the picture should be, in seconds, sampled at
+        -- the instant this record was built.
+        --
+        -- This is the field that makes two screens agree. Without it every set
+        -- started its own player at zero the moment that player was built, so two
+        -- clients watching one link ran at their own start times and a set
+        -- re-materialised behind them (a prop that streamed back in, a client
+        -- that rejoined) opened at the beginning of a film that was an hour in.
+        --
+        -- It is an INSTANT, not a schedule: a client must extrapolate from when
+        -- the record reached it (`state.receivedAt` in web/tv.js) rather than
+        -- seeking here and then free-running against a stale number. Sampling it
+        -- at payload time rather than pushing a beat on a timer is deliberate --
+        -- there is no timer in this resource, and none is needed, because the
+        -- client can derive the position from one number and its own clock.
+        elapsed = Open77MediaClock.Position(entry, GetGameTimer()),
         -- The frame the panel carries, and the curtain in front of it. Both are
         -- the page's to draw and the server's to own: an operator closes a
         -- curtain from the panel or the console, every client draws the same
@@ -221,6 +237,68 @@ local function snapshotFor(entries)
     local out = {}
     for _, entry in ipairs(entries) do out[#out + 1] = payload(entry) end
     return out
+end
+
+---The programme a link is already running, when another live set is showing it.
+---
+---The rule this keeps: one link has one playhead. Put a film on the screen in
+---front of you at 20:00 and again on the screen beside it at 20:05, and the second
+---set joins the film -- it does not open its own copy at zero. Without this the
+---pair sits five minutes apart with both clocks working perfectly, which is what
+---the world showed: two cinema screens on one link, one plainly behind the other.
+---
+---Returns the position and the id of the set that owns it, or nothing when this
+---set is the first to show the link. Dead entries are pruned first (`liveEntries`
+---is the one place that knows how), because adopting the clock of a television
+---whose prop was removed would freeze the new set at a stranger's position.
+---
+---@param url string the link being set, already validated
+---@param exceptId number the set being given the link, which never adopts from itself
+---@return number|nil seconds into the programme, nil when this is a new one
+---@return number|nil the set that established it
+local function programmeForLink(url, exceptId)
+    if url == nil or url == "" then return nil, nil end
+    local entries = liveEntries()
+    local now = GetGameTimer()
+    local bestPosition, bestId = nil, nil
+    for _, other in ipairs(entries) do
+        if other.id ~= exceptId and other.url == url then
+            local position = Open77MediaClock.Position(other, now)
+            -- The furthest along, not the first found: `pairs` order is not a
+            -- contract, and a link that ends up on three sets must not depend on
+            -- which one a hash walk happened to reach first.
+            if bestPosition == nil or position > bestPosition then
+                bestPosition, bestId = position, other.id
+            end
+        end
+    end
+    return bestPosition, bestId
+end
+
+---Puts a link on a set, and starts the playhead that link belongs to.
+---
+---The single door both ways in -- the panel's `url` action and the operator's
+---`media.url` -- go through, so a link set from a keyboard and a link set from the
+---console cannot end up in two different states. It decides between the two
+---programmes there are: joining one another live set already runs, or starting
+---one. Nothing else in this resource writes `url` or a clock.
+---
+---@param entry table the media entry
+---@param url string the link, already validated
+local function showLink(entry, url)
+    entry.url = url
+    local position, owner = programmeForLink(url, entry.id)
+    if position ~= nil then
+        Open77MediaClock.Join(entry, position, GetGameTimer())
+        print(string.format(
+            "[open77_media] media %d joined the programme on media %d at %.1fs",
+            entry.id, owner, position))
+        return
+    end
+    -- No other set is showing it, so this one opens the programme: the position
+    -- in whatever was on this set before means nothing, and a set that kept it
+    -- would open the new film in the middle.
+    Open77MediaClock.Start(entry, GetGameTimer())
 end
 
 ---Pushes the whole live set to one player, or to everyone.
@@ -715,6 +793,9 @@ local function spawn(recordId, position, yaw, url, source)
         yaw = facing,
         source = source,
     }
+    -- The programme starts now. Every set is born playing, so its clock starts
+    -- with it -- and this is the origin every later position is measured from.
+    Open77MediaClock.Start(entry, GetGameTimer())
     media[id] = entry
     byProp[tostring(prop)] = id
     return entry
@@ -736,7 +817,7 @@ end
 local function describeEntry(entry)
     return string.format(
         "media=%d prop=%s record=%s pos=%.2f,%.2f,%.2f yaw=%.1f " ..
-        "curtain=%s border=%s url=%s volume=%d muted=%s paused=%s",
+        "curtain=%s border=%s url=%s volume=%d muted=%s paused=%s at=%.1fs",
         entry.id, tostring(entry.prop), tostring(entry.record),
         tonumber(entry.position.x) or 0.0, tonumber(entry.position.y) or 0.0,
         tonumber(entry.position.z) or 0.0,
@@ -744,7 +825,11 @@ local function describeEntry(entry)
         tostring(entry.curtain or "open"),
         entry.border == nil and "none" or tostring(entry.border),
         entry.url == "" and "(idle screen)" or entry.url,
-        entry.volume, tostring(entry.muted), tostring(entry.paused))
+        entry.volume, tostring(entry.muted), tostring(entry.paused),
+        -- The same number the clients are told, so "the two screens disagree"
+        -- can be read off the console as a position rather than guessed at from
+        -- a screenshot of two televisions.
+        Open77MediaClock.Position(entry, GetGameTimer()))
 end
 
 -- =============================================================================
@@ -804,7 +889,7 @@ command("media.url", "media.url <id> <url>", true, function(source, args, raw)
     if url == nil then
         return output(source, raw, false, "url refused: " .. tostring(urlError))
     end
-    entry.url = url
+    showLink(entry, url)
     broadcast(nil)
     output(source, raw, true, string.format(
         "television %d now showing %s", entry.id,
@@ -853,7 +938,9 @@ command("media.pause", "media.pause <id> <on|off>", true, function(source, args,
     if entry == nil then return output(source, raw, false, "no such television") end
     local state = string.lower(tostring(args[2]))
     if state ~= "on" and state ~= "off" then error("state must be on or off", 0) end
-    entry.paused = state == "on"
+    -- Through the clock: pausing has to record where it stopped, and resuming
+    -- has to continue from there rather than restarting the film.
+    Open77MediaClock.SetPaused(entry, state == "on", GetGameTimer())
     broadcast(nil)
     output(source, raw, true, string.format(
         "television %d paused=%s", entry.id, tostring(entry.paused)))
@@ -1125,7 +1212,6 @@ RegisterNetEvent("open77:media:control", function(action, payload)
             TriggerClientEvent("open77:media:result", source, false, tostring(urlError))
             return
         end
-        entry.url = url
         -- A link is a play request, so setting one clears a pause.
         --
         -- Leaving it set is what put a black rectangle on a 100 ft screen while
@@ -1135,6 +1221,10 @@ RegisterNetEvent("open77:media:control", function(action, payload)
         -- resource's state, so "a new link starts playing" belongs here as well
         -- as in `web/tv.js`; pausing afterwards still does exactly what it did.
         entry.paused = false
+        -- Through the clock's one door, after the flag is cleared so `Position`
+        -- reads the playing branch: a new link opens a programme, and a link
+        -- another live set already plays joins that one instead.
+        showLink(entry, url)
     elseif action == "title" then
         local label, labelError = acceptText(payload.title, MAX_TITLE_LENGTH, "title")
         if label == nil then
@@ -1154,7 +1244,16 @@ RegisterNetEvent("open77:media:control", function(action, payload)
             TriggerClientEvent("open77:media:result", source, false, "value_must_be_boolean")
             return
         end
-        entry[action] = payload.value
+        if action == "paused" then
+            -- Not `entry.paused = value`. A pause has to hold the position it
+            -- stopped at and a resume has to continue from that hold, which is
+            -- the difference between the film continuing and the film starting
+            -- over -- and the panel re-states this field on every control, so an
+            -- unpause that was never a pause must leave the playhead alone.
+            Open77MediaClock.SetPaused(entry, payload.value == true, GetGameTimer())
+        else
+            entry[action] = payload.value
+        end
     elseif action == "curtain" then
         -- Three states, and a closed set rather than a colour or a string a page
         -- could invent: `closed` is the curtain in front of the panel, `open` is

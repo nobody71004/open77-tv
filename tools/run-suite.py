@@ -18,10 +18,11 @@ Two sources, in order of preference:
 `--refresh-fixture --from <checkout>` rewrites the snapshot from a real tree.
 
 The catalogue suite is not the only one: the placement arithmetic (which way
-"left" is on a set that is not axis-aligned), the ad-blocklist grammar a server
-pushes (and the receipt that says whether the host took it) and the client half
-(which screens a client materialises, and what it releases when the session ends)
-are pure Lua too, and all four run here.
+"left" is on a set that is not axis-aligned), the playhead arithmetic (where a set
+is in its programme, so two screens showing one link stay together), the
+ad-blocklist grammar a server pushes (and the receipt that says whether the host
+took it) and the client half (which screens a client materialises, and what it
+releases when the session ends) are pure Lua too, and all five run here.
 
 usage:
   python tools/run-suite.py [--lua <interpreter>] [--from <checkout>]
@@ -40,15 +41,17 @@ FIXTURE = HERE / "tests" / "fixtures" / "open77_admin-props-models.lua"
 ADMIN_CONFIG = "resources/system/open77_admin/shared/config.lua"
 RECORDS = "open77_media/shared/records.lua"
 PLACEMENT = "open77_media/shared/placement.lua"
+CLOCK = "open77_media/shared/clock.lua"
 SUITE = "open77_media/tests/records_test.lua"
 PLACEMENT_SUITE = "open77_media/tests/placement_test.lua"
+CLOCK_SUITE = "open77_media/tests/clock_test.lua"
 ADBLOCK_SUITE = "open77_media/tests/adblock_test.lua"
 CLIENT_SUITE = "open77_media/tests/client_test.lua"
 SERVER_CONFIG = "open77_media/server/config.lua"
 SERVER_ADBLOCK = "open77_media/server/adblock.lua"
 RESOURCE = "open77_media"
 
-# The four pure suites, in the order they have to run.
+# The five pure suites, in the order they have to run.
 #
 # The catalogue suite comes first because it is the only one that needs the
 # admin alias list. The ad-block suite is the server's half of a policy the
@@ -60,6 +63,7 @@ RESOURCE = "open77_media"
 SUITES = [
     ("open77_media / records", [RECORDS], SUITE),
     ("open77_media / placement", [PLACEMENT], PLACEMENT_SUITE),
+    ("open77_media / clock", [CLOCK], CLOCK_SUITE),
     ("open77_media / adblock", [SERVER_CONFIG, SERVER_ADBLOCK], ADBLOCK_SUITE),
     ("open77_media / client", [RECORDS], CLIENT_SUITE),
 ]

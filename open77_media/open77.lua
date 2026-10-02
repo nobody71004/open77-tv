@@ -61,7 +61,26 @@ shared_script "shared/records.lua"
 -- Where a set stands and which way it points, nudged and turned from the panel or
 -- the console. Pure arithmetic (which way "left" is, what a quarter turn does to
 -- a heading), shared because the server applies it and the tests pin it.
+--
+-- `Open77MediaPlacement` is read by `payload()` for every television the server
+-- ever describes, so a build that ships without this line does not lose "nudge a
+-- screen" -- it loses every state the server publishes, one `script error:
+-- attempt to index a nil value (global 'Open77MediaPlacement')` per spawn, and a
+-- world where nothing appears when a player asks for a screen. That happened in
+-- this tree, and it was invisible to the suites because every one of them loads
+-- its modules by path. `tools/suite-runner` now checks the manifest before it
+-- runs a single assertion: a declaration that names a missing file fails the run,
+-- and so does a module in `shared/`, `server/`, `client/` or `web/` that no line
+-- declares. Adding a shared module here means adding a line here.
 shared_script "shared/placement.lua"
+
+-- Where in its programme a set is: the arithmetic behind "two screens showing one
+-- link stay together". Shared because the server owns the playhead -- it already
+-- owns `url` and `paused` -- and the suites pin the part that is easy to get
+-- wrong and impossible to see in a log: a resume that restarts the film, a pause
+-- that freezes zero, a new link that opens in the middle of the old one.
+shared_script "shared/clock.lua"
+
 
 -- Listed explicitly, one per line, never globbed. Manifest order IS load order
 -- within each group, so these land exactly as written:
@@ -93,7 +112,7 @@ web_files { "web/**" }
 -- and whose client suite does not is one where the half that chooses which screens
 -- to materialise is the half nobody can run outside the game.
 files { "tests/records_test.lua", "tests/placement_test.lua", "tests/client_test.lua",
-        "tests/adblock_test.lua" }
+        "tests/adblock_test.lua", "tests/clock_test.lua" }
 
 permissions {
     -- Spawn/remove/URL requests from the panel, and the state pushes back down.

@@ -181,6 +181,14 @@ local function pageState(entry)
         volume = entry.spec.volume,
         muted = entry.spec.muted,
         paused = entry.spec.paused,
+        -- Where in the programme the picture should be, in seconds, at the instant
+        -- the server built this record. The page extrapolates from the moment it
+        -- arrived (`expectedPosition` in web/tv.js) and seeks to it.
+        --
+        -- Passed through untouched rather than re-derived here: this resource does
+        -- not know when the film started, and a second clock on the client is
+        -- exactly how two people end up watching one screen out of step.
+        elapsed = tonumber(entry.spec.elapsed) or 0.0,
         border = entry.spec.border,
         curtain = entry.spec.curtain or "open",
         -- The key that opens the panel, for the idle screen's own hint: the player

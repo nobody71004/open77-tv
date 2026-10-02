@@ -39,13 +39,32 @@ internal static class Program
 
     private const string Records = "open77_media/shared/records.lua";
     private const string Placement = "open77_media/shared/placement.lua";
+    private const string Clock = "open77_media/shared/clock.lua";
     private const string ServerConfig = "open77_media/server/config.lua";
     private const string ServerAdblock = "open77_media/server/adblock.lua";
 
     private const string RecordsSuite = "open77_media/tests/records_test.lua";
     private const string PlacementSuite = "open77_media/tests/placement_test.lua";
+    private const string ClockSuite = "open77_media/tests/clock_test.lua";
     private const string AdblockSuite = "open77_media/tests/adblock_test.lua";
     private const string ClientSuite = "open77_media/tests/client_test.lua";
+
+    /// <summary>
+    /// The directories whose contents are only ever loaded because the manifest
+    /// names them. A `.lua` file sitting here that no line declares is a module
+    /// nobody runs -- and, in the case this check was written for, a DELETED line
+    /// is a module that used to run and silently stopped.
+    /// </summary>
+    private static readonly string[] DeclaredDirectories = ["shared", "server", "client", "web"];
+
+    /// <summary>
+    /// The four declaration verbs a module can appear under. `web_files` is a glob
+    /// and `files` is a manifest list of carried bytes, so neither is a module
+    /// declaration and neither is checked here.
+    /// </summary>
+    private static readonly Regex Declaration =
+        new("^\\s*(shared_script|server_script|client_script|web_ui_page)\\s+\"([^\"]+)\"",
+            RegexOptions.Compiled);
 
     private const string Fixture = "tests/fixtures/open77_admin-props-models.lua";
     private const string AdminConfig = "resources/system/open77_admin/shared/config.lua";
@@ -58,7 +77,7 @@ internal static class Program
     private const string AdminConfigPatch = "patches/resources__system__open77_admin__shared__config.lua.diff";
 
     /// <summary>
-    /// The four suites, in the order they are authored for.
+    /// The five suites, in the order they are authored for.
     ///
     /// The catalogue suite comes first because it is the only one that needs the
     /// admin alias list. The ad-block suite is the server's half of a policy the
@@ -73,6 +92,7 @@ internal static class Program
     [
         new("open77_media / records", [Records], RecordsSuite, NeedsRepoRoot: false),
         new("open77_media / placement", [Placement], PlacementSuite, NeedsRepoRoot: false),
+        new("open77_media / clock", [Clock], ClockSuite, NeedsRepoRoot: false),
         new("open77_media / adblock", [ServerConfig, ServerAdblock], AdblockSuite, NeedsRepoRoot: false),
         new("open77_media / client", [Records], ClientSuite, NeedsRepoRoot: true),
     ];
@@ -144,6 +164,23 @@ internal static class Program
         try
         {
             Console.WriteLine($"staged the resource at {Path.Combine(staged, "resources", "system", Resource)} for the client suite");
+
+            // The manifest first, and fatally. Every suite below loads its modules
+            // by PATH, so a manifest that has lost a declaration passes all of them
+            // -- that is exactly how this resource shipped a build whose every
+            // spawn raised `attempt to index a nil value (global
+            // 'Open77MediaPlacement')` while the suites reported 2233 assertions
+            // green. A gate that cannot see the difference between "the modules
+            // work" and "the server never loads them" is not gating anything.
+            var problems = ManifestProblems(repo);
+            if (problems.Count > 0)
+            {
+                Console.Error.WriteLine("open77_media: the manifest does not describe this resource");
+                foreach (var problem in problems) Console.Error.WriteLine($"  FAIL: {problem}");
+                Console.Error.WriteLine($"open77_media: FAIL ({problems.Count} manifest problem(s))");
+                return 1;
+            }
+            Console.WriteLine("open77_media: the manifest declares every module and every declaration resolves");
 
             var failed = 0;
             var assertions = 0;
@@ -581,6 +618,55 @@ internal static class Program
     /// tools/suite-runner` works from the repository root and from anywhere under
     /// it.
     /// </summary>
+    /// <summary>
+    /// Whether the manifest still describes this resource, in both directions.
+    ///
+    /// A declaration that names a file which is not there is a module that does not
+    /// load; a file that no declaration names is a module that does not load. Both
+    /// are silent at runtime and both have happened here, so both fail the run.
+    /// </summary>
+    private static List<string> ManifestProblems(string repo)
+    {
+        var problems = new List<string>();
+        var resource = Path.Combine(repo, Resource);
+        var manifest = Path.Combine(resource, "open77.lua");
+        var declared = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var line in File.ReadAllLines(manifest))
+        {
+            var match = Declaration.Match(line);
+            if (!match.Success) continue;
+
+            var verb = match.Groups[1].Value;
+            var named = match.Groups[2].Value;
+            var target = Path.GetFullPath(Path.Combine(resource, named.Replace('/', Path.DirectorySeparatorChar)));
+            declared.Add(target);
+
+            if (!File.Exists(target))
+            {
+                problems.Add($"{verb} \"{named}\" names a file that is not there, so nothing loads it");
+            }
+        }
+
+        foreach (var directory in DeclaredDirectories)
+        {
+            var path = Path.Combine(resource, directory);
+            if (!Directory.Exists(path)) continue;
+
+            foreach (var file in Directory.EnumerateFiles(path, "*.lua", SearchOption.AllDirectories))
+            {
+                if (!declared.Contains(Path.GetFullPath(file)))
+                {
+                    var relative = Path.GetRelativePath(resource, file).Replace('\\', '/');
+                    problems.Add($"{relative} is in the resource and no line of open77.lua declares it, " +
+                                 "so nothing loads it");
+                }
+            }
+        }
+
+        return problems;
+    }
+
     private static string FindRepository(string? explicitPath)
     {
         if (explicitPath is not null)

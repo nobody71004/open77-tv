@@ -87,6 +87,11 @@
   let state = {
     url: "", volume: 75, muted: false, paused: false, label: "",
     border: "", curtain: "open", key: "",
+    // The server's playhead, and when it reached this page. `elapsed` is an
+    // instant sampled when the record was built -- so it is only meaningful
+    // together with its arrival time, and the pair is what `expectedPosition`
+    // below extrapolates from.
+    elapsed: 0, receivedAt: 0,
   };
   // What is currently on screen: { kind, src, videoId }.
   let showing = { kind: "none" };
@@ -592,6 +597,78 @@
     const attempt = elements.media.play();
     if (attempt && typeof attempt.catch === "function") attempt.catch(function () {});
   }
+
+  // ---------------------------------------------------------------------------
+  // The playhead: the one thing that makes two screens agree
+  // ---------------------------------------------------------------------------
+  // Every set plays its link in its own browser, and a player starts at zero the
+  // moment it is built. So two clients watching one link ran at their own start
+  // times, and a set whose prop streamed back in -- or whose owner rejoined --
+  // opened at the beginning of a film that was an hour in. Measured in game: two
+  // cinema screens on one link, one plainly behind the other, with nothing in the
+  // wire record for it to catch up to.
+  //
+  // The server owns the position (`elapsed`, and it owns `url` and `paused` for
+  // the same reason) and this half of the pair is the only party with a player, so
+  // it is told where the picture should be rather than deciding.
+  //
+  // Extrapolated from the moment the record ARRIVED, not from the moment this
+  // runs: `elapsed` is an instant, and seeking to a stale number would make the
+  // correction worse the longer a set sat open.
+  const SYNC_THRESHOLD_SECONDS = 1.0;
+  const SYNC_INTERVAL_MS = 5000;
+
+  function expectedPosition() {
+    if (!state.receivedAt) return state.elapsed;
+    return state.elapsed + (Date.now() - state.receivedAt) / 1000;
+  }
+
+  /// What this page's own player thinks its position is, or null when it cannot
+  /// be asked. A player hands its transport methods over asynchronously, so
+  /// "no answer yet" is an ordinary state and must not read as zero.
+  function playerPosition() {
+    if (showing.kind !== "embed" || !showing.videoId) return null;
+    if (!youTubePlayer || typeof youTubePlayer.getCurrentTime !== "function") return null;
+    try {
+      const time = Number(youTubePlayer.getCurrentTime());
+      return isFinite(time) && time >= 0 ? time : null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  /// Corrects a set that has drifted, and says by how much.
+  ///
+  /// Seek, not a rate nudge: a rate change is audible across a cinema screen and
+  /// leaves the two sets approaching each other for minutes, while a seek lands
+  /// on the frame. The threshold is what keeps the correction from being a
+  /// stutter -- a seek drops the player's buffer, so this fires only when the
+  /// difference is worth that, and it is reported either way so the log can tell
+  /// a set that is holding together from one that is chasing.
+  ///
+  /// The embed path only. A host-decoded stream seeks by asking the decoder to
+  /// start again at an offset (`seekTranscoded`), which restarts the picture, and
+  /// that path has a real seek bar the viewer drives -- so there the viewer owns
+  /// the position and this deliberately leaves it alone.
+  function applyPlayhead() {
+    if (state.paused) return;
+    if (showing.kind !== "embed" || !showing.videoId) return;
+    const actual = playerPosition();
+    if (actual === null) return;
+    const target = expectedPosition();
+    const drift = target - actual;
+    if (Math.abs(drift) <= SYNC_THRESHOLD_SECONDS) return;
+    report("synced", "was at " + actual.toFixed(1) + "s, seeking to " + target.toFixed(1) +
+      "s (drift " + drift.toFixed(1) + "s)");
+    sendYouTube("seekTo", [Math.max(0, target), true]);
+  }
+
+  // A lone set is corrected once, on load, and never again. This exists for the
+  // pairs: two players drift apart on their own -- one rebuffers, one is told to
+  // play a little later -- and five seconds is well inside the threshold, so a set
+  // that is together stays together and one that is not is caught on the next
+  // tick.
+  setInterval(applyPlayhead, SYNC_INTERVAL_MS);
 
   function render() {
     const decided = classify(state.url);
@@ -1104,6 +1181,10 @@
           }
           applyVolume();
           applyPaused();
+          // A player that has just become ready is at zero. This is the joiner's
+          // case and the re-materialised set's case -- the one the server's clock
+          // exists to fix.
+          applyPlayhead();
           watchYouTube(event.target);
         },
         onStateChange: function (event) { notePlayerState(event.data, event.target); },
@@ -1235,6 +1316,11 @@
       label: typeof payload.label === "string" ? payload.label : "",
       border: typeof payload.border === "string" ? payload.border : state.border,
       curtain: typeof payload.curtain === "string" ? payload.curtain : state.curtain,
+      // The playhead and its arrival time travel together, so they are taken
+      // together: an `elapsed` from this record with a `receivedAt` from the last
+      // one is a position measured from the wrong instant.
+      elapsed: typeof payload.elapsed === "number" ? payload.elapsed : state.elapsed,
+      receivedAt: Date.now(),
     };
     elements.url.value = state.url === previousUrl ? elements.url.value : state.url;
     applyBorder(state.border);
@@ -1244,6 +1330,9 @@
     // those would never finish one.
     if (state.curtain !== appliedCurtain) presentCurtain(state.curtain);
     render();
+    // After `render`: a URL change rebuilds the player, and a rebuilt player is
+    // exactly the case that opens at zero.
+    applyPlayhead();
     syncControlsVisibility();
   });
 

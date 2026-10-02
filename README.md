@@ -33,8 +33,11 @@ open77_media/          the resource -- this is the television
                          the reveal, and removes a set. The key is configurable;
                          the panel owns no state and every button is a request
                          the server answers
-  tests/                 four suites: records (1572 assertions), placement (132),
-                         adblock (351), client (148)
+  shared/clock.lua       where in its programme a set is: the server owns the
+                         playhead, so two screens showing one link stay together
+                         and a set that joins late opens where the others are
+  tests/                 five suites: records (1572 assertions), placement (132),
+                         clock (30), adblock (351), client (148)
 native/
   MediaScreens.hpp|cpp   the host-side module: bind a surface to a prop, project
                          its screen quad, publish overlay items, line-of-sight test
@@ -72,9 +75,10 @@ tests/
                                 probe, pinned across the three languages it spans
   fixtures/                     a snapshot of open77_admin's prop-model aliases
 tools/
-  suite-runner/          run the four Lua suites and maintain the vendored
-                         snapshot, with no Lua interpreter (KeraLua)
-  run-suite.py           the same four suites through a real lua5.4
+  suite-runner/          check the manifest declares every module, run the five
+                         Lua suites and maintain the vendored snapshot, with no
+                         Lua interpreter (KeraLua)
+  run-suite.py           the same five suites through a real lua5.4
   extract-tv-patches.py  regenerate patches/ from a checkout
 ```
 
@@ -370,11 +374,11 @@ dotnet run --project tools/suite-runner -- --from /path/to/open77-base
 
 No Lua interpreter is needed: `tools/suite-runner` carries Lua 5.4 through
 KeraLua, the binding the monorepo's `Open77.Server.Tests` already uses, so the
-four suites run anywhere `dotnet` does — and CI runs them on Linux and Windows
+five suites run anywhere `dotnet` does — and CI runs them on Linux and Windows
 (`.github/workflows/ci.yml`), which is the first time these suites have been a
 gate rather than something somebody remembers to run.
 
-`tools/run-suite.py` runs the same four files through a real `lua5.4` (pass
+`tools/run-suite.py` runs the same five files through a real `lua5.4` (pass
 `--lua /path/to/lua` if it is not on `PATH`). It refreshes the snapshot too. Both
 runners write it byte for byte, so the file does not depend on which one you used.
 
