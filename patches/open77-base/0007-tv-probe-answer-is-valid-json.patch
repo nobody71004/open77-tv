@@ -1,0 +1,153 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 1 Oct 2026 22:08:26 -0500
+Subject: [PATCH] Answer the TV's probe with valid JSON when the host will not
+ decode
+
+On a machine without the decoder tools staged, and for any surface whose
+page policy is not Media, /op77/media/probe and /op77/media/stream answered
+{"verdict":"disabled","detail":""...""}: the detail had already been
+quoted by JsonQuote and was wrapped in a second pair of quotes. The
+television page reads the probe with response.json(), so every link that
+went to the probe -- a pasted website as much as an .mp4 -- ended in
+"probe_failed (SyntaxError: Expected ',' or '}' after property value in
+JSON at position 33)", and a website was never framed. Seen in a client
+log on the 2.31.21+op77.121 build when a link was pasted into a TV.
+
+The body is now built by Transcode::BuildDisabledJson, beside
+BuildProbeJson and tested with it, the way MaybeServeFoundRoute's answer
+moved to Sniff::FoundRouteBody after the same mistake. Both answers share
+one escaper, which also keeps tabs and other control characters out of a
+detail: it can carry ffprobe's own output, and one raw control character
+is enough for the page's parse to refuse the whole answer.
+
+Open77.TranscodePlan.Tests pins the exact bodies.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01SGDf5e3noD7RiVDkPCENkG
+---
+ webhost/src/SurfaceClient.cpp              |  9 ++--
+ webui/include/op77/WebUI/TranscodePlan.hpp | 51 +++++++++++++++++-----
+ webui/tests/TranscodePlanTests.cpp         | 17 ++++++++
+ 3 files changed, 63 insertions(+), 14 deletions(-)
+
+diff --git a/webhost/src/SurfaceClient.cpp b/webhost/src/SurfaceClient.cpp
+index e1da1ed..716a95e 100644
+--- a/webhost/src/SurfaceClient.cpp
++++ b/webhost/src/SurfaceClient.cpp
+@@ -2148,9 +2148,12 @@ CefRefPtr<CefResourceHandler> SurfaceClient::MaybeServeTranscodeRoute(CefRefPtr<
+     const std::string disabledReason = op77::WebUI::Transcode::DisabledReason(decoder);
+     if (!disabledReason.empty() || m_definition.pagePolicy != WebPagePolicy::Media)
+     {
+-        const std::string body = "{\"verdict\":\"disabled\",\"detail\":\"" +
+-            JsonQuote(disabledReason.empty() ? "this surface's page policy does not permit it" : disabledReason) +
+-            "\"}";
++        // Built by `Transcode::BuildDisabledJson`, where it is tested. This used to
++        // wrap `JsonQuote` -- already a quoted string -- in another pair of quotes,
++        // `"detail":""...""`, so the page's parse failed on every link it probed
++        // on a machine without the decoder, and a website was never framed.
++        const std::string body = op77::WebUI::Transcode::BuildDisabledJson(
++            disabledReason.empty() ? "this surface's page policy does not permit it" : disabledReason);
+         runtime->Trace("media_route:refused policy=" +
+             std::string(Describe(m_definition.pagePolicy)) + " path=" + path);
+         return TextAnswer(body, "application/json");
+diff --git a/webui/include/op77/WebUI/TranscodePlan.hpp b/webui/include/op77/WebUI/TranscodePlan.hpp
+index f5e6949..fc772db 100644
+--- a/webui/include/op77/WebUI/TranscodePlan.hpp
++++ b/webui/include/op77/WebUI/TranscodePlan.hpp
+@@ -604,6 +604,45 @@ struct RouteQuery
+     return query;
+ }
+ 
++/// Appends `aText` as the inside of a JSON string: quotes and backslashes
++/// escaped, a line break or a tab as a space, any other control character
++/// dropped. A detail is often the decoder's own output, and one raw control
++/// character in it is enough for the page's parse to refuse the whole answer.
++inline void AppendJsonText(std::string& aJson, const std::string_view aText)
++{
++    for (const char value : aText)
++    {
++        switch (value)
++        {
++        case '"': aJson += "\\\""; break;
++        case '\\': aJson += "\\\\"; break;
++        case '\n':
++        case '\t': aJson += ' '; break;
++        default:
++            if (static_cast<unsigned char>(value) >= 0x20) aJson.push_back(value);
++            break;
++        }
++    }
++}
++
++/// The answer both media routes give when the host will not decode here: its
++/// decoder tools are not staged, or the surface's page policy is not Media.
++///
++/// It was assembled in the web host by hand, around a detail `JsonQuote` had
++/// already quoted, and came out as `{"verdict":"disabled","detail":""...""}`,
++/// which no JSON parser accepts. The television reads the probe's answer as
++/// JSON, so on a machine without the decoder every link it probed -- a pasted
++/// website as much as an .mp4 -- ended in `probe_failed (SyntaxError ... at
++/// position 33)` and a site was never framed. `MaybeServeFoundRoute` once had
++/// the same doubled quotes; both answers are now built where they are tested.
++[[nodiscard]] inline std::string BuildDisabledJson(const std::string_view aReason)
++{
++    std::string json = "{\"verdict\":\"disabled\",\"detail\":\"";
++    AppendJsonText(json, aReason);
++    json += "\"}";
++    return json;
++}
++
+ /// The probe route's answer, as JSON the page reads with `fetch`.
+ [[nodiscard]] inline std::string BuildProbeJson(const Probe& aProbe, const Verdict aVerdict,
+                                                 const std::string_view aDetail)
+@@ -637,17 +676,7 @@ struct RouteQuery
+     if (!aDetail.empty())
+     {
+         json += ",\"detail\":\"";
+-        for (const char value : aDetail)
+-        {
+-            switch (value)
+-            {
+-            case '"': json += "\\\""; break;
+-            case '\\': json += "\\\\"; break;
+-            case '\n': json += " "; break;
+-            case '\r': break;
+-            default: json.push_back(value); break;
+-            }
+-        }
++        AppendJsonText(json, aDetail);
+         json += "\"";
+     }
+     json += "}";
+diff --git a/webui/tests/TranscodePlanTests.cpp b/webui/tests/TranscodePlanTests.cpp
+index bc25f70..e47fb8a 100644
+--- a/webui/tests/TranscodePlanTests.cpp
++++ b/webui/tests/TranscodePlanTests.cpp
+@@ -206,6 +206,23 @@ void TestRouteQueries()
+     Check(json.find("\"verdict\":\"nothing\"") != std::string::npos, "the verdict is present");
+     Check(json.find("\\\"no\\\"") != std::string::npos, "quotes in the detail are escaped");
+     Check(json.find('\n') == std::string::npos, "no raw newline reaches the JSON body");
++    Check(BuildProbeJson(p, Verdict::Nothing, "tab\there\x01").find_first_of("\t\x01") == std::string::npos,
++          "no raw control character reaches the JSON body");
++
++    // The answer when the host will not decode here. It was assembled by hand
++    // around a detail that was already quoted -- `"detail":""...""` -- which no
++    // parser accepts: on a machine without the decoder every link a television
++    // probed failed to parse, and a pasted website was never framed. The exact
++    // bodies are pinned, with the characters that broke it in the detail.
++    CheckEqual(BuildDisabledJson("no decoder tools in \"C:\\Open77\\decoder\"\r\nffprobe.exe missing"),
++               "{\"verdict\":\"disabled\",\"detail\":\"no decoder tools in \\\"C:\\\\Open77\\\\decoder\\\" "
++               "ffprobe.exe missing\"}",
++               "the disabled answer is valid JSON with its detail escaped once");
++    CheckEqual(BuildDisabledJson(""), "{\"verdict\":\"disabled\",\"detail\":\"\"}",
++               "an empty reason is an empty string, not a doubled quote");
++    CheckEqual(BuildDisabledJson("this surface's page policy does not permit it"),
++               "{\"verdict\":\"disabled\",\"detail\":\"this surface's page policy does not permit it\"}",
++               "the policy refusal reads as one string");
+ }
+ 
+ void TestFfmpegArguments()
+-- 
+2.43.0
+

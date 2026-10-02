@@ -604,6 +604,45 @@ struct RouteQuery
     return query;
 }
 
+/// Appends `aText` as the inside of a JSON string: quotes and backslashes
+/// escaped, a line break or a tab as a space, any other control character
+/// dropped. A detail is often the decoder's own output, and one raw control
+/// character in it is enough for the page's parse to refuse the whole answer.
+inline void AppendJsonText(std::string& aJson, const std::string_view aText)
+{
+    for (const char value : aText)
+    {
+        switch (value)
+        {
+        case '"': aJson += "\\\""; break;
+        case '\\': aJson += "\\\\"; break;
+        case '\n':
+        case '\t': aJson += ' '; break;
+        default:
+            if (static_cast<unsigned char>(value) >= 0x20) aJson.push_back(value);
+            break;
+        }
+    }
+}
+
+/// The answer both media routes give when the host will not decode here: its
+/// decoder tools are not staged, or the surface's page policy is not Media.
+///
+/// It was assembled in the web host by hand, around a detail `JsonQuote` had
+/// already quoted, and came out as `{"verdict":"disabled","detail":""...""}`,
+/// which no JSON parser accepts. The television reads the probe's answer as
+/// JSON, so on a machine without the decoder every link it probed -- a pasted
+/// website as much as an .mp4 -- ended in `probe_failed (SyntaxError ... at
+/// position 33)` and a site was never framed. `MaybeServeFoundRoute` once had
+/// the same doubled quotes; both answers are now built where they are tested.
+[[nodiscard]] inline std::string BuildDisabledJson(const std::string_view aReason)
+{
+    std::string json = "{\"verdict\":\"disabled\",\"detail\":\"";
+    AppendJsonText(json, aReason);
+    json += "\"}";
+    return json;
+}
+
 /// The probe route's answer, as JSON the page reads with `fetch`.
 [[nodiscard]] inline std::string BuildProbeJson(const Probe& aProbe, const Verdict aVerdict,
                                                 const std::string_view aDetail)
@@ -637,17 +676,7 @@ struct RouteQuery
     if (!aDetail.empty())
     {
         json += ",\"detail\":\"";
-        for (const char value : aDetail)
-        {
-            switch (value)
-            {
-            case '"': json += "\\\""; break;
-            case '\\': json += "\\\\"; break;
-            case '\n': json += " "; break;
-            case '\r': break;
-            default: json.push_back(value); break;
-            }
-        }
+        AppendJsonText(json, aDetail);
         json += "\"";
     }
     json += "}";

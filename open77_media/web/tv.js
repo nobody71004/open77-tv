@@ -25,7 +25,10 @@
 //                              fetches the film, and that request crosses the
 //                              game host: /op77/media/found hands it back, and
 //                              it goes to the decoder like any other link.
-//   Widevine / PlayReady       no CDM in libcef, so DRM video cannot play
+//   Widevine / PlayReady       no CDM in libcef, so DRM video cannot play --
+//                              and a link to such a service (Netflix and the
+//                              rest of PROTECTED_SERVICES) says so on screen
+//                              instead of going to the probe
 //
 // So a link is no longer judged by its file extension. The page ASKS the host:
 // /op77/media/probe runs ffprobe on the link and answers with the container,
@@ -86,7 +89,7 @@
   // the first frame instead of the page holding 100 until the state round-trips.
   let state = {
     url: "", volume: 75, muted: false, paused: false, label: "",
-    border: "", curtain: "open", key: "",
+    border: "", curtain: "open", key: "", parties: false,
     // The server's playhead, and when it reached this page. `elapsed` is an
     // instant sampled when the record was built -- so it is only meaningful
     // together with its arrival time, and the pair is what `expectedPosition`
@@ -318,6 +321,61 @@
     return match ? match[1].toLowerCase() : "";
   }
 
+  // ---------------------------------------------------------------------------
+  // Services whose video is DRM-protected
+  // ---------------------------------------------------------------------------
+  // Netflix and the services below stream only to a browser that carries their
+  // licensed DRM (Widevine / PlayReady) and passes their device check. This
+  // build has no CDM (the table at the top), so a link to one of them can never
+  // put its film on a television, and no decoder or frame changes that.
+  //
+  // Before this list such a link went to the probe like any page, and what the
+  // screen said was the probe's own failure: on 2026-10-01 a pasted
+  // `https://www.netflix.com` ended in `probe_failed (SyntaxError ... position
+  // 33)` on staging, which reads as a fault waiting for a fix. The screen now
+  // says what is actually true, and where the server runs watch parties
+  // (`opx_watchparty`) it names the way the film CAN be watched together: on
+  // everyone's own account, in their own browser, in step.
+  const PROTECTED_SERVICES = [
+    { name: "Netflix", hosts: ["netflix.com"], parties: true },
+    { name: "Disney+", hosts: ["disneyplus.com"] },
+    { name: "Prime Video", hosts: ["primevideo.com"] },
+    { name: "Max", hosts: ["max.com", "hbomax.com"] },
+    { name: "Hulu", hosts: ["hulu.com"] },
+    { name: "Apple TV+", hosts: ["tv.apple.com"] },
+    { name: "Paramount+", hosts: ["paramountplus.com"] },
+    { name: "Peacock", hosts: ["peacocktv.com"] },
+  ];
+
+  // ---------------------------------------------------------------------------
+  // The shared browser
+  // ---------------------------------------------------------------------------
+  // A real Chromium on the server (neko, `opx_tvbrowser` puts it on a screen),
+  // whose own picture and sound arrive here over WebRTC as VP8 and Opus -- which
+  // this build plays -- so a site this page cannot play (H.264 players, Twitch)
+  // plays THERE, and everyone at the television sees the same browser. The link
+  // says so with this mark, and is framed as it is: no probe, no frame check, and
+  // no stream sniffing, because it is not a site with a film in it but a window
+  // onto another browser. It has no DRM module, so protected video does not play
+  // in it either (see PROTECTED_SERVICES).
+  const SHARED_BROWSER_MARK = "#open77-shared-browser";
+
+  /// The DRM-protected service a link belongs to, or null.
+  function protectedService(url) {
+    let host;
+    try {
+      host = new URL(url).hostname.toLowerCase();
+    } catch (error) {
+      return null;
+    }
+    for (const service of PROTECTED_SERVICES) {
+      for (const suffix of service.hosts) {
+        if (host === suffix || host.endsWith("." + suffix)) return service;
+      }
+    }
+    return null;
+  }
+
   /// The id of a YouTube video in any of the shapes a person actually pastes.
   function youTubeId(url) {
     let parsed;
@@ -346,6 +404,13 @@
   /// `{ kind: "refused", reason }`.
   function classify(url) {
     if (!url) return { kind: "idle" };
+
+    if (url.endsWith(SHARED_BROWSER_MARK)) {
+      return { kind: "browser", src: url.slice(0, -SHARED_BROWSER_MARK.length) };
+    }
+
+    const service = protectedService(url);
+    if (service) return { kind: "protected", service: service, url: url };
 
     const videoId = youTubeId(url);
     if (videoId) {
@@ -412,10 +477,16 @@
     const token = ++probeToken;
     report("probing", url);
     fetch("/op77/media/probe?u=" + encodeURIComponent(url), { cache: "no-store" })
-      .then(function (response) { return response.json(); })
-      .then(function (answer) {
+      .then(function (response) { return response.text(); })
+      .then(function (text) {
         if (token !== probeToken || classify(state.url).url !== url) return; // stale
-        applyProbeVerdict(url, answer || {});
+        const answer = readProbeAnswer(text);
+        if (answer.repaired) {
+          report("probe_answer_repaired", String(answer.verdict) + ": " + (answer.detail || ""));
+        } else if (answer.unreadable) {
+          report("probe_answer_unreadable", String(text).slice(0, 220));
+        }
+        applyProbeVerdict(url, answer);
       })
       .catch(function (error) {
         if (token !== probeToken) return;
@@ -424,7 +495,49 @@
       });
   }
 
+  /// Reads the host's answer to a probe.
+  ///
+  /// As text, then parsed here, for the reason `watchForSiteStream` gives: a
+  /// malformed body made `response.json()` fail the whole chain. And one ships:
+  /// the web host's `disabled` answer -- no decoder tools staged on this PC, or a
+  /// surface whose page policy is not Media -- wraps a detail that is already
+  /// quoted in a second pair of quotes, `{"verdict":"disabled","detail":""...""}`
+  /// (`SurfaceClient::MaybeServeTranscodeRoute`). Every link that went to the
+  /// probe then ended in `probe_failed (SyntaxError ... position 33)`, a pasted
+  /// website as much as anything, and was never framed. That one shape is
+  /// repaired here; any other unreadable answer is reported verbatim by the
+  /// caller and taken as `nothing`, so a site is still framed.
+  function readProbeAnswer(text) {
+    const body = String(text || "");
+    try {
+      const parsed = JSON.parse(body);
+      if (parsed && typeof parsed === "object") return parsed;
+    } catch (error) {
+      // Not JSON as sent; the repair below is the one shape that is understood.
+    }
+    const repaired = body.replace(/"detail":""((?:[^"\\]|\\.)*)""(\s*\}\s*)$/, '"detail":"$1"$2');
+    if (repaired !== body) {
+      try {
+        const parsed = JSON.parse(repaired);
+        if (parsed && typeof parsed === "object") {
+          parsed.repaired = true;
+          return parsed;
+        }
+      } catch (error) {
+        // Still unreadable: fall through.
+      }
+    }
+    return { verdict: "nothing", detail: "", unreadable: true };
+  }
+
+  // Whether the host said it will not decode on this PC. A site this page has
+  // framed may still ask for a stream the host then finds, and swapping the
+  // framed page for a stream that cannot be decoded trades a page for a black
+  // rectangle -- see `watchForSiteStream`.
+  let decoderOff = false;
+
   function applyProbeVerdict(url, answer) {
+    if (answer.verdict === "playable" || answer.verdict === "transcoded") decoderOff = false;
     if (answer.verdict === "playable") {
       // The extension was misleading; the decoder says the bytes play. Hand
       // the element the link itself.
@@ -457,6 +570,20 @@
       return;
     }
     if (answer.verdict === "disabled") {
+      // The host will not decode on this PC: its decoder tools are not staged, or
+      // this surface may not use them. That stops a link that names a media
+      // container, which needed the decoder, and nothing else -- a site is framed
+      // without one, exactly as the `nothing` verdict below frames it. This
+      // branch used to stop every link here, sites included, and leave the
+      // screen on "asking the decoder about this link...".
+      decoderOff = true;
+      if (!PROBE_EXTENSIONS.has(extensionOf(url))) {
+        report("not_stream_site", "decoder off: " + (answer.detail || ""));
+        showSite(url, null);
+        return;
+      }
+      showOnly("idle");
+      elements.idleDetail.textContent = "this video needs the game host's decoder";
       notice(answer.detail || "The host cannot decode links: no decoder tools were staged.");
       report("transcode_disabled", answer.detail || "");
       return;
@@ -674,6 +801,14 @@
     const decided = classify(state.url);
     elements.idleLabel.textContent = state.label || "Open77 television";
 
+    // Leaving the shared browser closes it, whatever comes next: its stream would
+    // otherwise keep playing, sound included, in the hidden frame behind a probe
+    // or a video.
+    if (showing.kind === "browser" && decided.kind !== "browser") {
+      stopPicture();
+      showing = { kind: "none" };
+    }
+
     if (decided.kind === "idle") {
       showOnly("idle");
       // The key is the client's answer (`pageState`), not a literal here: it is
@@ -693,6 +828,28 @@
       notice(decided.reason);
       showing = { kind: "none" };
       report("refused", decided.reason);
+      return;
+    }
+
+    if (decided.kind === "browser") {
+      if (showing.kind !== "browser" || showing.src !== decided.src) showSharedBrowser(decided.src);
+      return;
+    }
+
+    if (decided.kind === "protected") {
+      const service = decided.service;
+      const fresh = showing.kind !== "protected" || showing.url !== decided.url;
+      stopPicture();
+      showOnly("idle");
+      showing = { kind: "protected", url: decided.url };
+      elements.idleDetail.textContent = service.name + " cannot play on a television in the game";
+      notice(service.name + " is DRM-protected: it streams only to a browser with " + service.name +
+        "'s licensed DRM, and the game's browser has none. " +
+        (service.parties && state.parties
+          ? "To watch it together, type /watch at this TV: a watch party plays it on everyone's own " +
+            service.name + " in Edge or Chrome, in step, and this screen shows the party."
+          : "YouTube, Vimeo, websites and video files play here."));
+      if (fresh) report("drm_protected", service.name + " " + decided.url);
       return;
     }
 
@@ -864,6 +1021,15 @@
             return;
           }
           if (!answer || answer.ok !== true || !answer.stream) return;
+          if (decoderOff) {
+            // The host found the film this site's player asked for, but said it
+            // cannot decode on this PC. The framed site stays: some sites play
+            // through their own WebM path, and a stream that cannot be decoded
+            // would only replace the page with a black rectangle.
+            stopSiteWatch(false);
+            report("site_stream_found_decoder_off", (answer.kind || "stream") + " " + answer.stream);
+            return;
+          }
           playFoundStream(site, answer.stream, answer.kind);
         })
         .catch(function (error) {
@@ -1036,6 +1202,44 @@
   let youTubePlayer = null;
   let youTubeFrame = null;
   let youTubeWatchdog = null;
+
+  /// Frames the shared browser. The frame may run the camera-free parts of
+  /// WebRTC, autoplay its stream with sound, go fullscreen and use the clipboard
+  /// (neko's own paste), and it is told nothing else: the page it loads is the
+  /// server's own client, logged in by the link.
+  let sharedBrowserNoticeTimer = null;
+  function showSharedBrowser(src) {
+    stopPicture();
+    const frame = document.createElement("iframe");
+    frame.setAttribute("allow", "autoplay; fullscreen; clipboard-read; clipboard-write");
+    frame.setAttribute("referrerpolicy", "no-referrer");
+    frame.src = src;
+    frame.addEventListener("load", () => report("browser_framed", "shared browser client loaded"));
+    elements.embed.appendChild(frame);
+    youTubeFrame = frame;
+    showOnly("embed");
+    showing = { kind: "browser", src: src };
+    notice("Shared browser: a real Chromium on the server, the same for everyone at this TV. " +
+      "Press F8 at the screen to use it.");
+    if (sharedBrowserNoticeTimer !== null) clearTimeout(sharedBrowserNoticeTimer);
+    sharedBrowserNoticeTimer = setTimeout(function () {
+      sharedBrowserNoticeTimer = null;
+      if (showing.kind === "browser") notice("");
+    }, 8000);
+    report("browser", "shared browser");
+  }
+
+  /// Puts out whatever the screen was showing, picture and sound: a link that can
+  /// never play must not leave the previous film running behind the notice.
+  function stopPicture() {
+    stopSiteWatch(false);
+    clearYouTubePlayer();
+    if (elements.media.getAttribute("src")) {
+      elements.media.pause();
+      elements.media.removeAttribute("src");
+      elements.media.load();
+    }
+  }
 
   /// Empties the container, whatever is in it.
   function clearYouTubePlayer() {
@@ -1316,6 +1520,9 @@
       label: typeof payload.label === "string" ? payload.label : "",
       border: typeof payload.border === "string" ? payload.border : state.border,
       curtain: typeof payload.curtain === "string" ? payload.curtain : state.curtain,
+      // Whether this server runs watch parties (the client asks for
+      // `opx_watchparty`): the one place a Netflix link can be watched together.
+      parties: payload.parties === true,
       // The playhead and its arrival time travel together, so they are taken
       // together: an `elapsed` from this record with a `receivedAt` from the last
       // one is a position measured from the wrong instant.

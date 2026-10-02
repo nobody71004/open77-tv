@@ -206,6 +206,23 @@ void TestRouteQueries()
     Check(json.find("\"verdict\":\"nothing\"") != std::string::npos, "the verdict is present");
     Check(json.find("\\\"no\\\"") != std::string::npos, "quotes in the detail are escaped");
     Check(json.find('\n') == std::string::npos, "no raw newline reaches the JSON body");
+    Check(BuildProbeJson(p, Verdict::Nothing, "tab\there\x01").find_first_of("\t\x01") == std::string::npos,
+          "no raw control character reaches the JSON body");
+
+    // The answer when the host will not decode here. It was assembled by hand
+    // around a detail that was already quoted -- `"detail":""...""` -- which no
+    // parser accepts: on a machine without the decoder every link a television
+    // probed failed to parse, and a pasted website was never framed. The exact
+    // bodies are pinned, with the characters that broke it in the detail.
+    CheckEqual(BuildDisabledJson("no decoder tools in \"C:\\Open77\\decoder\"\r\nffprobe.exe missing"),
+               "{\"verdict\":\"disabled\",\"detail\":\"no decoder tools in \\\"C:\\\\Open77\\\\decoder\\\" "
+               "ffprobe.exe missing\"}",
+               "the disabled answer is valid JSON with its detail escaped once");
+    CheckEqual(BuildDisabledJson(""), "{\"verdict\":\"disabled\",\"detail\":\"\"}",
+               "an empty reason is an empty string, not a doubled quote");
+    CheckEqual(BuildDisabledJson("this surface's page policy does not permit it"),
+               "{\"verdict\":\"disabled\",\"detail\":\"this surface's page policy does not permit it\"}",
+               "the policy refusal reads as one string");
 }
 
 void TestFfmpegArguments()

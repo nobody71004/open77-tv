@@ -16,6 +16,7 @@ were wrong with the picture that path drew, and the patch series in
 | `0004` | the depth test at every present, with frame generation |
 | `0005` | a screen with part of it behind the camera: the part in front, exactly |
 | `0006` | `0005`'s test target built without Windows' `min`/`max` macros |
+| `0007` | the web host's "no decoder here" answer to the probe is valid JSON |
 
 They apply with `git am` on open77-base `main` (36772b3b).
 

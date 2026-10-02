@@ -170,6 +170,17 @@ local function remoteKeyName()
     return REMOTE_KEY
 end
 
+---Whether the watch party resource is running here. The page cannot ask: it is a
+---page. A Netflix link is the one link a television can never show (its film is
+---DRM-protected), and where parties run the page names the way it CAN be watched
+---together instead of only refusing it. The client host calls a running resource
+---`running`; `started` is the server's word, accepted so either host answers.
+local function watchPartiesRunning()
+    if type(GetResourceState) ~= "function" then return false end
+    local ok, name = pcall(GetResourceState, "opx_watchparty")
+    return ok and (name == "running" or name == "started" or name == "starting")
+end
+
 ---What the page is told. The page owns no state of its own: everything it shows
 ---came from the server through here, so two clients watching the same television
 ---cannot disagree about what is playing.
@@ -195,6 +206,7 @@ local function pageState(entry)
         -- looking at a dead television is the one person who needs to learn it,
         -- and a hint that says "press the screen key" teaches nobody.
         key = remoteKeyName(),
+        parties = watchPartiesRunning(),
     }
 end
 

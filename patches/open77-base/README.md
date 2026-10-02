@@ -1,8 +1,8 @@
 # The television picture fixes, as a patch series for open77-base
 
-Six patches, in order, for `git am` on open77-base `main` (36772b3b). They are the
-pull request `fix/tv-picture-in-perspective` (#66) on open77-base -- `0005` and
-`0006` join it once they have been tested in game -- and what
+Seven patches, in order, for `git am` on open77-base `main` (36772b3b). They are the
+pull request `fix/tv-picture-in-perspective` (#66) on open77-base -- `0005` to
+`0007` join it once they have been tested in game -- and what
 `docs/depth-and-occlusion.md` describes.
 
 | Patch | What |
@@ -13,9 +13,11 @@ pull request `fix/tv-picture-in-perspective` (#66) on open77-base -- `0005` and
 | `0004-tv-depth-with-frame-generation` | the depth test at every present, with frame generation |
 | `0005-tv-picture-cut-at-the-camera` | a screen with part of it behind the camera: the part in front, exactly |
 | `0006-tv-clip-test-without-minmax-macros` | `0005`'s test target built without Windows' `min`/`max` macros |
+| `0007-tv-probe-answer-is-valid-json` | the web host's "no decoder here" answer to the television's probe is valid JSON |
 
     git -C <open77-base> checkout -b fix/tv-picture-in-perspective origin/main
     git -C <open77-base> am patches/open77-base/000*.patch
 
 The files they add are mirrored in `native/` and `tests/` here, as the series
-leaves them.
+leaves them (`0007` changes `TranscodePlan.hpp` and `TranscodePlanTests.cpp`,
+mirrored the same way; its `SurfaceClient.cpp` change is in the patch).
