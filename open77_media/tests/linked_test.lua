@@ -11,9 +11,9 @@
 -- the spawn request is sent the way the panel sends it.
 --
 -- Standalone:  lua tools/lua-test/run.lua <repo-root>
--- (preloads shared/records.lua, shared/placement.lua, shared/clock.lua,
--- server/config.lua and server/adblock.lua -- everything server/main.lua reads as
--- it loads -- and names the root in OPEN77_REPO_ROOT)
+-- (preloads shared/records.lua, shared/placement.lua, shared/keys.lua,
+-- shared/clock.lua, server/config.lua and server/adblock.lua -- everything
+-- server/main.lua reads as it loads -- and names the root in OPEN77_REPO_ROOT)
 -- =============================================================================
 
 local passed = 0

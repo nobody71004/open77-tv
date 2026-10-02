@@ -35,11 +35,11 @@
 -- gamemode, for the same reason the screens do: this file already knows which
 -- sets are near and who is standing at one, and a menu that re-implemented
 -- "spawn a television" and "change its volume" was a second copy of both. So
--- `web/remote.html` is created here, at resource start, and toggled by a key
--- mapping; this half decides WHICH set it drives -- the nearest one inside
--- each set's own reach, a distance only a client can measure -- and forwards every
--- request the panel makes to the server, which is the only writer of a set's
--- state.
+-- `web/remote.html` is created here, at resource start, and toggled by a key the
+-- player chooses (or by `/tv`); this half decides WHICH set it drives -- the
+-- nearest one inside each set's own reach, a distance only a client can measure
+-- -- and forwards every request the panel makes to the server, which is the only
+-- writer of a set's state.
 
 -- A client can receive a newer resource generation before its native plugin has
 -- been restarted. Stay inert on that transition rather than failing the VM on
@@ -60,16 +60,37 @@ end
 local MAX_MATERIALISED = 6
 local MATERIALISE_RADIUS = 90.0
 
--- The key that opens the panel, until a player rebinds it.
+-- The key that opens the panel.
 --
--- F5, and the name is one variable rather than a literal in three places. The
--- engine's registry is the real owner -- `RegisterKeyMapping` below declares
--- this as the DEFAULT, the binding is listed in the pause menu with the rest of
--- the game's keys, and a rebind is remembered per machine across restarts -- so
--- this is what a fresh install gets, not the only thing it can be. Everything
--- that signposts the key (the panel, the idle screen of every set) asks
--- `remoteKeyName()` for the effective one rather than reading this.
+-- F5 until a player picks another, and the pick is theirs to make: the panel's
+-- CHANGE button takes the next key pressed, `/tvkey <key>` names one, and
+-- `/tvkey reset` puts F5 back. The choice is kept in `Open77.kvp`, which the host
+-- namespaces by server, so it survives a restart of the game and does not follow
+-- the player to a server where they chose something else. Which keys may be
+-- chosen, and what each is called, is `shared/keys.lua` -- the server answers
+-- `/tvkey` from the same table. Everything that signposts the key (the panel, the
+-- idle screen of every set) asks `remoteKeyName()` for the effective one.
+--
+-- WHY IT IS READ HERE AND NOT REGISTERED. It used to be `RegisterKeyMapping`, the
+-- engine's registry, and that takes a default at registration and nothing after:
+-- nothing in Lua can move it, so "let players set their own key" had no answer
+-- this resource could give. `Open77.input.isDown` is how every other resource on
+-- this runtime reads its keys (`open77_perspective`'s F6, the voice keys,
+-- `open77_build`'s placement keys) and takes any allowed name at any time. The
+-- registry is kept as the fallback for a client that cannot read the keyboard,
+-- and `REMOTE_KEY` is the default in the registry's own spelling.
 local REMOTE_KEY = "F5"
+local KVP_REMOTE_KEY = "media.remote.key"
+
+-- Fifty looks a second. `isDown` is a LEVEL read, so a press is an edge this file
+-- computes; a quick tap is about 80 ms, four looks long, and a key that is merely
+-- held is one press however long it is held.
+local KEY_POLL_MS = 20
+
+-- How often the stored key is asked for until the session can answer -- the store
+-- does not exist until the connection address does (`server_session_unavailable`)
+-- -- in polls: every twenty-fifth, half a second.
+local KEY_LOAD_EVERY = 25
 
 -- How close a set has to be for the panel to drive it, which is not the same
 -- question as how far away it is still worth drawing.
@@ -114,6 +135,33 @@ local remoteHinted = nil
 -- can say which set and how far. Cleared with the rest of the panel's state.
 local remoteNearest = nil
 
+-- The key, as the host names it (`f5`, `g`, `pageup`), and how the panel is
+-- toggled: "poll" (this file reads the keyboard), "mapping" (the engine's
+-- registry, the fallback), or nil before the resource has started or when this
+-- client can do neither -- `/tv` still works then.
+--
+-- `Open77MediaKeys` is `shared/keys.lua`. A resource that arrives without it --
+-- a folder updated by hand, one file at a time -- falls back to the registry and
+-- says so, rather than failing the whole client on its first key.
+local Keys = Open77MediaKeys
+local remoteKey = Keys ~= nil and Keys.DEFAULT or "f5"
+local remoteKeyMode = nil
+-- Whether the player's stored key has been read (or there was nothing to read it
+-- from), and whether they chose one this session before it could be: a choice
+-- made before the store answered is written once it does, not overwritten by it.
+local remoteKeyLoaded = false
+local remoteKeyChosen = false
+local remoteKeyLoadIn = 0
+-- True while the key has to be seen RELEASED before a press counts: at start (a
+-- key already down when the resource loads is not a press), after every open and
+-- close (the press that closed the panel through its page must not reopen it
+-- from here), and while another surface has the keyboard.
+local remoteKeyHeld = true
+-- Whether the open panel took the keyboard. While it has, the page closes the
+-- panel on the key itself, and this file leaves the key alone: a letter chosen
+-- as the key is also a letter typed into the link field.
+local remoteFocused = false
+
 ---How far away a screen is, or nil when the body cannot be read.
 ---
 ---`Open77.character.position()` returns THREE NUMBERS, not a table: the native
@@ -155,18 +203,23 @@ local function entryReach(entry)
     return reach
 end
 
----The key that opens the panel, as this player has it bound.
+---The key that opens the panel, as this player has it, in the words they read.
 ---
----Read from the engine's own registry rather than repeating the default this file
----registers, so a rebind renames the key everywhere it is signposted -- the panel
----itself and the idle screen of every television in the world. `keyFor` sits
----behind the same capability as the registration (`input.actions`); a plugin
----older than it leaves the default in place rather than printing nothing.
+---The key this file reads, when it reads one -- so a player who moved it is told
+---the key they moved it to, everywhere it is signposted: the panel itself and the
+---idle screen of every television in the world. On the registry fallback it is
+---the registry's answer instead (`keyFor`, behind the same `input.actions`
+---capability as the registration), and a plugin older than that leaves the
+---default in place rather than printing nothing.
 local function remoteKeyName()
-    if type(Open77.input) == "table" and type(Open77.input.keyFor) == "function" then
-        local key = Open77.input.keyFor("media.remote")
-        if type(key) == "string" and key ~= "" then return key end
+    if remoteKeyMode == "mapping" then
+        if type(Open77.input) == "table" and type(Open77.input.keyFor) == "function" then
+            local key = Open77.input.keyFor("media.remote")
+            if type(key) == "string" and key ~= "" then return key end
+        end
+        return REMOTE_KEY
     end
+    if Keys ~= nil then return Keys.Label(remoteKey) end
     return REMOTE_KEY
 end
 
@@ -1111,6 +1164,12 @@ local function remoteState()
         -- The effective key, so the panel's own footer can name the key that
         -- closes it and the idle screen can name the one that opens it.
         key = remoteKeyName(),
+        -- ... the host's name for it, so the page can close on the same key the
+        -- player opened it with (while the page has the keyboard, this file does
+        -- not see the press), and whether the player may move it from the panel:
+        -- only a key this file reads can be moved from here.
+        keyName = remoteKeyMode == "poll" and remoteKey or nil,
+        keyEditable = remoteKeyMode == "poll",
         -- Every set, for the panel's own list: which ones exist, how far they
         -- are, and which of them this client may drive right now.
         sets = remoteSetList(),
@@ -1175,6 +1234,10 @@ local function pushRemote(force)
         tostring(math.floor((tonumber(target.reach) or -1.0) + 0.5)),
         tostring(payload.nearest ~= nil and payload.nearest.id or ""),
         tostring(math.floor(((payload.nearest ~= nil and tonumber(payload.nearest.distance) or -1.0)) + 0.5)),
+        -- The key, because the footer names it and a key read back from the
+        -- store changes it with nothing else on the panel changing.
+        tostring(payload.key),
+        tostring(payload.keyName),
         -- ... and the list of sets, as ids at whole metres: a row appears or
         -- disappears, or a distance crosses a metre while the player walks, and
         -- the page has to be told. Without it the list would only refresh on an
@@ -1208,17 +1271,25 @@ local function setRemoteOpen(value, reason)
         return true
     end
     remoteOpen = value
+    -- Whatever opened or closed it, the key has to come up before it counts
+    -- again: a press that closed the panel through its own page is still down
+    -- when the page lets go of the keyboard, and must not reopen it from here.
+    remoteKeyHeld = true
     if value then
         -- The catalogue is fetched on every open rather than cached forever: the
         -- records an operator changed are exactly why a spawn would fail, and one
         -- net event per open is what keeps the list honest.
         TriggerServerEvent("open77:media:catalogue")
         local focused, focusReason = remote:setFocus(true, true)
+        -- Only a panel that has the keyboard can close itself on its key; one the
+        -- host refused focus to is closed from here, by the same key.
+        remoteFocused = focused == true
         print(string.format("[open77_media] remote open (target=%s, focus=%s(%s))",
             remoteTarget ~= nil and tostring(remoteTarget) or "none",
             tostring(focused), tostring(focusReason)))
     else
         remote:setFocus(false, false)
+        remoteFocused = false
         print("[open77_media] remote closed")
     end
     pushRemote(true)
@@ -1230,6 +1301,209 @@ end
 ---that opened a panel.
 local function toggleRemote()
     return setRemoteOpen(not remoteOpen)
+end
+
+-- -----------------------------------------------------------------------------
+-- The key
+-- -----------------------------------------------------------------------------
+-- Read here, moved by the player, kept per server. See `REMOTE_KEY` at the top
+-- of the file for why this is a read of the keyboard and not a registration.
+
+---Renames the key everywhere it is signposted: the panel, and the idle screen of
+---every set this client is drawing.
+local function refreshKeyHints()
+    remoteSignature = ""
+    pushRemote(true)
+    for _, entry in pairs(screens) do refreshPage(entry) end
+end
+
+---Writes the player's key to the store -- or forgets it when it is the default,
+---so a player who never chose follows the default wherever it goes.
+---@return boolean saved
+---@return string|nil why it was not
+local function persistRemoteKey()
+    local store = Open77.kvp
+    if type(store) ~= "table" or type(store.set) ~= "function" then
+        return false, "kvp_unavailable"
+    end
+    -- Not read yet: written when it is (`loadRemoteKey`), because a write now and
+    -- a read after it would hand the player back the key they had just left.
+    if not remoteKeyLoaded then return false, "kvp_not_ready" end
+    local ok, reason
+    if remoteKey == Keys.DEFAULT and type(store.delete) == "function" then
+        ok, reason = store.delete(KVP_REMOTE_KEY)
+        if ok == nil and reason == nil then ok = true end
+    else
+        ok, reason = store.set(KVP_REMOTE_KEY, remoteKey)
+    end
+    if not ok then
+        print(string.format(
+            "[open77_media] remote key %s not saved (%s): it lasts until you leave this server",
+            remoteKeyName(), tostring(reason)))
+        return false, reason
+    end
+    return true
+end
+
+---Reads the player's stored key, once the session can answer.
+---
+---Safe to call as often as anything likes; it reads once. The store answers
+---`server_session_unavailable` until the connection address exists, and nothing
+---is cached on that answer, so the next call asks again: the key thread asks twice
+---a second until it is answered, and `open77:worldReady` asks too. Any OTHER
+---refusal is an answer, and is taken as one -- said once, with the default key --
+---rather than asked again twice a second for the rest of the session while every
+---choice the player makes waits for a read that will never come.
+---@return boolean read
+local function loadRemoteKey()
+    if remoteKeyLoaded then return true end
+    local store = Open77.kvp
+    if Keys == nil or type(store) ~= "table" or type(store.get) ~= "function" then
+        -- Nothing to read, and nothing will appear: the key is the default, and a
+        -- choice lasts as long as the session does.
+        remoteKeyLoaded = true
+        return true
+    end
+    local stored, reason = store.get(KVP_REMOTE_KEY, nil)
+    if stored == nil and reason ~= nil then
+        if tostring(reason) == "server_session_unavailable" then return false end
+        print(string.format("[open77_media] your saved TV key could not be read (%s); %s it is",
+            tostring(reason), remoteKeyName()))
+    end
+    remoteKeyLoaded = true
+    if remoteKeyChosen then
+        -- Chosen before the store could answer: the choice is the newer word.
+        persistRemoteKey()
+    elseif Keys.Valid(stored) then
+        if stored ~= remoteKey then
+            remoteKey = stored
+            remoteKeyHeld = true
+            refreshKeyHints()
+        end
+        print(string.format("[open77_media] remote key %s (your key on this server)", remoteKeyName()))
+    elseif stored ~= nil then
+        -- Written by something else, or by hand: dropped rather than polled for
+        -- ever, and the default stands.
+        if type(store.delete) == "function" then store.delete(KVP_REMOTE_KEY) end
+        print(string.format("[open77_media] stored remote key '%s' is not one the panel takes; %s it is",
+            tostring(stored), remoteKeyName()))
+    end
+    return true
+end
+
+---Moves the key: to whatever a player typed or pressed, or back to the default
+---on `reset`. Refused, with the reason in the player's own words, for a key the
+---panel does not take -- and on a client that reads no key it could move.
+---@param wanted any a key name, as typed or as the page mapped it
+---@return boolean ok
+---@return string the key's name when it moved, the reason when it did not
+---@return boolean|nil whether the store refused to keep it (it lasts the session)
+local function setRemoteKey(wanted)
+    if remoteKeyMode ~= "poll" or Keys == nil then
+        return false, "this client can't read the keyboard, so the TV key stays the game's binding ("
+            .. remoteKeyName() .. ")"
+    end
+    local key, why = Keys.Parse(wanted)
+    if key == nil then return false, why end
+    remoteKey = key
+    remoteKeyChosen = true
+    -- The press that chose it is still down, and is not a press of the new key.
+    remoteKeyHeld = true
+    -- A store that is not up yet keeps it once it is (`loadRemoteKey`); a store
+    -- that REFUSED is the one case the player has to hear about.
+    local saved, why = persistRemoteKey()
+    local unsaved = not saved and why ~= "kvp_not_ready"
+    refreshKeyHints()
+    print(string.format("[open77_media] remote key is now %s", remoteKeyName()))
+    return true, remoteKeyName(), unsaved
+end
+
+---One look at the keyboard.
+---
+---A press is the key going DOWN while it was not held. Nothing counts while
+---another surface has the keyboard -- the chat, a menu -- because a letter typed
+---into a chat line is not a press. Nor while this panel is open with the
+---keyboard: its page closes it on the key itself, and knows what this cannot,
+---which is whether the caret is in a field, where the key is a letter.
+local function pollRemoteKey()
+    if not remoteKeyLoaded then
+        remoteKeyLoadIn = remoteKeyLoadIn - 1
+        if remoteKeyLoadIn <= 0 then
+            remoteKeyLoadIn = KEY_LOAD_EVERY
+            loadRemoteKey()
+        end
+    end
+    local input = Open77.input
+    if (remoteOpen and remoteFocused)
+        or (type(input.isCaptured) == "function" and input.isCaptured() == true) then
+        remoteKeyHeld = true
+        return
+    end
+    if input.isDown(remoteKey) ~= true then
+        remoteKeyHeld = false
+        return
+    end
+    if remoteKeyHeld then return end
+    remoteKeyHeld = true
+    toggleRemote()
+end
+
+---Starts the key: read here when the keyboard can be read, the engine's registry
+---when it cannot, and nothing but `/tv` when neither is there.
+local function startRemoteKey()
+    local input = Open77.input
+    if Keys ~= nil and type(input) == "table" and type(input.isDown) == "function" then
+        -- A key the host will not read is answered with a reason, not an error:
+        -- `permission_denied:input.actions` on a manifest without the capability,
+        -- `unsupported_action_key` on a host whose list is not this one. Those are
+        -- the answers that mean "never"; anything else is read as "not yet", and
+        -- the key is read here all the same.
+        local _, refusal = input.isDown(Keys.DEFAULT)
+        local never = refusal ~= nil and (tostring(refusal):find("permission_denied", 1, true) == 1
+            or tostring(refusal) == "unsupported_action_key")
+        if not never then
+            if refusal ~= nil then
+                print("[open77_media] the keyboard answered " .. tostring(refusal) .. "; reading it anyway")
+            end
+            remoteKeyMode = "poll"
+            remoteKeyHeld = true
+            -- Protected: a store that throws at start costs the saved key for a
+            -- moment, not the key -- the thread below asks again.
+            local loaded, loadError = pcall(loadRemoteKey)
+            if not loaded then print("[open77_media] saved TV key not read yet: " .. tostring(loadError)) end
+            CreateThread(function()
+                local failures = 0
+                while true do
+                    local ok, err = pcall(pollRemoteKey)
+                    -- Said, and said a bounded number of times: a key that threw
+                    -- fifty times a second would bury every other line in the log.
+                    if not ok and failures < 3 then
+                        failures = failures + 1
+                        print("[open77_media] remote key failed: " .. tostring(err))
+                    end
+                    Wait(KEY_POLL_MS)
+                end
+            end)
+            print(string.format("[open77_media] remote key %s (press it at a set, or type /tv; "
+                .. "/tvkey <key> or CHANGE on the panel moves it)", remoteKeyName()))
+            return
+        end
+        print(string.format(
+            "[open77_media] the keyboard cannot be read (%s); the key falls back to the engine's registry",
+            tostring(refusal)))
+    elseif Keys == nil then
+        print("[open77_media] shared/keys.lua did not load (update the whole resource, not single files); "
+            .. "the key falls back to the engine's registry")
+    end
+    if type(RegisterKeyMapping) == "function" then
+        local ok, effective = RegisterKeyMapping("media.remote",
+            "Television: control the nearest set", REMOTE_KEY, toggleRemote)
+        if ok then remoteKeyMode = "mapping" end
+        print(string.format("[open77_media] remote key %s (%s)", tostring(effective),
+            ok and "registered" or "refused"))
+    else
+        print("[open77_media] this client can neither read nor register a key; type /tv to open the panel")
+    end
 end
 
 ---Creates the panel surface, once, at resource start.
@@ -1277,6 +1551,20 @@ local function createRemote()
         end
         if action == "catalogue" then
             TriggerServerEvent("open77:media:catalogue")
+            return
+        end
+        -- The panel's CHANGE button: the next key pressed, already mapped to the
+        -- host's name by the page. Checked here again rather than trusted -- the
+        -- page maps a keyboard event, this decides what the panel may be opened
+        -- with -- and answered on the page, which is where the player is looking.
+        if action == "setKey" then
+            local ok, detail, unsaved = setRemoteKey(payload.key)
+            local text = detail
+            if ok then
+                text = "the panel opens with " .. detail .. " now"
+                if unsaved then text = text .. " (until you leave: it could not be saved)" end
+            end
+            page:send("remote:keyResult", { ok = ok, text = text })
             return
         end
         if action == "spawn" then
@@ -1373,12 +1661,54 @@ RegisterNetEvent("open77:media:catalogue", function(records)
     end
 end)
 
----A rebind renames the key the panel and every idle screen signpost, so both are
----told. The engine raises this for the resource that owns the mapping.
+---A rebind in the engine's registry renames the key the panel and every idle
+---screen signpost, so both are told. The engine raises this for the resource
+---that owns the mapping, which this one only does on the registry fallback.
 AddEventHandler("open77:keybinds:changed", function()
-    remoteSignature = ""
-    pushRemote(true)
-    for _, entry in pairs(screens) do refreshPage(entry) end
+    refreshKeyHints()
+end)
+
+---`/tv`: the same toggle as the key, for a player who has not learned the key yet
+---or has put it somewhere they cannot reach. The server's command sends it to the
+---player who typed it and to nobody else; a gameplay resource may raise it
+---locally to open the panel for its own reasons.
+RegisterNetEvent("open77:media:remote:toggle", function()
+    toggleRemote()
+end)
+
+---`/tvkey`: moves this player's key, or -- with no key named -- opens the panel on
+---its key chooser.
+---
+---The server has already checked the name against the same table and answered the
+---player, so the refusal left for this half is the one the server cannot see: a
+---client that reads no key it could move.
+RegisterNetEvent("open77:media:remote:key", function(payload)
+    if type(payload) ~= "table" then return end
+    if payload.choose == true then
+        if setRemoteOpen(true, "there is no panel to choose a key on") and remote ~= nil then
+            remote:send("remote:chooseKey", {})
+        end
+        return
+    end
+    local ok, detail, unsaved = setRemoteKey(payload.key)
+    if not ok or unsaved then
+        local text = ok and ("the TV key is " .. detail .. " until you leave: it could not be saved") or detail
+        print("[open77_media] " .. tostring(text))
+        TriggerEvent("chat:addMessage", { type = ok and "info" or "error", author = "TV", text = text })
+    end
+end)
+
+---Escape. The host swallows it before any surface sees it and raises this in its
+---place (`opx_infinity`'s chat and menus close on it too), so the page's own
+---Escape handler never hears it in game: without this, the panel closed only on
+---its key and its X.
+AddEventHandler("open77:pauseKey", function()
+    if remoteOpen then setRemoteOpen(false) end
+end)
+
+---The world is up, which on a first join is also when the store can first answer.
+AddEventHandler("open77:worldReady", function()
+    if remoteKeyMode == "poll" then loadRemoteKey() end
 end)
 
 ---How much closer a screen must be to take the page of one that already has it.
@@ -1458,8 +1788,9 @@ local function reselect()
     if remoteTarget ~= nil and remoteTarget ~= remoteHinted then
         remoteHinted = remoteTarget
         if not remoteOpen then
-            print(string.format("[open77_media] set %s is in range: press %s to control it",
-                tostring(remoteTarget), remoteKeyName()))
+            print(string.format("[open77_media] set %s is in range: %s to control it",
+                tostring(remoteTarget),
+                remoteKeyMode ~= nil and ("press " .. remoteKeyName()) or "type /tv"))
         end
     elseif remoteTarget == nil then
         remoteHinted = nil
@@ -1499,19 +1830,6 @@ AddEventHandler("onClientResourceStart", function(name)
     TriggerServerEvent("open77:media:ready")
 
     createRemote()
-
-    -- The toggle, registered in the engine's own rebindable registry rather than
-    -- watched by this file: the binding then sits in the pause menu with the rest
-    -- of the game's keys, survives a restart, and can be changed by a player who
-    -- has never heard of Open77's console.
-    if type(RegisterKeyMapping) == "function" then
-        local ok, effective = RegisterKeyMapping("media.remote",
-            "Television: control the nearest set", REMOTE_KEY, toggleRemote)
-        print(string.format("[open77_media] remote key %s (%s)", tostring(effective),
-            ok and "registered" or "refused"))
-    else
-        print("[open77_media] RegisterKeyMapping is unavailable; the panel has no key")
-    end
 
     -- One thread, one second, one job: which screens exist. See the file header
     -- for why this is not a per-frame concern.
@@ -1556,6 +1874,10 @@ AddEventHandler("onClientResourceStart", function(name)
             Wait(100)
         end
     end)
+
+    -- The panel's key, last: the one thread that looks at the keyboard, or the
+    -- engine's registry when this client cannot. See `startRemoteKey`.
+    startRemoteKey()
 end)
 
 AddEventHandler("onClientResourceStop", function(name)
@@ -1573,6 +1895,19 @@ end)
 -- above, because the loading screen appears within a frame or two of this and a
 -- second is long enough to see it.
 AddEventHandler("open77:session:ended", function(reason)
+    -- The key is kept per server, so the next session reads its own: back to the
+    -- default until it has, which the key thread does within half a second.
+    if Keys ~= nil then remoteKey = Keys.DEFAULT end
+    remoteKeyLoaded = false
+    remoteKeyChosen = false
+    remoteKeyLoadIn = 0
+    -- Closed, and whether or not a set is up, because this event is NOT a
+    -- resource stop: the panel's surface outlives the world exactly as a screen's
+    -- page did, and an open panel left standing is a menu on the next loading
+    -- screen. (It used to be closed after the early return below, so a panel
+    -- opened in a world with no sets in it survived into the next one.) A shut
+    -- panel is still told, because the key it names has just changed.
+    if remoteOpen then setRemoteOpen(false) else pushRemote(true) end
     if next(screens) == nil then return end
     print(string.format(
         "[open77_media] session ended (%s): releasing %d television page(s)",
@@ -1581,10 +1916,6 @@ AddEventHandler("open77:session:ended", function(reason)
             for _ in pairs(screens) do count = count + 1 end
             return count
         end)()))
-    -- Closed before the pages go, because this event is NOT a resource stop: the
-    -- panel's surface outlives the world exactly as a screen's page did, and an
-    -- open panel left standing is a menu on the next loading screen.
-    setRemoteOpen(false)
     clearAll()
 end)
 
@@ -1603,7 +1934,9 @@ end)
 -- inventing the mechanism first. It does not have to: every mutation is a server
 -- event (`open77:media:spawn`, `open77:media:control`) that any resource may send
 -- and this one validates, and the current set is pushed locally as
--- `open77:media:local` below.
+-- `open77:media:local` below. The panel is the same: `open77:media:remote:toggle`
+-- opens and closes it, and `open77:media:remote:key` moves its key, which is all
+-- `/tv` and `/tvkey` do.
 
 -- =============================================================================
 -- WHAT THIS CLIENT HAS ON SCREEN, PUSHED LOCALLY

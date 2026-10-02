@@ -346,4 +346,28 @@ input[type="range"].range { height: 26px; padding: 0; background: transparent; b
   border: 1px solid var(--line-hairline);
   color: var(--text-secondary);
 }
-.keys span + .keycap { margin-left: 10px; }
+.keys span + .keycap,
+.keys .keybind + .keycap { margin-left: 10px; }
+
+/* CHANGE, beside the key it changes. A text button at the footer's own size: it
+   is a setting a player reaches for once, not a control, and a full-size button
+   down here would read as one. */
+.keybind {
+  padding: 2px 6px;
+  background: transparent;
+  color: var(--o-teal-muted);
+  border: 1px dashed var(--line-strong);
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+}
+.keybind:hover { color: var(--o-cyan-400); border-color: var(--o-cyan-500); }
+.keybind[hidden] { display: none; }
+
+/* Listening for the next key: the keycap is the prompt, lit the way an active
+   control is, so the player can see which key is being chosen. */
+.keycap.listening {
+  color: var(--o-cyan-400);
+  border-color: var(--o-cyan-500);
+}
+.keybind.listening { color: var(--o-cyan-400); border-style: solid; border-color: var(--o-cyan-500); }

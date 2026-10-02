@@ -80,13 +80,19 @@
     refresh: document.getElementById("refresh"),
     catalogue: document.getElementById("catalogue"),
     keyOpen: document.getElementById("key-open"),
+    keyChange: document.getElementById("key-change"),
     note: document.getElementById("note"),
   };
 
   // The server's last word, and nothing else. `reach` is per set, so there is no
   // single range to carry here: `defaultReach` is only what a set with no
   // server-described reach falls back to, and the page never has to apply it.
-  let state = { open: false, target: null, count: 0, defaultReach: 15, key: "F5" };
+  // `key` is the panel's key as the player reads it, `keyName` the host's name for
+  // it (so this page can close on it), and `keyEditable` whether CHANGE can move it.
+  let state = {
+    open: false, target: null, count: 0, defaultReach: 15,
+    key: "F5", keyName: null, keyEditable: false,
+  };
   // How far one press moves a set. The panel's own choice, not the server's: it
   // is a multiplier on a nudge, and the server clamps what it is given.
   const STEPS = [0.05, 0.25, 1, 5];
@@ -96,6 +102,16 @@
   let noteTimer = null;
   let urlEditing = false;
   let wasOpen = false;
+  // CHANGE is waiting for the next key.
+  let listening = false;
+  // When this page last saw the panel's key down (0: seen up). A keydown soon
+  // after the last one, with no keyup between, is the key auto-repeating, whether
+  // or not the host marks it as a repeat. The window is the slowest repeat delay
+  // Windows offers (one second) and a little more, because the press that OPENED
+  // the panel may still be held when the page takes the keyboard -- so the panel
+  // starts out treating the key as just pressed.
+  const REPEAT_WINDOW_MS = 1050;
+  let toggleHeldAt = 0;
 
   const emit = (action, extra) =>
     bridge.emit("remote:action", Object.assign({ action: action }, extra || {}));
@@ -138,6 +154,43 @@
   // for the caret.
   function choosing() {
     return elements.step.classList.contains("open");
+  }
+
+  // The host's name for the key an event is (`Open77.input.isDown` takes f1-f12,
+  // a-z, 0-9 and six named keys), or null for a key the panel cannot be opened
+  // with. This is the one part of choosing a key the client cannot do, because it
+  // never sees the event; which of these names the panel TAKES is the client's
+  // answer (`shared/keys.lua`), not this page's.
+  //
+  // A letter comes from `key`, so a player on AZERTY gets the key with that letter
+  // printed on it -- which is what the host's key codes follow too -- and from
+  // `code` only when `key` is not a Latin letter at all (another alphabet). A
+  // digit is always the number row, from `code`: on AZERTY `key` is "&".
+  const NAMED_KEYS = {
+    Insert: "insert", Delete: "delete", Home: "home", End: "end",
+    PageUp: "pageup", PageDown: "pagedown",
+  };
+  function hostKeyName(event) {
+    const key = String(event.key || "");
+    const code = String(event.code || "");
+    if (/^F([1-9]|1[0-2])$/.test(key)) return key.toLowerCase();
+    if (/^Digit[0-9]$/.test(code)) return code.slice(5);
+    // A host that forwards no scan code leaves `code` empty; the digit is then
+    // the character, which is right everywhere the number row types digits.
+    if (!code && /^[0-9]$/.test(key)) return key;
+    if (/^[a-zA-Z]$/.test(key)) return key.toLowerCase();
+    if (/^Key[A-Z]$/.test(code)) return code.slice(3).toLowerCase();
+    if (Object.prototype.hasOwnProperty.call(NAMED_KEYS, key)) return NAMED_KEYS[key];
+    return null;
+  }
+
+  // Whether a key means something to a text field: a letter or digit is typed,
+  // Delete deletes, Home and End move the caret. The panel's key closes the panel
+  // from a field only when it is NOT one of these -- F1-F12, Insert, Page Up, Page
+  // Down -- and the link field only takes the caret on open when the key can
+  // still close the panel from inside it.
+  function editsText(name) {
+    return /^(?:[a-z0-9]|delete|home|end)$/.test(String(name || ""));
   }
 
   // ---------------------------------------------------------------------------
@@ -210,7 +263,10 @@
       elements.nearText.textContent = "";
     }
 
-    elements.keyOpen.textContent = state.key || "F5";
+    // The key, unless CHANGE is waiting for a new one -- then the keycap is the
+    // prompt, and a state push mid-choice must not put the old name back.
+    if (!listening) elements.keyOpen.textContent = state.key || "F5";
+    elements.keyChange.hidden = state.keyEditable !== true;
   }
 
   function renderCatalogue() {
@@ -301,6 +357,12 @@
   function render() {
     const open = state.open === true;
     elements.root.classList.toggle("open", open);
+    // A panel that closes stops listening for a key: the next open starts from
+    // the key the player has, not from a prompt they walked away from.
+    if (!open && listening) {
+      listen(false);
+      note("");
+    }
     renderTarget();
     renderSets();
     renderCatalogue();
@@ -308,8 +370,14 @@
     // The caret, once per open. The host owns Ctrl+V (a page cannot read the
     // clipboard), so the paste needs a focused field to land in -- and taking it
     // on the opening EDGE rather than on every state push is what keeps it from
-    // stealing the caret back from somebody mid-URL.
-    if (open && !wasOpen) elements.url.focus();
+    // stealing the caret back from somebody mid-URL. Not when the panel's key is
+    // one a field takes as typing (a player who chose G): a caret there would
+    // make the key that opened the panel a letter in the link instead of the key
+    // that closes it. That player clicks the field to paste.
+    if (open && !wasOpen) {
+      toggleHeldAt = performance.now();
+      if (!editsText(state.keyName)) elements.url.focus();
+    }
     wasOpen = open;
   }
 
@@ -461,16 +529,96 @@
   elements.refresh.addEventListener("click", () => emit("catalogue"));
 
   // ---------------------------------------------------------------------------
+  // The panel's own key
+  // ---------------------------------------------------------------------------
+  // CHANGE listens for the next key and asks the client for it. The client checks
+  // it against the keys the panel may be opened with and keeps it per server, and
+  // its answer -- `remote:keyResult` -- is what ends the listening: a refused key
+  // leaves the panel listening, with the reason, so the next press is the retry.
+  const KEY_CHOICES = "a letter, a number, F1-F12, Insert, Delete, Home, End, Page Up or Page Down";
+  const MODIFIER_KEYS = { Shift: true, Control: true, Alt: true, AltGraph: true, Meta: true, CapsLock: true };
+
+  function listen(on) {
+    listening = on === true;
+    elements.keyOpen.classList.toggle("listening", listening);
+    elements.keyChange.classList.toggle("listening", listening);
+    elements.keyChange.textContent = listening ? "CANCEL" : "CHANGE";
+    elements.keyOpen.textContent = listening ? "PRESS A KEY" : (state.key || "F5");
+  }
+
+  function startListening() {
+    if (state.keyEditable !== true) {
+      note("this client can't read the keyboard, so the key is the game's own binding", "error");
+      return;
+    }
+    // The caret goes first: a key pressed while the link field had it would be
+    // typed into the link as well as chosen.
+    if (document.activeElement && typeof document.activeElement.blur === "function")
+      document.activeElement.blur();
+    listen(true);
+    note("press the key you want for this panel: " + KEY_CHOICES);
+  }
+
+  elements.keyChange.addEventListener("click", event => {
+    event.stopPropagation();
+    if (listening) {
+      listen(false);
+      note("");
+      return;
+    }
+    startListening();
+  });
+
+  // The CAPTURE phase, so while the panel is listening the key reaches nothing
+  // else: not the field, not the listbox, and not the shortcuts below.
+  document.addEventListener("keydown", event => {
+    if (!listening || !state.open) return;
+    event.preventDefault();
+    event.stopPropagation();
+    // Held keys and bare modifiers are not a choice: Shift alone is the start of
+    // something, and a repeat is the key already being answered.
+    if (event.repeat || MODIFIER_KEYS[event.key]) return;
+    const name = hostKeyName(event);
+    if (name === null) {
+      const shown = event.key === " " ? "Space" : (event.key || "that key");
+      note(shown + " can't open the panel; use " + KEY_CHOICES, "error");
+      return;
+    }
+    emit("setKey", { key: name });
+  }, true);
+
+  // ---------------------------------------------------------------------------
   // Keys
   // ---------------------------------------------------------------------------
   // The panel is the focused surface while it is open, so these are the keys the
   // player has: one hand on WASD is not the posture this panel assumes. Every one
   // of them yields to the caret -- see `typing()` above, which is the bug this
   // section was. Escape never yields: it is how a player leaves a field, and a
-  // panel that could be typed into but not escaped would be a trap.
+  // panel that could be typed into but not escaped would be a trap. (In game the
+  // host takes Escape before any page sees it and raises `open77:pauseKey`, which
+  // the client closes the panel on; this line is for everywhere else.)
   document.addEventListener("keydown", event => {
     if (!state.open) return;
     if (event.key === "Escape") { event.preventDefault(); emit("close"); return; }
+
+    // The key that opened the panel closes it. While the panel has the keyboard
+    // the client leaves the key to this page, so the page has to. A key a field
+    // does not type (F1-F12, Insert, Page Up, Page Down) closes from anywhere; a
+    // letter, a digit, Delete, Home and End yield to the caret and the listbox,
+    // where they are typing. A repeat -- flagged, or a keydown with no keyup
+    // since the last -- is a key still held, and is swallowed rather than typed.
+    if (state.keyName && hostKeyName(event) === state.keyName) {
+      const now = performance.now();
+      const repeated = event.repeat || (toggleHeldAt !== 0 && now - toggleHeldAt < REPEAT_WINDOW_MS);
+      toggleHeldAt = now;
+      if (repeated) { event.preventDefault(); return; }
+      if (!editsText(state.keyName) || !(typing() || choosing())) {
+        event.preventDefault();
+        emit("close");
+        return;
+      }
+    }
+
     if (typing() || choosing()) return;
     if (!state.target) return;
 
@@ -492,6 +640,10 @@
       event.preventDefault();
       emit("rotate", { direction: "right", degrees: 15 });
     }
+  });
+
+  document.addEventListener("keyup", event => {
+    if (state.keyName && hostKeyName(event) === state.keyName) toggleHeldAt = 0;
   });
 
   // ---------------------------------------------------------------------------
@@ -518,6 +670,21 @@
     if (payload.ok !== true) emit("catalogue");
   });
 
+  // The client's answer to CHANGE. The new key itself arrives in `remote:state`,
+  // which the client sends first; this is the sentence, and the end of listening
+  // when the key was taken.
+  bridge.on("remote:keyResult", payload => {
+    if (!payload || typeof payload !== "object") return;
+    if (payload.ok === true) listen(false);
+    note(String(payload.text || ""), payload.ok === true ? "ok" : "error");
+  });
+
+  // `/tvkey` with no key named: the panel opens and listens, as if CHANGE had
+  // been pressed.
+  bridge.on("remote:chooseKey", () => {
+    if (state.open === true) startListening();
+  });
+
   bridge.ready();
   bridge.emit("remote:ready", {});
 
@@ -529,6 +696,8 @@
       count: 2,
       defaultReach: 15,
       key: "F5",
+      keyName: "f5",
+      keyEditable: true,
       nearest: {
         id: 7, label: "Cinema screen, 150 ft", record: "cinema.150ft",
         distance: 30.6, reach: 38, materialised: true,

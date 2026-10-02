@@ -161,8 +161,15 @@
     </section>
 
     <p class="note" id="note" role="status" aria-live="polite"></p>
+    <!-- The key that opens this panel is the player's to choose: CHANGE takes the
+         next key pressed (the client checks it and keeps it per server), and the
+         same is `/tvkey <key>` in chat. The button is hidden on a client that
+         cannot read the keyboard, where the key is the engine's binding and
+         nothing here could move it. -->
     <footer class="keys">
       <span class="keycap" id="key-open">F5</span><span>close &amp; open</span>
+      <button class="keybind" id="key-change" type="button"
+              title="Choose the key that opens this panel (or type /tvkey in chat)">CHANGE</button>
       <span class="keycap">ESC</span><span>close</span>
       <span class="keycap">CTRL+V</span><span>paste a link</span>
       <span class="keycap">M</span><span>mute</span>

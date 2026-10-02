@@ -31,17 +31,22 @@ open77_media/          the resource -- this is the television
                          and its control strip, under the picture while someone is
                          using the screen (F8)
   web/remote.html|css|js  the remote: the panel a player opens at a set, toggled
-                         with F5 while one is in reach. It spawns from the
-                         catalogue, sets the source URL, plays, mutes, moves and
-                         turns the cabinet, opens and closes the curtain, fires
-                         the reveal, and removes a set. The key is configurable;
+                         with F5 (or `/tv`) while one is in reach. It spawns from
+                         the catalogue, sets the source URL, plays, mutes, moves
+                         and turns the cabinet, opens and closes the curtain,
+                         fires the reveal, and removes a set. The key is each
+                         player's own (the panel's CHANGE button, or `/tvkey`);
                          the panel owns no state and every button is a request
                          the server answers
+  shared/keys.lua        which keys the panel may be opened with and what each is
+                         called; the client keeps a player's key per server and
+                         the server answers `/tv` and `/tvkey` from it
   shared/clock.lua       where in its programme a set is: the server owns the
                          playhead, so two screens showing one link stay together
                          and a set that joins late opens where the others are
-  tests/                 six suites: records (1675 assertions), placement (132),
-                         clock (30), adblock (351), linked (19), client (148)
+  tests/                 seven suites: records (1675 assertions), placement (132),
+                         clock (30), adblock (351), keys (65), linked (19),
+                         client (251)
 native/
   MediaScreens.hpp|cpp   the host-side module: bind a surface to a prop, project
                          its screen quad, publish overlay items, line-of-sight test
@@ -120,10 +125,10 @@ watch-party/             Netflix watch parties: everyone plays the film in their
                          the Edge/Chrome extension, its store listing and its
                          privacy policy (watch-party/README.md)
 tools/
-  suite-runner/          check the manifest declares every module, run the six
+  suite-runner/          check the manifest declares every module, run the seven
                          Lua suites and maintain the vendored snapshot, with no
                          Lua interpreter (KeraLua)
-  run-suite.py           the same six suites through a real lua5.4
+  run-suite.py           the same seven suites through a real lua5.4
   extract-tv-patches.py  regenerate patches/ from a checkout
 ```
 
@@ -379,6 +384,13 @@ each one is in the suites as well as in the code:
   sites, is **per runtime** (the client and the server surfaces differ, and the
   bug it exists for was a name used on the side that does not have it), and
   asserts on its own output so a parser that stops matching fails loudly.
+* **Each player's own TV key** (`shared/keys.lua`). F5 opened the panel and
+  nothing could move it: the engine's key mapping takes its default at
+  registration. The client now reads the key itself, a player moves it with the
+  panel's CHANGE button or `/tvkey <key>` (`/tvkey reset` puts F5 back), the
+  choice is kept per server, and `/tv` opens the panel with no key at all. A key
+  the host cannot read, or one the game already uses for walking, is refused by
+  name. This ran on XBUNIVERSE staging before it was in this repository.
 * **Two screens showing one link play in step** (`shared/clock.lua`). Every set
   plays its link in its own browser, and a player starts at zero the moment it is
   built, so two cinema screens on one film ran visibly apart and a set that came
@@ -466,7 +478,7 @@ dotnet run --project tools/suite-runner -- --from /path/to/open77-base
 
 No Lua interpreter is needed: `tools/suite-runner` carries Lua 5.4 through
 KeraLua, the binding the monorepo's `Open77.Server.Tests` already uses, so the
-six suites run anywhere `dotnet` does — and CI runs them on Linux and Windows
+seven suites run anywhere `dotnet` does — and CI runs them on Linux and Windows
 (`.github/workflows/ci.yml`), which is the first time these suites have been a
 gate rather than something somebody remembers to run.
 
@@ -533,7 +545,9 @@ Two things bite during install, both written up in that document:
    automatic rescan is opt-in, so either restart the server or run the console
    command `refresh` — and until that happens the server looks healthy while the
    resource simply is not there.
-2. The panel is reached with **F5** while a set is in reach, and it is served by
+2. The panel is reached with **F5** while a set is in reach (each player can move
+   that key with the panel's CHANGE button or `/tvkey <key>`, and `/tv` opens it
+   with no key at all), and it is served by
    this resource (`web/remote.html`), not by a menu tab. It used to live in the
    **`freeroam`** resource's menu; that entry is gone, so `freeroam` no longer has
    to be current for a set to be controllable. What F5 needs is the client host

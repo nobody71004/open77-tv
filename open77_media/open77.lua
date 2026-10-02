@@ -21,12 +21,18 @@ reload_policy "local"
 -- succeed -- and lets the prop move without the screen caring.
 -- USING IT -- the three things a player has to know, and where each is decided:
 --
---   * THE KEY. F5 opens the panel at the nearest set. It is registered with the
---     engine (`RegisterKeyMapping`, permission `input.actions`), so it appears in
---     the pause menu with the game's own keys, a rebind is remembered per machine,
---     and it is configurable without a resource edit. Nothing in this resource
---     prints the key as a literal: the panel footer and every idle screen ask
---     `Open77.input.keyFor` for the EFFECTIVE binding, so a player who moved it is
+--   * THE KEY. F5 opens the panel at the nearest set, and every player can move
+--     it: the panel's CHANGE button takes the next key pressed, `/tvkey <key>`
+--     names one (`/tvkey reset` puts F5 back), and `/tv` opens the panel with no
+--     key at all. The choice is the player's and is kept per server in
+--     `Open77.kvp`, so it survives a restart of the game. The client reads the key
+--     itself with `Open77.input.isDown` (permission `input.actions`), the way
+--     every other resource on this runtime reads its keys, because the engine's
+--     `RegisterKeyMapping` takes a default at registration and cannot be moved from
+--     Lua; it is kept as the fallback for a client that cannot read the keyboard.
+--     Which keys are allowed, and what each is called, is `shared/keys.lua`.
+--     Nothing in this resource prints the key as a literal: the panel footer and
+--     every idle screen are told the EFFECTIVE key, so a player who moved it is
 --     told the key they actually have.
 --
 --   * THE REACH. A set is drivable from within ITS OWN reach -- a per-record number
@@ -74,13 +80,17 @@ shared_script "shared/records.lua"
 -- declares. Adding a shared module here means adding a line here.
 shared_script "shared/placement.lua"
 
+-- The keys the panel may be opened with and their names. Shared because the
+-- client reads and stores the key while the server answers `/tvkey`, and a
+-- refusal the chat can draw has to come from the server.
+shared_script "shared/keys.lua"
+
 -- Where in its programme a set is: the arithmetic behind "two screens showing one
 -- link stay together". Shared because the server owns the playhead -- it already
 -- owns `url` and `paused` -- and the suites pin the part that is easy to get
 -- wrong and impossible to see in a log: a resume that restarts the film, a pause
 -- that freezes zero, a new link that opens in the middle of the old one.
 shared_script "shared/clock.lua"
-
 
 -- Listed explicitly, one per line, never globbed. Manifest order IS load order
 -- within each group, so these land exactly as written:
@@ -112,7 +122,8 @@ web_files { "web/**" }
 -- and whose client suite does not is one where the half that chooses which screens
 -- to materialise is the half nobody can run outside the game.
 files { "tests/records_test.lua", "tests/placement_test.lua", "tests/client_test.lua",
-        "tests/adblock_test.lua", "tests/clock_test.lua" }
+        "tests/adblock_test.lua", "tests/keys_test.lua",
+        "tests/clock_test.lua" }
 
 permissions {
     -- Spawn/remove/URL requests from the panel, and the state pushes back down.
@@ -134,10 +145,11 @@ permissions {
     -- them.
     "world.effects",
 
-    -- `RegisterKeyMapping` / `Open77.input.keyFor`: the panel's toggle and the name
--- of the key it is bound to. One capability for both, because a resource that may
--- register a key is a resource that may ask what it ended up bound to -- the
--- alternative is a hint naming a key the player rebound away from.
+    -- `Open77.input.isDown` / `.isCaptured`: the panel's key, read by the client
+    -- and movable by the player (see THE KEY above). The same capability covers
+    -- `RegisterKeyMapping` and `Open77.input.keyFor`, the fallback for a client
+    -- that cannot read the keyboard -- a resource that may read a key is a
+    -- resource that may register one and ask what it ended up bound to.
     "input.actions",
 
     -- `Open77.webui.blocklist` / `.blocklistState`: the operator's ad-blocklist

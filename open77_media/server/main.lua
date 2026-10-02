@@ -1177,6 +1177,60 @@ command("media.list", "media.list", true, function(source, args, raw)
 end)
 
 -- =============================================================================
+-- THE PANEL'S OWN COMMANDS, FOR EVERY PLAYER
+-- =============================================================================
+-- `/tv` opens and closes the panel -- the toggle the key is, for a player who has
+-- not learned the key yet or has put it somewhere they cannot reach. `/tvkey
+-- <key>` moves the key, `/tvkey reset` puts F5 back, and `/tvkey` alone opens the
+-- panel on its key chooser. Neither is restricted, and neither needs to be: both
+-- act on the caller's own panel and the caller's own key, which their client
+-- keeps, and nothing here touches a set.
+--
+-- A typed command reaches the server whatever the client could have done with
+-- it (the chat sends every `/` line to the host's dispatcher, and a client-side
+-- `RegisterCommand` is reachable only from the developer terminal), which is why
+-- these live here and send the one client its answer.
+
+---Answers the player who typed a command, and nobody else.
+---
+---Two channels, because which one is drawn is the chat's business, not this
+---resource's: `open77:command:result` is the host's own, and the chat on this
+---runtime draws only its refusals; an accepted answer is drawn from
+---`opx:net:runtime:commandAnswer`, where `opx_infinity` puts its own. A server
+---without that resource simply has no listener for the second.
+local function tell(source, raw, success, text)
+    TriggerClientEvent("open77:command:result", source, raw or "", success == true, text)
+    if success == true then
+        TriggerClientEvent("opx:net:runtime:commandAnswer", source, raw or "", "success", text, false)
+    end
+end
+
+local function playerOnly(source)
+    if source == nil or source <= 0 then
+        error("the panel belongs to a player; type this in game", 0)
+    end
+end
+
+command("tv", "tv", false, function(source, args, raw)
+    playerOnly(source)
+    TriggerClientEvent("open77:media:remote:toggle", source)
+end)
+
+command("tvkey", "tvkey [key|reset]", false, function(source, args, raw)
+    playerOnly(source)
+    -- Joined without spaces, so `/tvkey page up` is the Page Up key.
+    local wanted = table.concat(args or {}, "")
+    if wanted == "" then
+        TriggerClientEvent("open77:media:remote:key", source, { choose = true })
+        return
+    end
+    local key, why = Open77MediaKeys.Parse(wanted)
+    if key == nil then return tell(source, raw, false, why) end
+    TriggerClientEvent("open77:media:remote:key", source, { key = key })
+    tell(source, raw, true, "The TV menu key is now " .. Open77MediaKeys.Label(key))
+end)
+
+-- =============================================================================
 -- CLIENT PROTOCOL
 -- =============================================================================
 

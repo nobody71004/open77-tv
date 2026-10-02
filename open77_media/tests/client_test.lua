@@ -58,6 +58,34 @@ local clears = 0
 local mappings = {}       -- [id] = the key mapping the client registered
 local vfxPlays = {}       -- every Open77.vfx.play, in order
 local sfxPlays = {}       -- every Open77.sfx.play, in order
+local triggered = {}      -- every local TriggerEvent, as { name, payload }
+
+-- The keyboard, as `Open77.input` reports it: which keys are down, and whether
+-- another surface has it. `isDown` refuses what the host's own allowlist refuses
+-- (`ResourceHost.cpp`, `ValidActionKey`), restated here the way the vector rule
+-- is below, so a client that polled a name the host will not read would fail
+-- here the way it would fail in the game: silently, as a key that never fires.
+local keysDown = {}
+local captured = false
+local hostKeys = {
+    space = true, enter = true, ["return"] = true, tab = true, shift = true,
+    ctrl = true, control = true, alt = true, capslock = true, backspace = true,
+    insert = true, delete = true, home = true, ["end"] = true,
+    pageup = true, pagedown = true, up = true, down = true, left = true, right = true,
+}
+for index = 1, 12 do hostKeys["f" .. index] = true end
+for byte = string.byte("a"), string.byte("z") do hostKeys[string.char(byte)] = true end
+for byte = string.byte("0"), string.byte("9") do hostKeys[string.char(byte)] = true end
+
+-- The player's store, as `Open77.kvp` behaves: nothing until the session is up
+-- (`server_session_unavailable`, which the client must retry rather than cache),
+-- then a plain table per server. `kvpWrites` is every write, in order.
+local kvpReady = false
+local kvpStore = {}
+local kvpWrites = {}
+-- A store that answers, and refuses: a reason other than the session not being
+-- up yet, which the client must take as an answer rather than retry for ever.
+local kvpRefusal = nil
 
 local function NewPage(options)
     local page = {
@@ -75,7 +103,15 @@ local function NewPage(options)
     -- keyboard is the difference between a panel a player can use and one they can
     -- only look at, and it is invisible from every other end: the page renders,
     -- the state arrives, and the buttons do nothing.
-    function page:setFocus(...) self.focus = { ... }; self.focusCount = self.focusCount + 1 end
+    --
+    -- It answers as the native does: `true`, or `false` and a reason when the host
+    -- will not hand the surface the keyboard (`refuseFocus` names one here).
+    function page:setFocus(...)
+        self.focus = { ... }
+        self.focusCount = self.focusCount + 1
+        if self.refuseFocus ~= nil then return false, self.refuseFocus end
+        return true
+    end
     pages[#pages + 1] = page
     return page
 end
@@ -168,11 +204,42 @@ _G.Open77 = {
         state = function() return { yaw = 45.0 } end,
     },
     input = {
-        -- The registry lookup the panel's key name comes from, reading the same
+        -- The panel's key is READ, not registered: the level of one key, and
+        -- whether a surface has the keyboard. A LEVEL read, like the native's, so
+        -- the edge -- one press, one toggle -- is the client's to compute.
+        isDown = function(key)
+            if not hostKeys[key] then return nil, "unsupported_action_key" end
+            return keysDown[key] == true, nil
+        end,
+        isCaptured = function() return captured end,
+        -- The registry lookup the fallback's key name comes from, reading the same
         -- table `RegisterKeyMapping` writes: a rebind has to rename the hint, and a
         -- stub returning a literal would pass while the game named a key the
         -- player had moved.
         keyFor = function(id) return mappings[id] ~= nil and mappings[id].key or nil end,
+    },
+    kvp = {
+        get = function(key, default)
+            if not kvpReady then return nil, "server_session_unavailable" end
+            if kvpRefusal ~= nil then return nil, kvpRefusal end
+            local value = kvpStore[key]
+            if value == nil then return default end
+            return value
+        end,
+        set = function(key, value)
+            if not kvpReady then return false, "server_session_unavailable" end
+            if kvpRefusal ~= nil then return false, kvpRefusal end
+            kvpStore[key] = value
+            kvpWrites[#kvpWrites + 1] = { "set", key, value }
+            return true
+        end,
+        delete = function(key)
+            if not kvpReady then return false, "server_session_unavailable" end
+            if kvpRefusal ~= nil then return false, kvpRefusal end
+            kvpStore[key] = nil
+            kvpWrites[#kvpWrites + 1] = { "delete", key }
+            return true
+        end,
     },
     -- The reveal's world effects and its two race sounds. Recorded rather than
     -- simulated: what this suite has to be able to answer is WHICH effect was
@@ -206,7 +273,7 @@ _G.RegisterKeyMapping = function(id, description, key, handler)
     mappings[id] = { id = id, description = description, key = key, handler = handler }
     return true, key
 end
-_G.TriggerEvent = function() end
+_G.TriggerEvent = function(name, payload) triggered[#triggered + 1] = { name, payload } end
 _G.TriggerServerEvent = function() end
 _G.GetCurrentResourceName = function() return "open77_media" end
 _G.GetResourceState = function() return "started" end
@@ -227,6 +294,12 @@ end
 -- the same way (`DIRECTOR_PATH`), so this is the convention the suites already
 -- follow -- and it is what lets the same file be run by both callers.
 local repoRoot = type(OPEN77_REPO_ROOT) == "string" and OPEN77_REPO_ROOT or "."
+-- The key table is a SHARED script, so in the game it is loaded before the client
+-- half; a runner that has not preloaded it gets it here, in the same order.
+if Open77MediaKeys == nil then
+    local keysPath = repoRoot .. "/resources/system/open77_media/shared/keys.lua"
+    assert(loadfile(keysPath), keysPath .. " not found")()
+end
 local clientPath = repoRoot .. "/resources/system/open77_media/client/main.lua"
 local client = assert(loadfile(clientPath), clientPath .. " not found")
 client()
@@ -249,12 +322,15 @@ local quad = {
 }
 
 handlers["onClientResourceStart"]("open77_media")
--- Two threads, and both are deliberate: the selection thread (which screens
--- exist) and the blocklist receipt thread (whether the browser host took the
--- operator's rules). The second is cheap by construction -- it exists only
--- between a push and its answer -- but it is the one that turns "we sent it"
--- into "it is in force", so it is pinned here.
-check(#threads == 2, "the client starts a selection thread and a receipt thread")
+-- Three threads, and each is deliberate: the selection thread (which screens
+-- exist), the blocklist receipt thread (whether the browser host took the
+-- operator's rules) and the panel's key. The second is cheap by construction --
+-- it exists only between a push and its answer -- but it is the one that turns
+-- "we sent it" into "it is in force". The third is the only thing here that
+-- looks at the keyboard, and it is started LAST, so the first two keep their
+-- places in `threads`.
+check(#threads == 3, "the client starts a selection thread, a receipt thread and a key thread")
+local keyThread = threads[3]
 check(#tvPages() == 0, "nothing is materialised before the server says there is a set")
 
 -- Five metres east of the stubbed body (100, 200, 10): inside every radius the
@@ -673,11 +749,38 @@ check(panel ~= nil and panel.options.layer == "menu",
 check(panel ~= nil and panel.options.transparent == true,
     "and transparent, so the game stays visible around it")
 
-check(mappings["media.remote"] ~= nil, "the panel registers a toggle key")
-check(mappings["media.remote"] ~= nil and type(mappings["media.remote"].handler) == "function",
-    "the registration carries the toggle")
-check(mappings["media.remote"] ~= nil and mappings["media.remote"].key == "F5",
-    "and names the default key the idle hint falls back to")
+-- The key. READ, on a client that can read the keyboard, and not registered as
+-- well: a key that was both would toggle twice per press -- open, then shut.
+check(mappings["media.remote"] == nil,
+    "a client that can read the keyboard reads the panel's key rather than registering it too")
+
+---One look by the key thread. `Wait` ends the pass, exactly as it ends a pass of
+---the selection thread.
+local function poll()
+    local okPoll, why = pcall(keyThread)
+    check(not okPoll and why == "selection_pass_done", "the key thread looked without error")
+end
+
+---A press as a hand makes one: up for a look (whatever came before has let go),
+---down for one, up again.
+local function press(key)
+    keysDown[key] = nil
+    poll()
+    keysDown[key] = true
+    poll()
+    keysDown[key] = nil
+    poll()
+end
+
+-- A key already down when the resource starts is the key that started it -- the
+-- Enter that sent a chat command, say -- and not a press: it has to come up once.
+keysDown.f5 = true
+poll()
+poll()
+check(panel ~= nil and (lastSent(panel, "remote:state") == nil or lastSent(panel, "remote:state").open ~= true),
+    "a key held since the resource started opens nothing")
+keysDown.f5 = nil
+poll()
 
 -- From an empty world, so what the panel is told here is this section's doing and
 -- not a set another section left standing.
@@ -700,9 +803,18 @@ end
 handlers["open77:media:snapshot"]({ spawn(20, "prop-20", 5.0) })
 pcall(threads[1])
 
-check(mappings["media.remote"].handler() == true, "the toggle opens the panel")
+-- Pressed, not held: down for one look and one toggle, however many looks it is
+-- held for.
+keysDown.f5 = true
+poll()
+poll()
+poll()
+keysDown.f5 = nil
+poll()
 local opened = panel ~= nil and lastSent(panel, "remote:state") or nil
-check(opened ~= nil and opened.open == true, "the panel is told it is open")
+check(opened ~= nil and opened.open == true, "F5 opens the panel, and is the panel's key before anyone moves it")
+check(panel ~= nil and panel.focusCount == 1,
+    "once: a key held for three looks is one press, not three toggles")
 check(opened ~= nil and opened.target ~= nil and opened.target.id == 20,
     "and is pointed at the nearest set, by the client and not by the page")
 check(opened ~= nil and opened.target.distance == 5.0,
@@ -715,6 +827,8 @@ check(opened ~= nil and opened.target.reach == 15.0,
     "and this set's own reach, which for a television is the floor")
 check(opened ~= nil and opened.key == "F5",
     "and the effective key, so the panel's footer names the one the player has")
+check(opened ~= nil and opened.keyName == "f5" and opened.keyEditable == true,
+    "and the host's name for it, so the page can close on it, and that CHANGE may move it")
 check(panel ~= nil and panel.focusCount == 1 and panel.focus[1] == true
     and panel.focus[2] == true,
     "opening it takes the pointer AND the keyboard, or nothing on it can be clicked")
@@ -857,30 +971,209 @@ handlers["open77:media:snapshot"]({ spawn(21, "prop-21", 4.0) })
 pcall(threads[1])
 local hints = 0
 for _, line in ipairs(printed) do
-    if string.find(line, "is in range: press " .. mappings["media.remote"].key, 1, true) then hints = hints + 1 end
+    if string.find(line, "is in range: press F5", 1, true) then hints = hints + 1 end
 end
 check(hints == 1, "entering a set's range prints the key once")
 pcall(threads[1])
 hints = 0
 for _, line in ipairs(printed) do
-    if string.find(line, "is in range: press " .. mappings["media.remote"].key, 1, true) then hints = hints + 1 end
+    if string.find(line, "is in range: press F5", 1, true) then hints = hints + 1 end
 end
 check(hints == 1, "and not once a second while standing there")
 _G.print = realPrintPanel
 
--- The key is in the engine's registry, so a rebind renames it everywhere it is
--- signposted: the panel and the idle screen of the set now on the wall. Asserted
--- on the set that exists NOW -- the earlier sections' pages were withdrawn, and a
--- refresh deliberately skips a set that is not materialised.
-mappings["media.remote"].key = "F7"
-handlers["open77:keybinds:changed"]()
+-- =============================================================================
+-- The key is the player's
+-- -----------------------------------------------------------------------------
+-- "Let players set their own key": CHANGE on the panel, `/tvkey <key>` and
+-- `/tvkey reset`, kept per server in `Open77.kvp`. Each assertion below is a way
+-- that feature fails without saying so: a new key that the hints do not name; an
+-- old key that still works, or a new one that does not; a key the panel cannot
+-- take, stored and then never fired; and a choice made before the store could
+-- answer, overwritten by the stale value the store then returns.
+--
+-- Asserted on the set that exists NOW -- the earlier sections' pages were
+-- withdrawn, and a refresh deliberately skips a set that is not materialised.
+-- =============================================================================
+
+local function panelState()
+    return panel ~= nil and lastSent(panel, "remote:state") or {}
+end
+
 local live = tvPages()
 live = live[#live]
+
+-- CHANGE, before the store is up: the key moves at once, and waits to be written.
+local writesBefore = #kvpWrites
+panel.events["remote:action"]({ action = "setKey", key = "g" })
+local answer = lastSent(panel, "remote:keyResult")
+check(answer ~= nil and answer.ok == true and string.find(answer.text, "G", 1, true) ~= nil,
+    "CHANGE takes a key, and the page is told which, in the player's words")
 check(live ~= nil and lastSent(live, "media:state") ~= nil
-    and lastSent(live, "media:state").key == "F7",
-    "a rebind reaches the idle screen's hint")
-check(panel ~= nil and lastSent(panel, "remote:state") ~= nil,
-    "and the panel is told the state again, because the key is part of it")
+    and lastSent(live, "media:state").key == "G",
+    "the new key reaches the idle screen's hint")
+check(panelState().key == "G" and panelState().keyName == "g",
+    "and the panel's footer, and the name the page closes the panel on")
+check(#kvpWrites == writesBefore, "a store that is not up yet is not written to")
+
+press("f5")
+check(panelState().open == false, "the old key no longer opens the panel")
+press("g")
+check(panelState().open == true, "the new one does")
+
+-- The store comes up holding an older choice. The one made this session is the
+-- newer word: it is written, and the stale value does not take its place.
+kvpStore["media.remote.key"] = "h"
+kvpReady = true
+handlers["open77:worldReady"]()
+check(kvpStore["media.remote.key"] == "g",
+    "a key chosen before the store could answer is written once it can")
+check(panelState().key == "G", "and the stale stored key does not replace it")
+
+-- Refused, with the reason, and nothing moves.
+panel.events["remote:action"]({ action = "setKey", key = "w" })
+answer = lastSent(panel, "remote:keyResult")
+check(answer ~= nil and answer.ok == false and string.find(answer.text, "W walks forward", 1, true) ~= nil,
+    "a movement key is refused, and the player is told why")
+panel.events["remote:action"]({ action = "setKey", key = "space" })
+check(lastSent(panel, "remote:keyResult").ok == false,
+    "a key the host could read but the panel does not take is refused")
+panel.events["remote:action"]({ action = "setKey", key = "numpad5" })
+check(lastSent(panel, "remote:keyResult").ok == false, "and so is one the host could not read")
+panel.events["remote:action"]({ action = "setKey" })
+check(lastSent(panel, "remote:keyResult").ok == false, "and so is no key at all")
+check(panelState().keyName == "g" and kvpStore["media.remote.key"] == "g",
+    "a refusal moves nothing and writes nothing")
+
+-- While the page has the keyboard this half cannot see the key, so the page closes
+-- the panel on it -- and the same press, still down when the page lets go of the
+-- keyboard, must not reopen the panel from here.
+captured = true
+keysDown.g = true
+poll()
+panel.events["remote:action"]({ action = "close" })
+captured = false
+poll()
+poll()
+check(panelState().open == false,
+    "a key that closed the panel through its page does not reopen it on the way up")
+keysDown.g = nil
+poll()
+
+-- ... and on a host that does NOT count the panel's own page as having the
+-- keyboard, the page's close can land before this half has seen the key at all:
+-- the same press, seen here a moment later, is still the press that closed it.
+press("g")
+check(panelState().open == true, "the panel is open again")
+panel.events["remote:action"]({ action = "close" })
+keysDown.g = true
+poll()
+check(panelState().open == false,
+    "a press the page already closed the panel on does not reopen it from here")
+keysDown.g = nil
+poll()
+
+-- A key pressed while another surface has the keyboard -- a letter typed into the
+-- chat -- is not a press.
+captured = true
+keysDown.g = true
+poll()
+keysDown.g = nil
+poll()
+captured = false
+poll()
+check(panelState().open == false, "a key typed into another surface opens nothing")
+
+-- While the open panel has the keyboard, the key is the PAGE's: it closes the
+-- panel itself, and it knows what this half cannot -- whether the caret is in a
+-- field, where G is a letter. So the key does nothing from here while it is open.
+press("g")
+check(panelState().open == true, "the panel is open")
+press("g")
+check(panelState().open == true,
+    "a panel that has the keyboard is not closed from here: its page does that, and knows when G is a letter")
+panel.events["remote:action"]({ action = "close" })
+
+-- ... and a panel the host refused the keyboard to cannot see the key at all, so
+-- here is where it is closed.
+panel.refuseFocus = "focus_denied"
+press("g")
+check(panelState().open == true, "a panel opens even when the host will not give it the keyboard")
+press("g")
+check(panelState().open == false, "and that panel is closed by its key from here")
+panel.refuseFocus = nil
+
+-- The fastest hand: the panel opened with no key (`/tv`), and the page closing it
+-- on G before this half has looked at the keyboard even once. Every open and
+-- close latches the key, so that same G, seen here a moment later, is still the
+-- press that closed it.
+poll()
+handlers["open77:media:remote:toggle"]()
+keysDown.g = true
+panel.events["remote:action"]({ action = "close" })
+poll()
+check(panelState().open == false,
+    "a press the page closed the panel on before this half looked does not reopen it")
+keysDown.g = nil
+poll()
+
+-- `/tv`, and Escape: the host swallows Escape and raises the pause key instead.
+handlers["open77:media:remote:toggle"]()
+check(panelState().open == true, "/tv opens the panel without a key")
+handlers["open77:pauseKey"]()
+check(panelState().open == false, "the pause key closes it")
+handlers["open77:pauseKey"]()
+check(panelState().open == false, "and does not open a panel that is shut")
+
+-- `/tvkey` alone opens the panel listening for a key.
+handlers["open77:media:remote:key"]({ choose = true })
+check(panelState().open == true and lastSent(panel, "remote:chooseKey") ~= nil,
+    "/tvkey with no key opens the panel on its chooser")
+panel.events["remote:action"]({ action = "close" })
+
+-- `/tvkey reset`: the server sends the default, and the store FORGETS rather than
+-- storing F5, so a player who reset follows the default wherever it goes.
+handlers["open77:media:remote:key"]({ key = "f5" })
+check(kvpStore["media.remote.key"] == nil and kvpWrites[#kvpWrites][1] == "delete",
+    "resetting forgets the stored key")
+check(panelState().key == "F5", "and F5 is the key again")
+press("f5")
+check(panelState().open == true, "and it opens the panel")
+panel.events["remote:action"]({ action = "close" })
+
+-- The store is per server: a session that ends takes its key with it, and the key
+-- thread reads the next session's own.
+kvpStore["media.remote.key"] = "k"
+handlers["open77:session:ended"]("server_disconnected")
+check(panelState().key == "F5", "a session that ends puts the default back until the next one answers")
+poll()
+check(panelState().key == "K", "the key thread reads the stored key once a session can answer")
+press("k")
+check(panelState().open == true, "and the stored key is the one that works")
+panel.events["remote:action"]({ action = "close" })
+
+-- A stored value the panel does not take is deleted, not polled for ever.
+kvpStore["media.remote.key"] = "space"
+handlers["open77:session:ended"]("server_disconnected")
+poll()
+check(kvpStore["media.remote.key"] == nil, "a stored key the panel does not take is deleted")
+check(panelState().key == "F5", "and the default stands")
+
+-- A store that refuses -- for a reason other than the session not being up -- is
+-- an answer: the key works for the session, and the player is told it will not
+-- be kept, rather than the choice waiting for ever on a read that never comes.
+kvpRefusal = "permission_denied:kvp"
+handlers["open77:session:ended"]("server_disconnected")
+poll()
+panel.events["remote:action"]({ action = "setKey", key = "j" })
+answer = lastSent(panel, "remote:keyResult")
+check(answer ~= nil and answer.ok == true and string.find(answer.text, "could not be saved", 1, true) ~= nil,
+    "a key the store refuses to keep still moves, and the player is told it lasts the session")
+press("j")
+check(panelState().open == true, "and it works for that session")
+panel.events["remote:action"]({ action = "close" })
+kvpRefusal = nil
+handlers["open77:media:remote:key"]({ key = "f5" })
 
 -- =============================================================================
 -- A panel must be able to drive the set the server just spawned
@@ -1230,4 +1523,97 @@ check(#effectsNamed(tvPlays, "race.flare.smoke") == 2 and #tvPlays == 3,
     "and its two columns -- three effects in total, exactly what it had before")
 
 _G.TriggerServerEvent = function() end
+
+-- =============================================================================
+-- A client that cannot read the keyboard
+-- -----------------------------------------------------------------------------
+-- The engine's registry is the fallback, and it has to be a working one: for a
+-- host that refuses `isDown` (`permission_denied:input.actions`), for a plugin
+-- older than `Open77.input.isDown`, and for a resource folder that arrived without
+-- `shared/keys.lua` -- updated by hand, one file at a time, which is how the
+-- server this was written for came to serve a panel page with no panel code
+-- behind it. Each still gets F5, from the registry, and says why in the log.
+-- =============================================================================
+
+---Loads the client half again, into fresh handlers and threads, and starts it.
+---@return table|nil the panel it created
+---@return table every line it printed
+local function restartClient()
+    for name in pairs(handlers) do handlers[name] = nil end
+    for index = #threads, 1, -1 do threads[index] = nil end
+    for id in pairs(mappings) do mappings[id] = nil end
+    local lines = {}
+    local realPrintRestart = _G.print
+    _G.print = function(...) lines[#lines + 1] = table.concat({ ... }, " ") end
+    local okStart, startError = pcall(function()
+        assert(loadfile(clientPath))()
+        handlers["onClientResourceStart"]("open77_media")
+    end)
+    _G.print = realPrintRestart
+    check(okStart, "the client half starts again: " .. tostring(startError))
+    local fresh = nil
+    for _, page in ipairs(pages) do
+        if page.options.entry == "web/remote.html" then fresh = page end
+    end
+    return fresh, lines
+end
+
+local function printedLine(lines, text)
+    for _, line in ipairs(lines) do
+        if string.find(line, text, 1, true) then return true end
+    end
+    return false
+end
+
+-- Refused by the host.
+local hostIsDown = Open77.input.isDown
+Open77.input.isDown = function() return nil, "permission_denied:input.actions" end
+local refusedPanel, refusedLines = restartClient()
+check(mappings["media.remote"] ~= nil and mappings["media.remote"].key == "F5",
+    "a client whose keyboard the host will not read registers F5 with the engine instead")
+check(#threads == 2, "and starts no key thread")
+check(printedLine(refusedLines, "permission_denied:input.actions"),
+    "and says why, in the host's own words")
+check(mappings["media.remote"] ~= nil and mappings["media.remote"].handler() == true,
+    "the registered key toggles the panel")
+if refusedPanel ~= nil then
+    local refusedState = lastSent(refusedPanel, "remote:state") or {}
+    check(refusedState.open == true and refusedState.key == "F5", "which names the registry's key")
+    check(refusedState.keyEditable == false and refusedState.keyName == nil,
+        "and offers no CHANGE: nothing here could move the registry's key")
+    refusedPanel.events["remote:action"]({ action = "setKey", key = "g" })
+    local refusedAnswer = lastSent(refusedPanel, "remote:keyResult")
+    check(refusedAnswer ~= nil and refusedAnswer.ok == false,
+        "a key chosen anyway is refused with the reason, not stored and never read")
+else
+    check(false, "the restarted client creates its panel")
+end
+triggered = {}
+handlers["open77:media:remote:key"]({ key = "g" })
+check(#triggered == 1 and triggered[1][1] == "chat:addMessage",
+    "and /tvkey is answered in the chat, because the server could not know")
+
+-- A keyboard that answers "not yet" rather than "never" is read all the same.
+Open77.input.isDown = function() return false, "input_not_ready" end
+local _, notYetLines = restartClient()
+check(mappings["media.remote"] == nil and #threads == 3,
+    "a keyboard that is not ready yet is still read here, not handed to the registry")
+check(printedLine(notYetLines, "input_not_ready"), "and the answer it gave is in the log")
+
+-- Older than the keyboard read.
+Open77.input.isDown = nil
+restartClient()
+check(mappings["media.remote"] ~= nil and mappings["media.remote"].key == "F5",
+    "a plugin with no keyboard read registers F5 as well")
+
+-- The folder arrived without its shared key table.
+Open77.input.isDown = hostIsDown
+local keysTable = Open77MediaKeys
+Open77MediaKeys = nil
+local _, bareLines = restartClient()
+check(mappings["media.remote"] ~= nil and mappings["media.remote"].key == "F5",
+    "a resource missing shared/keys.lua still opens its panel with F5")
+check(printedLine(bareLines, "shared/keys.lua"), "and names the file that did not arrive")
+Open77MediaKeys = keysTable
+
 _G.TestResult = { passed = passed, failed = #failures, failures = failures }

@@ -39,12 +39,14 @@ internal static class Program
 
     private const string Records = "open77_media/shared/records.lua";
     private const string Placement = "open77_media/shared/placement.lua";
+    private const string Keys = "open77_media/shared/keys.lua";
     private const string Clock = "open77_media/shared/clock.lua";
     private const string ServerConfig = "open77_media/server/config.lua";
     private const string ServerAdblock = "open77_media/server/adblock.lua";
 
     private const string RecordsSuite = "open77_media/tests/records_test.lua";
     private const string PlacementSuite = "open77_media/tests/placement_test.lua";
+    private const string KeysSuite = "open77_media/tests/keys_test.lua";
     private const string ClockSuite = "open77_media/tests/clock_test.lua";
     private const string AdblockSuite = "open77_media/tests/adblock_test.lua";
     private const string ClientSuite = "open77_media/tests/client_test.lua";
@@ -78,13 +80,14 @@ internal static class Program
     private const string AdminConfigPatch = "patches/resources__system__open77_admin__shared__config.lua.diff";
 
     /// <summary>
-    /// The six suites, in the order they are authored for.
+    /// The seven suites, in the order they are authored for.
     ///
     /// The catalogue suite comes first because it is the only one that needs the
     /// admin alias list. The ad-block suite is the server's half of a policy the
     /// browser host validates again, so it loads the two server modules it is the
-    /// grammar of. The linked suite loads the whole server half against stubs, so
-    /// it preloads everything that half reads as it loads, and it needs the staged
+    /// grammar of. The key suite and the linked suite each load the whole server
+    /// half against stubs, so they preload everything that half reads as it loads,
+    /// and they need the staged
     /// layout to find that half. The client suite comes LAST because it installs process-wide
     /// `Open77`, `CreateThread` and `Wait` stubs so the resource can be loaded
     /// outside the game; one state per suite already keeps those out of any other
@@ -97,7 +100,8 @@ internal static class Program
         new("open77_media / placement", [Placement], PlacementSuite, NeedsRepoRoot: false),
         new("open77_media / clock", [Clock], ClockSuite, NeedsRepoRoot: false),
         new("open77_media / adblock", [ServerConfig, ServerAdblock], AdblockSuite, NeedsRepoRoot: false),
-        new("open77_media / linked", [Records, Placement, Clock, ServerConfig, ServerAdblock], LinkedSuite, NeedsRepoRoot: true),
+        new("open77_media / keys", [Records, Placement, Keys, Clock, ServerConfig, ServerAdblock], KeysSuite, NeedsRepoRoot: true),
+        new("open77_media / linked", [Records, Placement, Keys, Clock, ServerConfig, ServerAdblock], LinkedSuite, NeedsRepoRoot: true),
         new("open77_media / client", [Records], ClientSuite, NeedsRepoRoot: true),
     ];
 
