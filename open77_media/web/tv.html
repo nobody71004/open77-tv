@@ -32,79 +32,95 @@
     pointer and the keyboard to this page. In the second case the pointer is not
     the OS cursor -- the client paints it onto the panel -- so the strip becomes
     clickable exactly when the strip appears.
+
+    The page is two pieces stacked top to bottom: the screen (everything that
+    is the picture) and, under it, the control strip. The strip used to lie
+    across the bottom of the picture, and the moment it appeared was the moment
+    someone was using the screen -- so it covered the part of the shared browser
+    they were trying to click or drag (2026-10-02). Now the picture gives up the
+    strip's height while the strip is shown and takes it back when it hides:
+    nothing is ever drawn over what is being used.
   -->
   <div id="stage" class="stage">
-    <!-- Idle: what a television shows when it has no URL. Deliberately a test
-         pattern rather than a blank rectangle, because "the screen is black"
-         is the same picture as "the composite is broken" and this project has
-         already spent a day on that difference once. If you can see bars, the
-         whole chain -- page, surface, projection, quad -- is working. -->
-    <div id="idle" class="idle">
-      <div class="bars">
-        <div class="bar b1"></div>
-        <div class="bar b2"></div>
-        <div class="bar b3"></div>
-        <div class="bar b4"></div>
-        <div class="bar b5"></div>
-        <div class="bar b6"></div>
-        <div class="bar b7"></div>
+    <!-- The screen: every layer of the picture, and nothing else. It fills
+         the stage while the control strip is hidden, and gives up the
+         strip's height while it is shown (see `.screen` in tv.css). -->
+    <div id="screen" class="screen">
+      <!-- Idle: what a television shows when it has no URL. Deliberately a test
+           pattern rather than a blank rectangle, because "the screen is black"
+           is the same picture as "the composite is broken" and this project has
+           already spent a day on that difference once. If you can see bars, the
+           whole chain -- page, surface, projection, quad -- is working. -->
+      <div id="idle" class="idle">
+        <div class="bars">
+          <div class="bar b1"></div>
+          <div class="bar b2"></div>
+          <div class="bar b3"></div>
+          <div class="bar b4"></div>
+          <div class="bar b5"></div>
+          <div class="bar b6"></div>
+          <div class="bar b7"></div>
+        </div>
+        <div class="idle-text">
+          <div id="idle-label" class="idle-label">Open77 television</div>
+          <!-- The key is named in the client, not here: `kControlKey` in
+               `Api/MediaScreens.cpp`. It is spelled out in this text because a
+               player looking at a dead television is the only person who needs to
+               learn it, and because a hint that says "press the screen key" is a
+               hint that teaches nobody. Rebinding means changing both. -->
+          <div id="idle-detail" class="idle-detail">no signal &mdash; open the television remote to put something on this screen, or press F8 to use it</div>
+        </div>
       </div>
-      <div class="idle-text">
-        <div id="idle-label" class="idle-label">Open77 television</div>
-        <!-- The key is named in the client, not here: `kControlKey` in
-             `Api/MediaScreens.cpp`. It is spelled out in this text because a
-             player looking at a dead television is the only person who needs to
-             learn it, and because a hint that says "press the screen key" is a
-             hint that teaches nobody. Rebinding means changing both. -->
-        <div id="idle-detail" class="idle-detail">no signal &mdash; open the television remote to put something on this screen, or press F8 to use it</div>
+
+      <!-- A direct media file: the page owns the element and therefore owns the
+           whole transport, which is why this is the only case with a working seek
+           bar. -->
+      <video id="media" class="media" playsinline preload="metadata"></video>
+
+      <!-- Anything else: an embedded player. A YouTube embed is driven through
+           postMessage (see tv.js), which needs no external script. Anything that
+           refuses to be framed cannot be framed, and says so. -->
+      <!-- A container rather than an iframe, because there are two ways to put a
+           player in it and only one of them can be driven directly: YouTube's own
+           IFrame API replaces the element it is handed with its own frame, and
+           that frame records the player's state (which is how a television can
+           report *why* a link is not playing instead of showing a black
+           rectangle and saying nothing). The plain-iframe path remains as the
+           fallback when the API script cannot be fetched, and tv.js owns both. -->
+      <div id="embed" class="media embed"></div>
+
+      <div id="notice" class="notice" hidden></div>
+
+      <!-- The curtain, and the reveal behind it.
+           A cinema in front of a film: a pelmet with the house name, two panels
+           with real folds, a gold trim and tie-backs, and the countdown drawn on
+           the curtain while it is still closed. `tv.js` owns the timeline -- the
+           panels part on `LINK START` -- and reports each beat so the client can
+           play the game's own race-start sound and colours on the same clock.
+           All of the presentation is in `tv.css`: this markup is only the pieces
+           the timeline moves.
+           The border is set from the record (see `applyBorder` in tv.js): a red
+           edge is what makes a 30 m panel read as a screen in the dark. -->
+      <div id="frame" class="frame"></div>
+      <div id="curtain" class="curtain" hidden>
+        <div class="curtain-pelmet">
+          <div class="curtain-house" id="curtain-house">OPEN77 CINEMA</div>
+        </div>
+        <div class="curtain-panel curtain-left"><div class="curtain-folds"></div><div class="curtain-swag"></div></div>
+        <div class="curtain-panel curtain-right"><div class="curtain-folds"></div><div class="curtain-swag"></div></div>
+        <div class="curtain-countdown" id="curtain-countdown"></div>
+        <!-- The panel's own half of the race start's colour burst, fired on the
+             `LINK START` beat. The world effects are the client's (`race.firework
+             .burst` and two `race.flare.smoke` columns, placed against this very
+             quad), so a client that could not place them still shows the burst on
+             the screen the audience is looking at. -->
+        <div class="curtain-flare" id="curtain-flare"></div>
       </div>
     </div>
 
-    <!-- A direct media file: the page owns the element and therefore owns the
-         whole transport, which is why this is the only case with a working seek
-         bar. -->
-    <video id="media" class="media" playsinline preload="metadata"></video>
-
-    <!-- Anything else: an embedded player. A YouTube embed is driven through
-         postMessage (see tv.js), which needs no external script. Anything that
-         refuses to be framed cannot be framed, and says so. -->
-    <!-- A container rather than an iframe, because there are two ways to put a
-         player in it and only one of them can be driven directly: YouTube's own
-         IFrame API replaces the element it is handed with its own frame, and
-         that frame records the player's state (which is how a television can
-         report *why* a link is not playing instead of showing a black
-         rectangle and saying nothing). The plain-iframe path remains as the
-         fallback when the API script cannot be fetched, and tv.js owns both. -->
-    <div id="embed" class="media embed"></div>
-
-    <div id="notice" class="notice" hidden></div>
-
-    <!-- The curtain, and the reveal behind it.
-         A cinema in front of a film: a pelmet with the house name, two panels
-         with real folds, a gold trim and tie-backs, and the countdown drawn on
-         the curtain while it is still closed. `tv.js` owns the timeline -- the
-         panels part on `LINK START` -- and reports each beat so the client can
-         play the game's own race-start sound and colours on the same clock.
-         All of the presentation is in `tv.css`: this markup is only the pieces
-         the timeline moves.
-         The border is set from the record (see `applyBorder` in tv.js): a red
-         edge is what makes a 30 m panel read as a screen in the dark. -->
-    <div id="frame" class="frame"></div>
-    <div id="curtain" class="curtain" hidden>
-      <div class="curtain-pelmet">
-        <div class="curtain-house" id="curtain-house">OPEN77 CINEMA</div>
-      </div>
-      <div class="curtain-panel curtain-left"><div class="curtain-folds"></div><div class="curtain-swag"></div></div>
-      <div class="curtain-panel curtain-right"><div class="curtain-folds"></div><div class="curtain-swag"></div></div>
-      <div class="curtain-countdown" id="curtain-countdown"></div>
-      <!-- The panel's own half of the race start's colour burst, fired on the
-           `LINK START` beat. The world effects are the client's (`race.firework
-           .burst` and two `race.flare.smoke` columns, placed against this very
-           quad), so a client that could not place them still shows the burst on
-           the screen the audience is looking at. -->
-      <div class="curtain-flare" id="curtain-flare"></div>
-    </div>
-
+    <!-- The control strip, under the screen and never over it. One row on a
+         wide screen; on a narrow one its three groups wrap onto more
+         rows, and the picture gives up that much more height. -->
     <div id="controls" class="controls" hidden>
       <div id="transport" class="transport">
         <button id="play" class="button" type="button" title="Play or pause (space)">&#10074;&#10074;</button>

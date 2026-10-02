@@ -12,7 +12,9 @@
 // browser's own account of its stream (browser_ice, from the image's
 // open77-ice.js), telling the player when the picture cannot come; and its
 // sound follows the television's volume and mute (the image's open77-volume.js,
-// run here for real in a stand-in client page).
+// run here for real in a stand-in client page). And the control strip sits under
+// the picture, never over it: the shared browser's frame ends where the strip
+// begins, on wide screens and narrow ones.
 //
 //   npm i -D playwright && npx playwright install chromium
 //   node tests/tv-page/run.mjs [web dir]          (default: open77_media/web)
@@ -348,6 +350,105 @@ await page.evaluate(() => { window.__all = []; });
 await setState({ ...base_state, url: "" });
 await page.waitForTimeout(300);
 check((await iceLines()).length === 0, "nothing is logged once the shared browser is gone");
+
+// 26. The control strip is under the picture, never over it (2026-10-02: lying
+// across the bottom of the shared browser it covered what the player was trying
+// to click). Shown, the screen gives up the strip's height and the shared
+// browser's frame ends where the strip begins; hidden, the picture is the whole
+// surface again. Focus is played by the test: the strip follows document.hasFocus().
+const focusOn = (on) => page.evaluate((on) => {
+  document.hasFocus = () => on;
+  window.dispatchEvent(new Event(on ? "focus" : "blur"));
+}, on);
+const layout = () => page.evaluate(() => {
+  const box = (el) => {
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    return { top: r.top, bottom: r.bottom, left: r.left, right: r.right, width: r.width, height: r.height };
+  };
+  const controls = document.getElementById("controls");
+  const groups = [...controls.children].filter((c) => getComputedStyle(c).display !== "none");
+  const at = (x, y) => {
+    const el = document.elementFromPoint(x, y);
+    return el ? (el.id || el.tagName.toLowerCase()) : null;
+  };
+  const strip = box(controls);
+  const go = box(document.getElementById("go"));
+  return {
+    vw: innerWidth, vh: innerHeight, hidden: controls.hidden,
+    // A page from before the screen existed is measured by its stage.
+    strip, screen: box(document.getElementById("screen") || document.getElementById("stage")),
+    frame: box(document.querySelector("#embed iframe")),
+    curtain: box(document.getElementById("curtain")),
+    // Groups on one row share a centre line (the strip centres them), not a top.
+    rows: new Set(groups.map((g) => { const r = g.getBoundingClientRect(); return Math.round(r.top + r.height / 2); })).size,
+    transport: getComputedStyle(document.getElementById("transport")).display,
+    // What a click lands on: just above the strip, and on the Load button.
+    aboveStrip: strip && strip.height > 0 ? at(innerWidth / 2, strip.top - 3) : null,
+    onGo: go && go.width > 0 ? at(go.left + go.width / 2, go.top + go.height / 2) : null,
+  };
+});
+const near = (a, b) => Math.abs(a - b) <= 1;
+await page.setViewportSize({ width: 1280, height: 720 });
+await setState({ ...base_state, url: base + "/neko?s=ok#open77-shared-browser" });
+await focusOn(true);
+await page.waitForTimeout(500);
+let L = await layout();
+check(!L.hidden && L.strip && near(L.strip.bottom, L.vh) && L.screen.top === 0 && L.screen.bottom <= L.strip.top + 0.5,
+  "with focus the strip is shown under the screen, not over it: " + JSON.stringify({ screen: L.screen, strip: L.strip }));
+check(L.frame && L.frame.top >= 0 && L.frame.bottom <= L.strip.top + 0.5 && near(L.frame.height, L.vh - L.strip.height),
+  "the shared browser's frame ends where the strip begins: " + JSON.stringify({ frame: L.frame, strip: L.strip }));
+check(L.aboveStrip === "iframe", "a click just above the strip lands in the shared browser: " + L.aboveStrip);
+check(L.onGo === "go", "and the strip's own buttons are still clickable: " + L.onGo);
+check(L.rows === 1 && L.strip.height <= 0.1 * L.vh, "on a 16:9 screen the strip is one row, under a tenth of the height: " +
+  L.rows + " row(s), " + Math.round(L.strip.height) + " of " + L.vh + " px");
+check(L.transport === "none", "the shared browser's strip leaves out the transport, which does nothing to it: " + L.transport);
+
+await focusOn(false);
+await page.waitForTimeout(300);
+L = await layout();
+check(L.hidden && near(L.screen.height, L.vh) && L.frame && near(L.frame.height, L.vh),
+  "without focus the strip hides and the picture is the whole surface again: " + JSON.stringify({ screen: L.screen, frame: L.frame }));
+
+// 27. A notice is said over the picture but never in the way of it.
+await setState({ ...base_state, url: base + "/site?b=3#open77-shared-browser" });
+await focusOn(true);
+await page.waitForTimeout(400);
+const noticeHit = await page.evaluate(() => {
+  const n = document.getElementById("notice");
+  if (n.hidden) return "no notice";
+  const r = n.getBoundingClientRect();
+  const el = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+  return el ? (el.id || el.tagName.toLowerCase()) : null;
+});
+check(noticeHit === "iframe", "a click on the shared browser's notice goes to the shared browser: " + noticeHit);
+
+// 28. A video file keeps its transport, still one row on 16:9 and still under the picture.
+await setState({ ...base_state, url: "https://cdn.example.invalid/clip.webm" });
+await page.waitForTimeout(400);
+L = await layout();
+check(L.transport !== "none" && L.rows === 1 && L.screen.bottom <= L.strip.top + 0.5,
+  "a video file's strip has its transport, in one row under the picture: " + JSON.stringify({ transport: L.transport, rows: L.rows }));
+
+// 29. Narrow screens: the groups wrap onto more rows and the picture gives up that much more.
+for (const [w, h, most] of [[960, 720, 2], [720, 1280, 2], [720, 720, 2]]) {
+  await page.setViewportSize({ width: w, height: h });
+  await setState({ ...base_state, url: "https://cdn.example.invalid/clip.webm" });
+  await page.waitForTimeout(400);
+  L = await layout();
+  check(!L.hidden && L.rows <= most && L.screen.bottom <= L.strip.top + 0.5 && near(L.strip.bottom, L.vh) && L.strip.right <= L.vw + 0.5,
+    w + "x" + h + ": " + L.rows + " row(s), the strip under the picture and inside the surface");
+}
+await page.setViewportSize({ width: 1280, height: 720 });
+
+// 30. A shut curtain covers the picture only: the strip that opens it is under it.
+await setState({ ...base_state, url: base + "/neko?s=ok#open77-shared-browser", curtain: "closed" });
+await page.waitForTimeout(400);
+L = await layout();
+check(L.curtain && L.curtain.height > 0 && L.curtain.bottom <= L.strip.top + 0.5 && L.onGo === "go",
+  "a shut curtain stops at the strip, whose buttons stay clickable: " + JSON.stringify({ curtain: L.curtain, strip: L.strip, onGo: L.onGo }));
+await setState({ ...base_state, url: "", curtain: "open" });
+await focusOn(false);
 
 check(errors.length === 0, "no page errors: " + JSON.stringify(errors));
 await browser.close();

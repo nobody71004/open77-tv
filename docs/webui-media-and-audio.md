@@ -267,6 +267,28 @@ game is the build: `Open77.Client` compiles, and the 35 CTest targets — includ
 `Open77.ScreenQuad.Tests` and `Open77.ScreenMotion.Tests`, which cover the projection
 and orientation arithmetic the dot interpolates — pass.
 
+### The control strip, under the picture (2026-10-02)
+
+The page's control strip (the transport, the volume, the address bar, Curtain and Reveal)
+is shown exactly while the surface has the keyboard, which is when someone has pressed F8
+to use the screen. It used to lie across the bottom of the picture: three rows, 145 of 720
+px. On the shared browser that was the part of the remote page the player was trying to
+click or drag, and the clicks landed on the strip instead.
+
+`tv.html` now stacks two blocks: the screen (every layer of the picture, with the frame and
+the curtain) and the strip under it. While the strip is shown the screen gives up its
+height, and the shared browser's frame ends where the strip begins; when it hides, the
+picture is the whole surface again. The strip is one row wherever its three groups fit
+(every 16:9 and wider screen, about 7 % of the height) and wraps onto a second row on a
+narrow one. For the shared browser it leaves out the transport, which does nothing to
+another browser's picture. The on-screen notice no longer takes clicks either: a click on
+it is a click on what is under it.
+
+`tests/tv-page/run.mjs` measures it (sections 26–30). The frame ends where the strip begins,
+and a click just above the strip lands in the shared browser. The strip's own buttons still
+take clicks, and a shut curtain stops at the strip. 4:3, square and portrait screens wrap
+without covering the picture. Against the page from before, ten of those checks fail.
+
 ## Cinema-scale screens (2026-09-14)
 
 ### What the drive-in actually is

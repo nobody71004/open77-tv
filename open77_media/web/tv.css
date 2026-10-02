@@ -15,10 +15,28 @@ html, body {
   font-family: "Segoe UI", "Noto Sans", system-ui, sans-serif;
 }
 
+/* The screen on top, the control strip under it. The strip is a block of its
+   own rather than a layer over the picture: it appears exactly when someone is
+   using the screen, and lying across the bottom of the picture it covered what
+   they were clicking (the shared browser's lower fifth, 2026-10-02). */
 .stage {
   position: relative;
   width: 100%;
   height: 100%;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Every layer of the picture is positioned against this, not against the stage,
+   so the picture -- a video, an embed, the shared browser, the curtain over them
+   -- is exactly the part of the surface the strip does not take. With the strip
+   hidden that is the whole surface. `min-height: 0` lets it shrink below its
+   content's height, which a flex item otherwise refuses to do. */
+.screen {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
   overflow: hidden;
 }
 
@@ -107,6 +125,10 @@ video.media { object-fit: contain; }
   right: 0;
   bottom: 0;
   z-index: 3;
+  /* Said over the picture, never in the way of it: a click on the notice is a
+     click on whatever is under it, so a message about the shared browser cannot
+     stop someone using the shared browser. */
+  pointer-events: none;
   padding: 1.6vmin 2.4vmin;
   background: rgba(120, 24, 24, 0.86);
   color: #ffe6e6;
@@ -117,23 +139,27 @@ video.media { object-fit: contain; }
 /* ---------------------------------------------------------------------------
    Controls.
    Hidden unless the surface has focus: the television is watched from the
-   street, and a control strip permanently across the bottom of the picture is
-   not what a television looks like.
+   street, and a control strip permanently under the picture is not what a
+   television looks like.
+
+   Under the screen, not over it (see `.stage`), and as short as it can be: the
+   picture gives up exactly this strip's height while it is shown, so the strip
+   is one row wherever the three groups fit side by side -- every 16:9 and wider
+   screen -- and wraps onto a second row only on a narrow one. The curtain is
+   part of the screen above, so the strip that opens it is never under it.
    --------------------------------------------------------------------------- */
 
 .controls {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  /* Above the curtain: the one thing a person in front of a shut curtain must
-     still be able to reach is the strip that opens it. */
+  position: relative;
+  flex: 0 0 auto;
   z-index: 6;
   display: flex;
-  flex-direction: column;
-  gap: 1.1vmin;
-  padding: 1.8vmin 2.4vmin;
-  background: linear-gradient(to top, rgba(5, 7, 10, 0.94), rgba(5, 7, 10, 0.72));
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1vmin 2.4vmin;
+  padding: 1.2vmin 2.4vmin;
+  /* Opaque: there is no picture behind it any more, only the end of the panel. */
+  background: #0b0f14;
   border-top: 1px solid rgba(216, 226, 234, 0.16);
 }
 .controls[hidden] { display: none; }
@@ -144,7 +170,19 @@ video.media { object-fit: contain; }
   display: flex;
   align-items: center;
   gap: 1.4vmin;
+  min-width: 0;
 }
+/* The bases are what decides one row or two: 44 + 30 + 66 vmin, with the gaps
+   and the padding, is 150 vmin -- under a 16:9 surface's 178. Each grows into
+   whatever is left of its row. */
+.transport { flex: 1 1 44vmin; }
+.audio { flex: 0 1 30vmin; }
+.source { flex: 1 1 66vmin; }
+/* Nothing in the transport moves the shared browser: its picture is another
+   browser's, played and paused in that browser, and a seek bar that is always
+   disabled and a play button that does nothing are only width taken from the
+   address bar. tv.js marks the strip while the shared browser is on. */
+.controls.browser .transport { display: none; }
 
 .button {
   flex: 0 0 auto;
@@ -189,11 +227,16 @@ video.media { object-fit: contain; }
   color: #8fa3b4;
   font-variant-numeric: tabular-nums;
 }
+/* Three digits at most: "100". */
+.volume-text { min-width: 5vmin; text-align: right; }
 
-.volume { flex: 1 1 auto; cursor: pointer; }
+.volume { flex: 1 1 auto; min-width: 0; cursor: pointer; }
 
 .url {
   flex: 1 1 auto;
+  /* A text field's own width is twenty characters, and a flex item will not
+     shrink below its own width unless told it may. */
+  min-width: 0;
   padding: 1vmin 1.4vmin;
   font-size: 2vmin;
   color: #d8e2ea;

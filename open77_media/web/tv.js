@@ -1600,11 +1600,17 @@
   // Control strip
   // ---------------------------------------------------------------------------
   // Shown only while the surface has focus. A television watched from the street
-  // must not have a control strip across the bottom of its picture.
+  // must not have a control strip under its picture. It sits under the screen,
+  // never over it (tv.css, `.stage`): the picture gives up the strip's height
+  // while it is shown, so the strip never covers what is being clicked.
+  //
+  // Marked while the shared browser is on, whose picture is another browser's:
+  // nothing in the transport moves it, and the strip leaves that group out.
 
   function syncControlsVisibility() {
     const focused = document.hasFocus();
     elements.controls.hidden = !focused;
+    elements.controls.classList.toggle("browser", showing.kind === "browser");
   }
 
   function currentTimeText(seconds) {
