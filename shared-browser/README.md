@@ -87,10 +87,18 @@ WebRTC stream's element volume is applied after that, by the audio device: in ga
 the element at 75, 90 and 100 was one loudness, and that one too quiet (2026-10-02).
 So the stream's own audio track is disabled -- WebRTC plays a disabled remote track
 at zero, which silences the element -- and a clone of it, which disabling the
-original does not silence, goes through a gain and a limiter to the page's output.
-The gain is `2 x (level / 100) ^ 1.5`: 100 is twice the stream's own level (+6 dB)
-with the limiter (-3 dB, 20:1) catching the peaks, 75 is 1.3, 50 is 0.71, 0 and
-mute are silence. Until Web Audio may start (a game that holds a page's sound back
+original does not silence, goes through a leveler, a gain and a limiter to the
+page's output. The leveler (a compressor at -36 dB, 6:1, with its make-up gain)
+is there because twice the stream's level was still too quiet in game: a film on
+a streaming site sits far below the game's own sound, and gain alone only made
+its loud moments clip. It pulls everything above -36 dBFS into a narrow band near
+-15 dBFS -- quiet passages raised by up to about 18 dB, loud ones held down. The
+gain is `3 x (level / 100) ^ 1.5` on the leveled sound: 100 is +9.5 dB (about
+-6 dBFS rms, as loud as sound gets without distortion), 75 is 1.95, 50 is 1.06, 0
+and mute are silence; the limiter (-1.5 dB, 20:1) keeps the peaks under full
+scale. Each step was a player's "still too quiet" in game on 2026-10-02: the
+element's volume (no effect), twice the stream's level, then a gentler leveler
+at twice (-11.3 dBFS rms at 100, in game), then this. Until Web Audio may start (a game that holds a page's sound back
 until a click) the element keeps its own sound, with the level on it; the first
 click or key on the picture starts it. A new stream (the client reconnecting) is
 taken over the same way, and a track something turns back on is turned off again.
@@ -98,7 +106,11 @@ taken over the same way, and a track something turns back on is turned off again
 The page reports where the level went (`volume_applied`/`mute_applied ... via the
 shared browser's page`) and the client page what it did, when that changes:
 `browser_ice (volume 75 on the stream's sound (gain 1.30, Web Audio running))`, or
-`... on 1 element (Web Audio suspended)` before it can start.
+`... on 1 element (Web Audio suspended)` before it can start -- and, five seconds
+after a change, how loud it came out: `browser_ice (volume output -6.2 dBFS rms at
+100 (gain 3.00))`. A page cannot go above full scale; sound that is still too quiet
+with the output near -6 dBFS is the PC's mixer (the game's web host in Windows'
+volume mixer) or the game being louder.
 
 Before this the slider and the mute button changed nothing at all on the shared
 browser: they were wired to YouTube's player and to plain video only.
@@ -205,7 +217,7 @@ WebRTC stream from the server.
 cd opx_tvbrowser && lua5.4 tests/run.lua    # the link rule, the commands, which TV, the export (33 checks)
 node server/test/ice-local.mjs              # open77-ice.js against real peer connections (16)
 node server/test/paste-local.mjs            # open77-paste.js: keys, socket, notes, reports (31)
-node server/test/volume-local.mjs           # open77-volume.js on a real WebRTC stream: gain, mute, reconnect, autoplay (17)
+node server/test/volume-local.mjs           # open77-volume.js on a real WebRTC stream: gain, leveler, mute, reconnect, autoplay (20)
 node tests/tv-page/run.mjs                  # from the repository root: the page's half, volume included (54)
 ```
 

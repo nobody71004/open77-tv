@@ -16,25 +16,33 @@
 //   * the stream's own audio track is disabled, which silences the element's
 //     playout (WebRTC plays a disabled remote track at zero);
 //   * a clone of that track, which disabling the original does not silence,
-//     goes through a gain -- the television's level -- and a limiter to the
-//     output.
+//     goes through a leveler, a gain -- the television's level -- and a limiter
+//     to the output.
 //
-// The level is a curve and goes above the stream's own: 100 is twice it (+6 dB)
-// with the limiter catching the peaks, 50 a little under it, 0 silence. The
-// original track is only disabled once Web Audio is running, so a page where
-// it cannot run (or has not been allowed to start yet) keeps its sound, with the
-// level on the element as before.
+// The leveler is there because twice the stream's level at 100 was still too
+// quiet in game: a film on a streaming site sits far below the game's own sound
+// (dialogue measured at -46 dBFS on staging), and gain alone only made its loud
+// moments clip. So everything above -36 dBFS is pulled into a narrow band near
+// -15 dBFS (a compressor at -36 dB, 6:1, whose make-up gain raises quiet passages
+// by up to about 18 dB and holds loud ones down), the level works on that, and the
+// limiter keeps the peaks under full scale. Even -11 dBFS rms at 100 was too quiet
+// next to the game, so the level is a curve up to three times the leveled sound:
+// 100 is +9.5 dB (about -6 dBFS rms, as loud as sound gets without distortion),
+// 75 is 1.95, 50 is 1.06, 0 silence. The original track is only disabled once Web Audio is running, so a
+// page where it cannot run (or has not been allowed to start yet) keeps its
+// sound, with the level on the element as before.
 //
 // Only the framing television is listened to, and only for this. What was done
 // is told back to it when that changes (kind `volume`, which the television logs
-// as browser_ice): a level, a gain and a state, nothing else.
+// as browser_ice): a level, a gain and a state, and five seconds after a change
+// how loud the result is (the root mean square of the output, in dBFS).
 (function () {
   "use strict";
   if (!window.parent || window.parent === window) return;
 
   var wanted = null; // { volume: 0..1, muted: boolean }
   var told = "";
-  var audio = null;  // { context, gain, limiter, meter } once made; false if it cannot be
+  var audio = null;  // { context, leveler, gain, limiter, meter } once made; false if it cannot be
   var hooked = null; // { element, stream, track, clone, source }
 
   function post(text) {
@@ -49,7 +57,7 @@
   }
 
   function gainFor(level) {
-    return level.muted ? 0 : 2 * Math.pow(level.volume, 1.5);
+    return level.muted ? 0 : 3 * Math.pow(level.volume, 1.5);
   }
 
   function makeAudio() {
@@ -61,20 +69,27 @@
     }
     try {
       var context = new Context({ latencyHint: "playback" });
+      var leveler = context.createDynamicsCompressor();
+      leveler.threshold.value = -36;
+      leveler.knee.value = 6;
+      leveler.ratio.value = 6;
+      leveler.attack.value = 0.01;
+      leveler.release.value = 0.35;
       var gain = context.createGain();
       var limiter = context.createDynamicsCompressor();
-      limiter.threshold.value = -3;
+      limiter.threshold.value = -1.5;
       limiter.knee.value = 0;
       limiter.ratio.value = 20;
-      limiter.attack.value = 0.002;
-      limiter.release.value = 0.2;
+      limiter.attack.value = 0.001;
+      limiter.release.value = 0.1;
       var meter = context.createAnalyser();
       meter.fftSize = 2048;
+      leveler.connect(gain);
       gain.connect(limiter);
       limiter.connect(meter);
       meter.connect(context.destination);
       context.addEventListener("statechange", function () { apply("audio " + context.state); });
-      audio = { context: context, gain: gain, limiter: limiter, meter: meter };
+      audio = { context: context, leveler: leveler, gain: gain, limiter: limiter, meter: meter };
     } catch (error) {
       audio = false;
     }
@@ -113,7 +128,7 @@
     try {
       var clone = track.clone();
       var source = made.context.createMediaStreamSource(new MediaStream([clone]));
-      source.connect(made.gain);
+      source.connect(made.leveler);
       track.enabled = false;
       hooked = { element: element, stream: element.srcObject, track: track, clone: clone, source: source };
       return true;
@@ -156,14 +171,51 @@
     }
   }
 
+  // How loud the output is: the root mean square of the meter's last 2048
+  // samples (after the leveler, the gain and the limiter), or -1 without Web Audio.
+  function outputLevel() {
+    if (!audio || hooked === null) return -1;
+    var samples = new Float32Array(audio.meter.fftSize);
+    audio.meter.getFloatTimeDomainData(samples);
+    var sum = 0;
+    for (var i = 0; i < samples.length; i++) sum += samples[i] * samples[i];
+    return Math.sqrt(sum / samples.length);
+  }
+
+  // Five seconds after the television changes the level, how loud that came out,
+  // averaged over a second: the line that says whether "too quiet" is this page
+  // or something after it.
+  var measureTimer = null;
+  function measureSoon() {
+    if (measureTimer !== null) clearTimeout(measureTimer);
+    measureTimer = setTimeout(function () {
+      measureTimer = null;
+      if (wanted === null || hooked === null) return;
+      var sum = 0, reads = 0;
+      var read = setInterval(function () {
+        sum += Math.max(0, outputLevel());
+        if (++reads < 10) return;
+        clearInterval(read);
+        var rms = sum / reads;
+        var at = Math.round(wanted.volume * 100) + (wanted.muted ? " muted" : "");
+        post(rms < 0.0003
+          ? "output silent at " + at + " (nothing playing)"
+          : "output " + (20 * Math.log10(rms)).toFixed(1) + " dBFS rms at " + at +
+            " (gain " + gainFor(wanted).toFixed(2) + ")");
+      }, 100);
+    }, 5000);
+  }
+
   window.addEventListener("message", function (event) {
     if (event.source !== window.parent) return;
     var data = event.data;
     if (!data || typeof data !== "object" || data.open77SharedBrowserVolume !== 1) return;
     var volume = Number(data.volume);
     if (!isFinite(volume)) return;
+    var changed = wanted === null || wanted.volume !== Math.max(0, Math.min(1, volume)) || wanted.muted !== (data.muted === true);
     wanted = { volume: Math.max(0, Math.min(1, volume)), muted: data.muted === true };
     apply("asked");
+    if (changed) measureSoon();
   });
 
   // Media events do not bubble, but they pass through the document on their way
@@ -207,20 +259,20 @@
   }, 2000);
 
   // For the tests and the server's own check, never for the television: what is
-  // in use, and how loud the output is (the root mean square of its last 2048
-  // samples, after the gain and the limiter).
+  // in use, and how loud the output is.
   window.__open77Volume = function () {
-    var level = -1;
+    var level = outputLevel();
+    var peak = -1;
     if (audio && hooked !== null) {
       var samples = new Float32Array(audio.meter.fftSize);
       audio.meter.getFloatTimeDomainData(samples);
-      var sum = 0;
-      for (var i = 0; i < samples.length; i++) sum += samples[i] * samples[i];
-      level = Math.sqrt(sum / samples.length);
+      peak = 0;
+      for (var i = 0; i < samples.length; i++) peak = Math.max(peak, Math.abs(samples[i]));
     }
     return {
       wanted: wanted, hooked: hooked !== null, audio: audio ? audio.context.state : (audio === false ? "none" : "not made"),
       gain: audio ? audio.gain.gain.value : null, original: hooked !== null ? hooked.track.enabled : null, level: level,
+      peak: peak,
     };
   };
 })();

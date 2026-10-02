@@ -38,7 +38,7 @@ async function connect() {
   await b.setLocalDescription(await b.createAnswer());
   await a.setRemoteDescription(b.localDescription);
   const track = await arrived;
-  return { tone, a, b, track };
+  return { tone, amp, a, b, track };
 }
 window.__connect = async function () {
   const link = await connect();
@@ -94,7 +94,7 @@ async function loudness(frame) {
   await wait(1500);
   let s = await state(frame);
   check(s.hooked && s.audio === "running" && s.original === false, "at 100 the stream's sound goes through Web Audio and the element's own is off: " + JSON.stringify(s));
-  check(Math.abs(s.gain - 2) < 0.01, "100 is twice the stream's level: gain " + s.gain);
+  check(Math.abs(s.gain - 3) < 0.01, "100 is three times the leveled sound: gain " + s.gain);
   const loud = await loudness(frame);
   check(loud > 0.2, "and it is heard: output level " + loud.toFixed(3));
   await page.evaluate(() => __post(0.5, false));
@@ -128,7 +128,26 @@ async function loudness(frame) {
   s = await state(frame);
   check(s.wanted.volume === 0.75 && !s.wanted.muted, "a level the page posts to itself is ignored: " + JSON.stringify(s.wanted));
   const msgs = await page.evaluate(() => __msgs);
-  check(msgs.some((m) => /^volume 100 on the stream's sound \(gain 2\.00, Web Audio running\)/.test(m)), "the television is told: " + JSON.stringify(msgs));
+  check(msgs.some((m) => /^volume 100 on the stream's sound \(gain 3\.00, Web Audio running\)/.test(m)), "the television is told: " + JSON.stringify(msgs));
+  // The leveler: a film's quiet dialogue comes out well above twice its level,
+  // and the loudest sound stays under full scale.
+  const setTone = (amplitude) => frame.evaluate((a) => { const links = window.__links; links[links.length - 1].amp.gain.value = a; }, amplitude);
+  await page.evaluate(() => __post(1, false));
+  await setTone(0.01); // -40 dBFS peak, about -43 dBFS rms
+  await wait(2500);
+  const quiet = await loudness(frame);
+  check(quiet > 0.0071 * 6, "a -40 dBFS tone comes out more than six times louder: " + (quiet / 0.0071).toFixed(1) + " times");
+  await setTone(0.95); // -0.4 dBFS peak
+  await wait(2500);
+  let peak = 0;
+  for (let i = 0; i < 20; i++) { peak = Math.max(peak, (await state(frame)).peak); await wait(50); }
+  check(peak < 0.99, "a full-scale tone stays under full scale: peak " + peak.toFixed(3));
+  await setTone(0.25);
+  // Five seconds after a change the television is told how loud it came out.
+  await page.evaluate(() => { __msgs.length = 0; __post(0.9, false); });
+  await wait(7000);
+  const said = await page.evaluate(() => __msgs);
+  check(said.some((m) => /^volume output -?\d+\.\d dBFS rms at 90 \(gain 2\.56\)$/.test(m)), "and is told how loud it came out: " + JSON.stringify(said));
   check(errors.length === 0, "no page errors: " + JSON.stringify(errors));
   await browser.close();
 }
