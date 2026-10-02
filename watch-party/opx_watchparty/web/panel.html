@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Watch party</title>
+  <link rel="stylesheet" href="panel.css" />
+</head>
+<body>
+  <!--
+    The watch party remote (/watch). Created once at resource start and never
+    hidden as a surface (a surface created hidden never uploads a frame on this
+    build); the `open` class on <main> is the only visibility switch.
+    Every button is a request; what it shows always came back from the server.
+  -->
+  <main id="panel" class="panel" aria-label="Watch party">
+    <header class="head">
+      <div class="brand"><svg class="mark" viewBox="0 0 128 128" aria-hidden="true"><rect x="3" y="3" width="122" height="122" rx="20" fill="#0a0d13" stroke="#e50914" stroke-width="6"/><path d="M106.57 79.49A45.3 45.3 0 0 1 42.04 103.62M21.43 48.51A45.3 45.3 0 0 1 85.96 24.38" fill="none" stroke="#19dfeb" stroke-width="6.5"/><path d="M47 39 93 63.5 47 88Z" fill="#e50914"/></svg> Open77 watch party</div>
+      <button id="close" class="icon" title="Close (Esc)">&#x2715;</button>
+    </header>
+
+    <section id="in-party" class="block hidden">
+      <div class="title" id="title">&nbsp;</div>
+      <div class="meta" id="meta">&nbsp;</div>
+      <div id="bar" class="bar" title="Click to jump there"><div id="fill" class="fill"></div></div>
+      <div class="time-row"><span id="time">0:00</span><span id="sync" class="dim"></span></div>
+      <div class="controls">
+        <button data-nudge="-30000">&#x27F2; 30</button>
+        <button data-nudge="-10000">&#x2212;10</button>
+        <button id="toggle" class="primary big">&#x25B6;</button>
+        <button data-nudge="10000">+10</button>
+        <button data-nudge="30000">30 &#x27F3;</button>
+      </div>
+      <div class="seek-row">
+        <input id="seek-at" type="text" placeholder="jump to 1:02:03" maxlength="12" />
+        <button id="seek-go">Go</button>
+      </div>
+      <div class="browser">
+        <button id="copy" class="primary wide">Copy browser link</button>
+        <p class="dim small">Paste it into Edge or Chrome with the <b>Open77 Watch Party</b> extension. The film plays
+          there, on your own Netflix account, in step with this party. The link holds your own key: keep it to yourself.</p>
+      </div>
+      <div class="code-row"><span class="dim">Party code</span> <span id="code" class="code">------</span></div>
+      <div class="footer-actions">
+        <button id="leave">Leave</button>
+        <button id="stop" class="danger hidden">End for everyone</button>
+      </div>
+    </section>
+
+    <section id="out-party" class="block hidden">
+      <div id="nearby" class="nearby hidden">
+        <div class="dim small">On the TV in front of you</div>
+        <div class="title small-title" id="nearby-title">&nbsp;</div>
+        <div class="meta" id="nearby-meta">&nbsp;</div>
+        <button id="join-near" class="primary wide">Join this party</button>
+      </div>
+      <label class="field">
+        <span>Netflix link (open the film in your browser, copy its address, Ctrl+V here)</span>
+        <input id="link" type="text" placeholder="https://www.netflix.com/watch/..." maxlength="512" />
+      </label>
+      <label class="field">
+        <span>Title (optional)</span>
+        <input id="name" type="text" placeholder="What are we watching?" maxlength="80" />
+      </label>
+      <div class="dim small" id="screen-line">&nbsp;</div>
+      <button id="start" class="primary wide">Start a watch party</button>
+      <div class="join-row">
+        <input id="join-code" type="text" placeholder="party code" maxlength="6" />
+        <button id="join">Join</button>
+      </div>
+    </section>
+
+    <div id="toast" class="toast hidden"></div>
+    <footer class="dim small">Nothing of the film is captured or streamed: each viewer plays it on their own account;
+      the party only shares what is playing and where.</footer>
+  </main>
+  <script src="panel.js"></script>
+</body>
+</html>

@@ -1,0 +1,53 @@
+{
+  "manifest_version": 3,
+  "name": "Open77 Watch Party",
+  "version": "1.0.1",
+  "description": "Keeps your own Netflix in step with an Open77 watch party. Only the playback time is shared; nothing of the film is captured.",
+  "homepage_url": "https://github.com/nobody71004/open77-tv/tree/main/watch-party",
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "https://xbuniverse.duckdns.org/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.netflix.com/*"
+      ],
+      "js": [
+        "sync-core.js",
+        "content.js"
+      ],
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://www.netflix.com/*"
+      ],
+      "js": [
+        "page.js"
+      ],
+      "run_at": "document_idle",
+      "world": "MAIN"
+    }
+  ],
+  "action": {
+    "default_title": "Open77 Watch Party",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/16.png",
+      "48": "icons/48.png",
+      "128": "icons/128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/16.png",
+    "48": "icons/48.png",
+    "128": "icons/128.png"
+  },
+  "minimum_chrome_version": "111"
+}

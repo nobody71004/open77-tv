@@ -97,6 +97,11 @@ tests/
   WebUiAssetTests.cs            the wire between the page and the host's frame
                                 probe, pinned across the three languages it spans
   fixtures/                     a snapshot of open77_admin's prop-model aliases
+watch-party/             Netflix watch parties: everyone plays the film in their
+                         own browser on their own account, and the party keeps
+                         them in step -- the server resource (opx_watchparty),
+                         the Edge/Chrome extension, its store listing and its
+                         privacy policy (watch-party/README.md)
 tools/
   suite-runner/          check the manifest declares every module, run the five
                          Lua suites and maintain the vendored snapshot, with no
@@ -205,7 +210,7 @@ and the method are in `docs/webui-media-and-audio.md`:
 | `.mp3` / `.m4a` / `.aac` | **decoded by the host** through the transcode route, like `.mp4` |
 | a link this build cannot decode (`.mp4`, `.m4v`, `.mov`, `.m3u8`, `.mpd`, `.ts`, `.flv`, `.mkv`) | **the host decodes it** — `/op77/media/probe` asks `ffprobe` what the link is, and `/op77/media/stream` hands the page the same link re-encoded to VP9/Opus WebM. The page shows the decoder's first picture, and the seek bar disables itself until the stream declares a duration rather than lying. Without the decoder staged the verdict is `disabled` and the screen says which tools are missing. |
 | a site somebody pasted (`hdtoday`-style pages, anything without a media extension) | **framed, and its own player decides** — the media policy frames any `https:` origin, so the site's page is shown in a sandboxed frame and the log says `embed_framed` when a document arrived. If the link is a shell that refuses framing (`X-Frame-Options` / `frame-ancestors`) the host resolves it first and the *app inside* is framed instead — that is what `123movie-tv.it.com` turned out to be: 5.7 KB that refuses framing, wrapping two apps that do not. Whether its *video* plays is then the site's own business: these sites are JS shells over HLS/MP4 that is H.264 + AAC, the pair this build cannot decode, so a site whose player does no codec detection will show its UI and refuse the stream. Nothing about the site is the problem; the codec is. |
-| Netflix, and any Widevine/PlayReady service | **impossible** — no CDM. A CDM cannot ship inside a process running under EAC, and Netflix additionally gates desktop playback on a hardware signature a CEF host cannot present. |
+| Netflix, and any Widevine/PlayReady service | **impossible** — no CDM. A CDM cannot ship inside a process running under EAC, and Netflix additionally gates desktop playback on a hardware signature a CEF host cannot present. For Netflix, a watch party (`watch-party/`) keeps everyone's own browser in step instead. |
 
 The refusals are deliberate and visible: the page names the codec and why, on
 screen. Handing an `.mp4` to a `<video>` element produces a silent black

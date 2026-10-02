@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Open77 Watch Party</title>
+  <style>
+    body { width: 320px; margin: 0; padding: 14px 16px; background: #0a0d13; color: #e9eef5;
+           font: 13px/1.45 "Segoe UI", Arial, sans-serif; }
+    h1 { font-size: 14px; letter-spacing: 2px; text-transform: uppercase; margin: 0 0 10px; color: #8d99ab;
+         display: flex; align-items: center; gap: 6px; }
+    h1 img { flex: none; }
+    h1 b { color: #e50914; }
+    .status { border-left: 3px solid #2a3340; padding: 6px 8px; background: #11161f; margin-bottom: 12px; }
+    .status.ok { border-left-color: #19e3ef; } .status.warn { border-left-color: #ffb547; } .status.bad { border-left-color: #ff4d5a; }
+    label { display: block; color: #8d99ab; margin: 8px 0 3px; }
+    input { width: 100%; box-sizing: border-box; background: #05070b; color: #e9eef5; border: 1px solid #2a3340;
+            padding: 7px 8px; font: inherit; }
+    .row { display: flex; gap: 8px; margin-top: 12px; }
+    button { flex: 1; background: #e50914; color: #fff; border: 0; padding: 8px; font: 600 13px "Segoe UI", Arial; cursor: pointer; }
+    button.alt { background: #1b2230; }
+    p { color: #8d99ab; margin: 10px 0 0; }
+    details summary { cursor: pointer; color: #8d99ab; margin-top: 10px; }
+  </style>
+</head>
+<body>
+  <h1><img src="icons/16.png" alt="" width="16" height="16" /> Open77 <b>Watch party</b></h1>
+  <div id="status" class="status">No party yet.</div>
+  <label for="code">Party code</label>
+  <input id="code" maxlength="6" placeholder="ABC123" />
+  <label for="key">Your key (from your in-game link; empty = follow only)</label>
+  <input id="key" maxlength="12" placeholder="optional" />
+  <details>
+    <summary>Server</summary>
+    <label for="base">Watch party server</label>
+    <input id="base" />
+  </details>
+  <div class="row">
+    <button id="save">Save</button>
+    <button id="leave" class="alt">Leave party</button>
+  </div>
+  <p>Easiest: in game, open <b>/watch</b>, press <b>Copy browser link</b>, and paste it into this browser's address
+    bar -- the code and key fill in by themselves. The film plays on your own Netflix account; only the time is shared.</p>
+  <script src="popup.js"></script>
+</body>
+</html>
