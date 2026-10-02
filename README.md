@@ -26,8 +26,10 @@ open77_media/          the resource -- this is the television
                          own mesh (see below)
   shared/placement.lua   where "nudge it left" points, as arithmetic
   web/tv.html|css|js     the page one television shows: YouTube's own player, a
-                         framed third-party site, or the host's decode route for a
-                         link this CEF build cannot play itself
+                         framed third-party site, the shared browser, or the host's
+                         decode route for a link this CEF build cannot play itself;
+                         and its control strip, under the picture while someone is
+                         using the screen (F8)
   web/remote.html|css|js  the remote: the panel a player opens at a set, toggled
                          with F5 while one is in reach. It spawns from the
                          catalogue, sets the source URL, plays, mutes, moves and
@@ -102,7 +104,8 @@ tests/
                                 stub host: DRM links named, the host's malformed
                                 probe answer read, sites framed with the decoder off,
                                 the shared browser's network check and stream log,
-                                and its sound following the television's volume
+                                its sound following the television's volume, and
+                                the control strip under the picture, never over it
   fixtures/                     a snapshot of open77_admin's prop-model aliases
 shared-browser/          a real Chromium on the server streamed to a television
                          over WebRTC, the same for everyone at it, without DRM:
@@ -376,6 +379,29 @@ each one is in the suites as well as in the code:
   sites, is **per runtime** (the client and the server surfaces differ, and the
   bug it exists for was a name used on the side that does not have it), and
   asserts on its own output so a parser that stops matching fails loudly.
+* **Two screens showing one link play in step** (`shared/clock.lua`). Every set
+  plays its link in its own browser, and a player starts at zero the moment it is
+  built, so two cinema screens on one film ran visibly apart and a set that came
+  back into range opened at the beginning of a film an hour in. The server owns
+  the playhead now, and a YouTube set more than a second away from it seeks to it.
+* **The TV's volume and mute reach the shared browser.** Its page is the
+  server's, which the television cannot reach into, so the slider did nothing to
+  it. The level is posted to the shared browser's client page, where
+  `open77-volume.js` plays the stream through Web Audio: a leveler, the
+  television's gain and a limiter. That is the only way the level reaches the
+  game, which takes a page's sound before an element's volume would apply. 100 is
+  as loud as sound gets without distortion (`shared-browser/README.md`, "Volume
+  and mute").
+* **The control strip sits under the picture, not over it.** The strip (the
+  transport, the volume, the address bar, Curtain and Reveal) is shown exactly
+  while someone is using the screen (F8), and it used to lie across the bottom
+  fifth of the picture, over the part of the shared browser they were trying to
+  click. The page is now the screen with the strip under it. While the strip is
+  shown the picture gives up its height (one row, about 7 % of a 16:9 screen);
+  when it hides, the picture fills the screen again. The shared browser's strip
+  leaves out the transport, which does nothing to another browser, and the
+  on-screen notice no longer takes clicks (`docs/webui-media-and-audio.md`,
+  `tests/tv-page/run.mjs`).
 
 ### The base game's drive-in screen is not this
 
@@ -394,10 +420,11 @@ existing code rather than a new system.
 
 ## The honest limitations
 
-* **Occlusion.** The world overlay has no depth buffer, so a screen the producer
-  decides is visible is painted over whatever geometry stands between the camera
-  and it. `Api::MediaScreens` line-of-sight tests the screen's *centre* and the
-  whole quad is then drawn or not, so a partially occluded screen is drawn whole.
+* **The HUD.** With the picture fixes (`patches/open77-base/`), a picture is drawn
+  behind whatever the game drew in front of it, from the game's own depth buffer
+  (see "The picture" below). The game's HUD is not in that buffer: where it
+  overlaps a screen, the picture is still drawn over it, because the overlay
+  composites after the whole frame, HUD included (`docs/depth-and-occlusion.md`).
 * **Volume on a foreign embed.** A YouTube embed is driven through its
   `postMessage` transport, so volume, mute, pause and seek all work. Any other
   site's player lives in a document this page cannot reach: the slider moves and
@@ -421,10 +448,14 @@ with the near end of the cinema behind the camera -- shot it across the sky from
 the middle of the view. `docs/depth-and-occlusion.md` describes the three fixes:
 the picture in its plane's own perspective, behind whatever the game drew in
 front of it (from the game's own depth buffer), and cut at the camera's near
-plane. They are a patch series for open77-base in `patches/open77-base/`, and the
-files they add are mirrored in `native/` and `tests/`. One thing they do not
-change: where the game's HUD overlaps a screen, the picture is still drawn over
-it.
+plane. The depth test also takes its scale only from points on the screen that
+agree with each other at different distances (`0008`). In third person the
+player's own back, standing in front of the middle of a screen, had convinced it
+that the screen was ten times nearer than it was, and the picture was drawn over
+the player's body again. They are a patch series for open77-base in
+`patches/open77-base/` (its pull request #66), and the files they add are mirrored
+in `native/` and `tests/`. One thing they do not change: where the game's HUD
+overlaps a screen, the picture is still drawn over it.
 
 ## Running the suite
 
