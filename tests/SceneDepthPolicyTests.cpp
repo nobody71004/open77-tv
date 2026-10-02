@@ -10,8 +10,10 @@
 //
 // The second is the calibration: B in device = A + B / z, measured from the points
 // the overlay samples on a screen. A hand in front of some points, the sky (the
-// clear value), a hand held over the whole middle for a while, and a camera whose
-// near plane really changes are each pinned.
+// clear value), a hand held over the whole middle for a while, a camera whose near
+// plane really changes, and a screen with no panel behind it and the player's body
+// in front of it (the session that locked on ten times the near plane) are each
+// pinned.
 
 #include "webui/SceneDepthPolicy.hpp"
 
@@ -381,32 +383,58 @@ std::vector<Policy::Sample> Screen(const double aNear, const double aDepth, cons
     return samples;
 }
 
+/// A screen whose panel the game did not draw, seen past the player's body in
+/// third person: the first `aOnBody` points are on the back of a torso `aBody`
+/// metres from the camera (flat, so they agree with each other), the rest see
+/// the sky.
+std::vector<Policy::Sample> NoPanel(const double aNear, const double aDepth, const size_t aOnBody, const double aBody)
+{
+    std::vector<Policy::Sample> samples;
+    for (size_t index = 0; index < Policy::kSamplesPerScreen; ++index)
+    {
+        samples.push_back({1.0 / aDepth, index < aOnBody ? aNear / aBody : 0.0});
+    }
+    return samples;
+}
+
 void Calibration()
 {
-    // Unknown direction: nothing is measured.
+    constexpr size_t kWindow = Policy::Calibration::kWindow;
+    constexpr double kAssumed = Policy::Calibration::kAssumedReversedB;
+
+    // Unknown direction: nothing is measured, and nothing is assumed.
     {
         Policy::Calibration calibration;
+        CHECK(!calibration.Locked() && !calibration.Assumed());
         CHECK(!calibration.AddGroup(Screen(0.1, 2.0, 0, 0.0)));
     }
     CHECK(Policy::FromClear(0.0F) == Policy::Convention::Reversed);
     CHECK(Policy::FromClear(1.0F) == Policy::Convention::Conventional);
     CHECK(Policy::FromClear(0.5F) == Policy::Convention::Unknown);
 
-    // Reversed depth, near plane 0.1 m, screens between 1.5 and 3 m with a hand
-    // (0.5 m) over a third of the points: locks on B = 0.1 after enough groups.
+    // Reversed depth starts from this game's near plane: the test is on from the
+    // first frame.
     Policy::Calibration calibration;
     calibration.SetConvention(Policy::Convention::Reversed);
+    CHECK(calibration.Locked() && calibration.Assumed());
+    CHECK(std::abs(calibration.B() - kAssumed) < 1e-12);
+    CHECK(calibration.A() == 0.0);
+
+    // A camera with a 0.1 m near plane, screens between 1.5 and 3 m with a hand
+    // (0.5 m) over a third of the points: measured once enough groups agree, from
+    // screens at different distances.
     for (size_t group = 0; group < Policy::Calibration::kToLock - 1; ++group)
     {
         CHECK(calibration.AddGroup(Screen(0.1, 1.5 + (0.1 * static_cast<double>(group % 15)), 3, 0.5)));
-        CHECK(!calibration.Locked());
+        CHECK(calibration.Assumed());
     }
     CHECK(calibration.AddGroup(Screen(0.1, 2.0, 3, 0.5)));
-    CHECK(calibration.Locked());
+    CHECK(calibration.Locked() && !calibration.Assumed());
     CHECK(std::abs(calibration.B() - 0.1) < 1e-9);
-    CHECK(calibration.A() == 0.0);
+    CHECK(calibration.LastNearest() < 1.5 + 1e-9 && calibration.LastFarthest() > 2.9 - 1e-9);
 
-    // The sky (the clear value) and nonsense are skipped, not taken as B = 0.
+    // The sky (the clear value) and nonsense are skipped, not taken as B = 0: the
+    // six points left still agree.
     std::vector<Policy::Sample> sky = Screen(0.1, 2.0, 0, 0.0);
     sky[0].device = 0.0;
     sky[1].device = -1.0;
@@ -416,65 +444,128 @@ void Calibration()
     std::vector<Policy::Sample> allSky(Policy::kSamplesPerScreen, Policy::Sample{0.5, 0.0});
     CHECK(!calibration.AddGroup(allSky));
 
+    // Points that do not agree are not a group: three points of glass, and a body
+    // at a different depth under each of the others.
+    std::vector<Policy::Sample> scattered;
+    for (size_t index = 0; index < Policy::kSamplesPerScreen; ++index)
+    {
+        const double seen = index < 3 ? 2.0 : 0.5 + (0.1 * static_cast<double>(index));
+        scattered.push_back({1.0 / 2.0, 0.1 / seen});
+    }
+    CHECK(!calibration.AddGroup(scattered));
+
+    // One point lower than the glass (it sees past an edge, onto a wall a metre
+    // behind) does not set the group's value: the eight that agree do.
+    std::vector<Policy::Sample> edge = Screen(0.1, 2.0, 0, 0.0);
+    edge[4].device = 0.1 / 3.0;
+    CHECK(calibration.AddGroup(edge));
+    CHECK(std::abs(calibration.B() - 0.1) < 1e-9);
+
     // A hand held over the whole middle of a screen for a while: those groups say
     // B is four times larger. A window that is partly them does not agree, so B
     // stays where it is...
-    for (size_t group = 0; group < Policy::Calibration::kWindow / 2; ++group)
+    for (size_t group = 0; group < kWindow / 2; ++group)
     {
         CHECK(calibration.AddGroup(Screen(0.1, 2.0, Policy::kSamplesPerScreen, 0.5)));
     }
     CHECK(std::abs(calibration.B() - 0.1) < 1e-9);
     // ...and goes back to agreeing once the hand is gone.
-    for (size_t group = 0; group < Policy::Calibration::kWindow; ++group)
+    for (size_t group = 0; group < kWindow; ++group)
     {
         CHECK(calibration.AddGroup(Screen(0.1, 2.0, 0, 0.0)));
     }
     CHECK(std::abs(calibration.B() - 0.1) < 1e-9);
 
-    // A real change (a camera with another near plane): a whole window agreeing on
-    // the new value moves it.
-    for (size_t group = 0; group < Policy::Calibration::kWindow; ++group)
+    // A real change (a camera with another near plane). Seen from one distance a
+    // whole window of it is not enough -- a body standing in front of a screen
+    // looks the same -- but seen from different distances it moves the value.
+    for (size_t group = 0; group < kWindow; ++group)
     {
         CHECK(calibration.AddGroup(Screen(0.05, 2.0, 0, 0.0)));
     }
+    CHECK(std::abs(calibration.B() - 0.1) < 1e-9);
+    for (size_t group = 0; group < kWindow; ++group)
+    {
+        const double depth = 1.5 + (0.9 * static_cast<double>(group) / static_cast<double>(kWindow));
+        CHECK(calibration.AddGroup(Screen(0.05, depth, 0, 0.0)));
+    }
     CHECK(std::abs(calibration.B() - 0.05) < 1e-9);
 
-    // Conventional depth: device = 1 - near / z (far at infinity). B comes out
-    // negative, as the shader's model wants it.
+    // The session this rule was written for. This game's depth, a 100 ft cinema
+    // whose panel the game did not draw, and the player's torso in front of the
+    // middle of it in third person, with the sky round it.
+    {
+        Policy::Calibration session;
+        session.SetConvention(Policy::Convention::Reversed);
+        // Standing 25 m from the screen for a long time, the torso 2.6 m from the
+        // camera under six of the points: they agree with each other and with every
+        // frame before them -- on nearly ten times the near plane. One distance, so
+        // the near plane stays.
+        for (size_t group = 0; group < 4 * kWindow; ++group)
+        {
+            CHECK(session.AddGroup(NoPanel(kAssumed, 25.0, 6, 2.6)));
+        }
+        CHECK(session.Assumed() && std::abs(session.B() - kAssumed) < 1e-12);
+        // Walking from 40 m to 10 m: what the torso says follows the screen's
+        // distance, so it never agrees with itself across distances.
+        for (size_t group = 0; group < 4 * kWindow; ++group)
+        {
+            const double depth = 40.0 - (30.0 * static_cast<double>(group) / (4.0 * static_cast<double>(kWindow)));
+            static_cast<void>(session.AddGroup(NoPanel(kAssumed, depth, 6, 2.6)));
+        }
+        CHECK(session.Assumed() && std::abs(session.B() - kAssumed) < 1e-12);
+        // The sky far behind that screen is not its glass either.
+        CHECK(!session.AddGroup(std::vector<Policy::Sample>(Policy::kSamplesPerScreen,
+                                                            Policy::Sample{1.0 / 25.0, kAssumed / 2000.0})));
+        // Then a set whose panel is drawn, walked up to from 6 m to 3 m with the
+        // torso over two of its points: measured, at the near plane.
+        for (size_t group = 0; group < kWindow; ++group)
+        {
+            const double depth = 6.0 - (3.0 * static_cast<double>(group) / static_cast<double>(kWindow));
+            CHECK(session.AddGroup(Screen(kAssumed, depth, 2, 2.6)));
+        }
+        CHECK(!session.Assumed() && std::abs(session.B() - kAssumed) < 1e-9);
+    }
+
+    // Conventional depth: device = 1 - near / z (far at infinity). Nothing is
+    // assumed; B comes out negative, as the shader's model wants it.
     Policy::Calibration conventional;
     conventional.SetConvention(Policy::Convention::Conventional);
+    CHECK(!conventional.Locked() && !conventional.Assumed());
     for (size_t group = 0; group < Policy::Calibration::kToLock; ++group)
     {
+        const double depth = 2.0 + (0.0625 * static_cast<double>(group));
         std::vector<Policy::Sample> samples;
         for (size_t index = 0; index < Policy::kSamplesPerScreen; ++index)
         {
-            const double z = index < 2 ? 0.4 : 2.5;
-            samples.push_back({1.0 / 2.5, 1.0 - (0.07 / z)});
+            const double z = index < 2 ? 0.4 : depth;
+            samples.push_back({1.0 / depth, 1.0 - (0.07 / z)});
         }
         CHECK(conventional.AddGroup(samples));
     }
-    CHECK(conventional.Locked());
+    CHECK(conventional.Locked() && !conventional.Assumed());
     CHECK(std::abs(conventional.B() + 0.07) < 1e-9);
     CHECK(conventional.A() == 1.0);
 
-    // Changing direction starts again.
+    // Changing direction starts again (from the assumed near plane, for reversed).
     conventional.SetConvention(Policy::Convention::Reversed);
-    CHECK(!conventional.Locked() && conventional.Groups() == 0);
+    CHECK(conventional.Assumed() && conventional.Groups() == 0);
+    CHECK(std::abs(conventional.B() - kAssumed) < 1e-12);
 
     // Values no camera has are not used: a "near plane" of 5 m.
     Policy::Calibration absurd;
     absurd.SetConvention(Policy::Convention::Reversed);
     CHECK(!absurd.AddGroup(Screen(5.0, 2.0, 0, 0.0)));
 
-    // Groups that do not agree (noise of 20 %) never lock.
+    // Groups that do not agree (noise of 20 %) never replace the near plane.
     Policy::Calibration noisy;
     noisy.SetConvention(Policy::Convention::Reversed);
-    for (size_t group = 0; group < Policy::Calibration::kWindow; ++group)
+    for (size_t group = 0; group < kWindow; ++group)
     {
         const double near = (group % 2) == 0 ? 0.08 : 0.12;
-        noisy.AddGroup(Screen(near, 2.0, 0, 0.0));
+        noisy.AddGroup(Screen(near, 1.5 + (0.01 * static_cast<double>(group)), 0, 0.0));
     }
-    CHECK(!noisy.Locked());
+    CHECK(noisy.Assumed() && std::abs(noisy.B() - kAssumed) < 1e-12);
 }
 } // namespace
 

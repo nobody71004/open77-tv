@@ -1466,6 +1466,7 @@ std::array<bool, 3> s_keysDown{};
 
 Policy::Calibration s_calibration;
 bool s_wasLocked{};
+bool s_wasAssumed{};
 double s_lockedB{};
 
 /// One present's calibration points on their way back from the GPU. Each point's
@@ -1744,6 +1745,41 @@ bool RecordCopy(ID3D12GraphicsCommandList* const aList)
 
 // -- calibration readback -------------------------------------------------------------
 
+/// Says what the depth means whenever that changes: the near plane assumed at the
+/// start, the first measurement, or a measured value that moved.
+void LogModel()
+{
+    if (!s_calibration.Locked())
+    {
+        return;
+    }
+    const bool assumed = s_calibration.Assumed();
+    if (s_wasLocked && s_calibration.B() == s_lockedB && assumed == s_wasAssumed)
+    {
+        return;
+    }
+    if (assumed)
+    {
+        Log(LogLevel::Info,
+            std::format("assumed what the depth means: device = {} + {:.5f} / metres ({} depth; this game's near "
+                        "plane), until screens seen from different distances measure it. The test is on.",
+                        s_calibration.A(), s_calibration.B(), Policy::Describe(s_calibration.Direction())));
+    }
+    else
+    {
+        Log(LogLevel::Info,
+            std::format("{} what the depth means: device = {} + {:.5f} / metres ({} depth; {} screen samples, "
+                        "screens {:.1f} to {:.1f} m away, spread {:.1f} %). The test is on.",
+                        s_wasLocked && !s_wasAssumed ? "measured again" : "measured", s_calibration.A(),
+                        s_calibration.B(), Policy::Describe(s_calibration.Direction()), s_calibration.Groups(),
+                        s_calibration.LastNearest(), s_calibration.LastFarthest(),
+                        s_calibration.LastSpread() * 100.0));
+    }
+    s_wasLocked = true;
+    s_wasAssumed = assumed;
+    s_lockedB = s_calibration.B();
+}
+
 ReadbackSlot* FillingSlot()
 {
     for (auto& slot : s_slots)
@@ -1822,17 +1858,7 @@ void ProcessReadbacks(const uint64_t aCompletedFence)
         }
         slot = ReadbackSlot{};
     }
-    if (s_calibration.Locked() && (!s_wasLocked || s_calibration.B() != s_lockedB))
-    {
-        Log(LogLevel::Info,
-            std::format("{} what the depth means: device = {} + {:.5f} / metres ({} depth; {} screen samples, spread "
-                        "{:.1f} %). The test is on.",
-                        s_wasLocked ? "measured again" : "measured", s_calibration.A(), s_calibration.B(),
-                        Policy::Describe(s_calibration.Direction()), s_calibration.Groups(),
-                        s_calibration.LastSpread() * 100.0));
-        s_wasLocked = true;
-        s_lockedB = s_calibration.B();
-    }
+    LogModel();
 }
 
 /// Bytes per texel of a copy footprint's format (the depth plane as a copy lays it
@@ -2183,7 +2209,8 @@ void LogStatus()
                     "without a buffer, {} draws into views made before the hooks, {} aliased.",
                     chosen,
                     s_calibration.Locked()
-                        ? std::format("device = {} + {:.5f} / z", s_calibration.A(), s_calibration.B())
+                        ? std::format("device = {} + {:.5f} / z{}", s_calibration.A(), s_calibration.B(),
+                                      s_calibration.Assumed() ? " (assumed)" : "")
                         : std::format("measuring ({} samples, spread {:.1f} %)", s_calibration.Groups(),
                                       s_calibration.LastSpread() * 100.0),
                     s_testOn ? "on" : "off", is.presents - was.presents, is.copies - was.copies,
@@ -2332,6 +2359,7 @@ void Choose(FrameRecord& aFrame)
     }
     s_selection = selection;
     s_calibration.SetConvention(selection.convention);
+    LogModel();
     if (selection.aliasedAway)
     {
         ++s_counters.aliased;
@@ -2689,7 +2717,8 @@ void DrawOverlay(ImDrawList& aForeground, const float aOverlayWidth, const float
                             DescribeResource(s_selection.desc, s_selection.extent[0], s_selection.extent[1]),
                             Policy::Describe(s_selection.convention),
                             s_calibration.Locked()
-                                ? std::format("B {:.4f} m", s_calibration.B())
+                                ? std::format("B {:.4f} m{}", s_calibration.B(),
+                                              s_calibration.Assumed() ? " (assumed)" : "")
                                 : std::format("measuring B ({} samples)", s_calibration.Groups()),
                             s_testOn ? "on" : "OFF");
         text += s_candidatesText;
@@ -2713,7 +2742,9 @@ std::string Describe()
                        s_selection.resource != nullptr
                            ? DescribeResource(s_selection.desc, s_selection.extent[0], s_selection.extent[1])
                            : std::string("none"),
-                       s_calibration.Locked() ? std::format("B {:.5f}", s_calibration.B()) : std::string("measuring"),
+                       s_calibration.Locked()
+                           ? std::format("B {:.5f}{}", s_calibration.B(), s_calibration.Assumed() ? " assumed" : "")
+                           : std::string("measuring"),
                        s_testOn ? "on" : "off");
 }
 } // namespace op77::WebUI::SceneDepth

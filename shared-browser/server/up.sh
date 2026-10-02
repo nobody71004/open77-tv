@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The shared browser for Open77 televisions on XBUNIVERSE STAGING: neko's Chromium
-# without Widevine, streamed over WebRTC (build/, run as image 4). Builds the
+# without Widevine, streamed over WebRTC (build/, run as image 5). Builds the
 # image and (re)creates the container -- which also wipes the browser's own state
 # (sessions, history). The first run generates neko.env (viewer and admin
 # passwords, API token) and the televisions' link (tv-url.secret), both
@@ -8,7 +8,7 @@
 # does not change. No firewall or nginx change (nginx.sh does the site).
 # Production servers are not touched. Prints no secret.
 set -euo pipefail
-D=/opt/open77-tvbrowser; NAME=open77-tvbrowser-xbs; IMAGE=open77/tvbrowser-chromium:4
+D=/opt/open77-tvbrowser; NAME=open77-tvbrowser-xbs; IMAGE=open77/tvbrowser-chromium:5
 cd "$D"
 umask 077
 if [ ! -f neko.env ]; then
@@ -44,9 +44,11 @@ chmod 600 tv-url.secret
 docker build -q -t "$IMAGE" "$D/build" >/dev/null
 echo "== image $IMAGE built: $(docker image inspect "$IMAGE" --format '{{.Id}}' | cut -c1-19)"
 docker run --rm --entrypoint sh "$IMAGE" -c \
-  'grep -q "src=\"open77-ice.js\"></script><script src=\"open77-paste.js\"" /var/www/index.html && test -s /var/www/open77-ice.js && test -s /var/www/open77-paste.js && grep -q "\"NewTabPageLocation\"" /etc/chromium/policies/managed/policies.json && ! find / -xdev -iname "*widevine*" 2>/dev/null | grep -q .' \
+  'grep -q "src=\"open77-ice.js\"></script><script src=\"open77-paste.js\"></script><script src=\"open77-volume.js\"" /var/www/index.html && test -s /var/www/open77-ice.js && test -s /var/www/open77-paste.js && test -s /var/www/open77-volume.js && grep -q "\"NewTabPageLocation\"" /etc/chromium/policies/managed/policies.json && ! find / -xdev -iname "*widevine*" 2>/dev/null | grep -q .' \
   || { echo "the image is missing its scripts or its policy, or still has a DRM module: not recreating"; exit 1; }
-echo "== image checked: client page loads open77-ice.js and open77-paste.js; policies in place; no Widevine"
+docker run --rm --entrypoint sh "$IMAGE" -c 'for f in /etc/chromium/policies/managed/policies.json /var/www/open77-ice.js /var/www/open77-paste.js /var/www/open77-volume.js; do [ "$(stat -c %a "$f")" = 644 ] || exit 1; done' \
+  || { echo "the image's policy or scripts are not readable by the browser: not recreating"; exit 1; }
+echo "== image checked: client page loads open77-ice.js, open77-paste.js and open77-volume.js, all readable; policies in place; no Widevine"
 
 if docker ps -a --format '{{.Names}}' | grep -qx "$NAME"; then docker rm -f "$NAME" >/dev/null; echo "== previous container removed"; fi
 docker run -d --name "$NAME" --restart unless-stopped \

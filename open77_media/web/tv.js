@@ -671,6 +671,11 @@
         sendYouTube("mute", []);
       }
       reportVolume(volume, audible);
+    } else if (showing.kind === "browser") {
+      // The shared browser's page is the server's, which this page cannot reach
+      // into: the level is posted to it, and the image's open77-volume.js puts it
+      // on the stream (and says so, logged as browser_ice).
+      postSharedBrowserVolume(volume, audible);
     } else if (showing.kind === "embed") {
       // An arbitrary site's player is inside a document this page cannot reach.
       // Said once, on screen, rather than leaving an operator to wonder why the
@@ -833,6 +838,8 @@
 
     if (decided.kind === "browser") {
       if (showing.kind !== "browser" || showing.src !== decided.src) showSharedBrowser(decided.src);
+      // At every update: another player moving the volume is one.
+      applyVolume();
       return;
     }
 
@@ -1222,13 +1229,45 @@
       return src;
     }
   }
+  /// The level last posted to the shared browser's page, so an update that
+  /// changes nothing is not reported again.
+  let sharedBrowserVolume = "";
+  /// The television's volume and mute, posted to the shared browser's client page
+  /// -- to its origin only -- where the image's open77-volume.js puts it on the
+  /// stream's media element and keeps it there. Without this the volume slider and
+  /// the mute button did nothing at all to the shared browser's sound.
+  function postSharedBrowserVolume(volume, audible) {
+    if (!youTubeFrame || !youTubeFrame.contentWindow) return;
+    let origin;
+    try {
+      origin = new URL(youTubeFrame.src).origin;
+    } catch (error) {
+      return;
+    }
+    try {
+      youTubeFrame.contentWindow.postMessage(
+        { open77SharedBrowserVolume: 1, volume: volume / 100, muted: !audible }, origin);
+    } catch (error) {
+      return;
+    }
+    const line = "asked=" + volume + (audible ? "" : " muted") + " via the shared browser's page";
+    if (line !== sharedBrowserVolume) {
+      sharedBrowserVolume = line;
+      report(audible ? "volume_applied" : "mute_applied", line);
+    }
+  }
   function showSharedBrowser(src) {
     stopPicture();
+    sharedBrowserVolume = "";
     const frame = document.createElement("iframe");
     frame.setAttribute("allow", "autoplay; fullscreen; clipboard-read; clipboard-write");
     frame.setAttribute("referrerpolicy", "no-referrer");
     frame.src = sharedBrowserPage(src);
-    frame.addEventListener("load", () => report("browser_framed", "shared browser client loaded"));
+    frame.addEventListener("load", () => {
+      report("browser_framed", "shared browser client loaded");
+      // Its open77-volume.js is listening now: the level again.
+      applyVolume();
+    });
     elements.embed.appendChild(frame);
     youTubeFrame = frame;
     showOnly("embed");

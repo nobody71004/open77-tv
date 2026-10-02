@@ -20,8 +20,10 @@
 //     knows. `Calibration` measures it from the screens themselves: the producer
 //     publishes each screen's own view depth, so wherever the game drew the
 //     screen's glass, device depth times that view depth is B. Something in front
-//     of the glass only makes that product larger, so the smallest product over a
-//     few points in the middle of a screen is the glass.
+//     of the glass only makes that product larger, so the lowest product several
+//     points of a screen agree on is the glass -- and a value is only taken from
+//     screens seen from different distances, which a body in front of the
+//     screen cannot fake. Reversed depth starts from this game's near plane.
 //
 // Formats are DXGI numbers (dxgiformat.h), so this header needs no Windows
 // headers; SceneDepth.cpp checks them against the real enum at compile time.
@@ -570,16 +572,34 @@ struct Sample
 /// Measures B (device = A + B / z) from screens the player looks at.
 ///
 /// Each screen drawn in a frame contributes a group: a few points in the middle
-/// of its glass. For each point |device - A| times view depth is B where the
-/// game drew the glass, and more wherever something is in front of it (nearer
-/// means a larger |device - A|). So a group's smallest product is B unless every
-/// point is covered, and the median over many groups is B unless something covers
-/// the middle of every screen most of the time.
+/// of its glass. For each point |device - A| times the screen's own view depth is
+/// B where the game drew the glass, more wherever something is in front of it
+/// (nearer means a larger |device - A|), and less where the point sees past the
+/// screen. Where the glass is, every point says the same B however the screen is
+/// turned, so a group counts only when several of its points agree, and it counts
+/// the lowest value they agree on: points covered by something nearer only ever
+/// say more.
 ///
-/// It locks on once a window of groups agrees, and after that only moves to a
-/// value a whole window agrees on, so a hand held over a screen for a few seconds
-/// cannot drag it. A value is used only between 5 mm and 2 m (any real camera's
-/// near plane).
+/// That a group agrees with itself is not enough on its own. A screen whose panel
+/// the game did not draw that session (a cinema prop the engine left out of its
+/// depth) has no glass behind its points, and in third person what is in front of
+/// the middle of a screen is the player's own body: points on the back of a torso
+/// agree with each other, and a player who stands watching agrees with himself
+/// for as long as he stands there. One session locked on ten times the real B
+/// that way, and every screen nearer than about thirty metres was drawn over the
+/// player. What tells them apart is distance. The body stays where it is in front
+/// of the camera while the screen does not, so its value follows the screen's
+/// distance; the glass's does not. A value is therefore only taken from groups
+/// that saw their screens from distances at least `kDepthSpan` apart and still
+/// agreed, which no body, hand or wall in front of a screen can do.
+///
+/// Reversed depth starts from this game's own near plane, `kAssumedReversedB`
+/// (2 cm: every lock measured in game was 0.01985 to 0.01998), so the test is right
+/// from the first frame and a screen with no panel cannot talk it into anything
+/// else. A measurement replaces it by the rule above, and after that it moves only
+/// to a value a whole window agrees on, so a hand held over a screen for a few
+/// seconds cannot drag it. A value is used only between 5 mm and 2 m (any real
+/// camera's near plane).
 class Calibration
 {
 public:
@@ -589,16 +609,30 @@ public:
     static constexpr double kMove = 0.03;      ///< a locked value moves only by more than this
     static constexpr double kMinimum = 0.005;
     static constexpr double kMaximum = 2.0;
+    /// Points of one group that must agree with each other for the group to count...
+    static constexpr size_t kAgreeingPoints = 4;
+    /// ...to within this fraction (the glass's points agree to a fraction of that).
+    static constexpr double kPointAgreement = 0.02;
+    /// The farthest screen of the groups a value is taken from, over the nearest.
+    static constexpr double kDepthSpan = 1.2;
+    /// Where reversed depth starts: this game's near plane, in metres.
+    static constexpr double kAssumedReversedB = 0.02;
 
     /// Starts again when the convention changes: the products mean something else.
+    /// Reversed depth starts from the assumed near plane, conventional unmeasured.
     void SetConvention(const Convention aConvention)
     {
         if (aConvention != m_convention)
         {
             m_convention = aConvention;
             m_groups.clear();
-            m_locked = false;
-            m_b = 0.0;
+            m_assumed = aConvention == Convention::Reversed;
+            m_locked = m_assumed;
+            m_b = m_assumed ? kAssumedReversedB : 0.0;
+            m_spread = 0.0;
+            m_median = 0.0;
+            m_nearest = 0.0;
+            m_farthest = 0.0;
         }
     }
 
@@ -611,10 +645,16 @@ public:
     /// meaningful when `Locked()`.
     [[nodiscard]] double B() const { return m_convention == Convention::Conventional ? -m_b : m_b; }
 
+    /// There is a value to use: the assumed one or a measured one.
     [[nodiscard]] bool Locked() const { return m_locked; }
+    /// The value in use is the assumed near plane: nothing has measured it yet.
+    [[nodiscard]] bool Assumed() const { return m_assumed; }
     [[nodiscard]] size_t Groups() const { return m_groups.size(); }
     [[nodiscard]] double LastSpread() const { return m_spread; }
     [[nodiscard]] double LastMedian() const { return m_median; }
+    /// The nearest and farthest screen (metres) of the groups last looked at.
+    [[nodiscard]] double LastNearest() const { return m_nearest; }
+    [[nodiscard]] double LastFarthest() const { return m_farthest; }
 
     /// One screen's points from one frame. Returns whether the group was used.
     bool AddGroup(std::span<const Sample> aSamples)
@@ -624,10 +664,15 @@ public:
             return false;
         }
         const double a = A();
-        double smallest = 0.0;
-        bool any = false;
+        // One screen gives kSamplesPerScreen points; more than this many are not read.
+        std::array<Point, 16> points{};
+        size_t count = 0;
         for (const auto& sample : aSamples)
         {
+            if (count == points.size())
+            {
+                break;
+            }
             if (!std::isfinite(sample.inverseDepth) || !(sample.inverseDepth > 0.0) || !std::isfinite(sample.device) ||
                 sample.device < 0.0 || sample.device > 1.0)
             {
@@ -639,40 +684,77 @@ public:
             {
                 continue;
             }
-            const double product = separation / sample.inverseDepth;
-            if (!any || product < smallest)
+            points[count++] = Point{separation / sample.inverseDepth, 1.0 / sample.inverseDepth};
+        }
+        std::sort(points.begin(), points.begin() + static_cast<std::ptrdiff_t>(count),
+                  [](const Point& aLeft, const Point& aRight) { return aLeft.product < aRight.product; });
+        // The lowest value enough points agree on. A lone point lower than the rest
+        // (past an edge of the glass) is not it, points that see far past the
+        // screen (below any near plane) are not it, and covered points are higher.
+        for (size_t first = 0; first + kAgreeingPoints <= count; ++first)
+        {
+            const double value = points[first].product;
+            if (!(value >= kMinimum))
             {
-                smallest = product;
-                any = true;
+                continue;
             }
+            if (!(value <= kMaximum))
+            {
+                return false;
+            }
+            size_t agreeing = 0;
+            for (size_t other = first; other < count && points[other].product <= value * (1.0 + kPointAgreement);
+                 ++other)
+            {
+                ++agreeing;
+            }
+            if (agreeing < kAgreeingPoints)
+            {
+                continue;
+            }
+            m_groups.push_back(Group{value, points[first].depth});
+            if (m_groups.size() > kWindow)
+            {
+                m_groups.erase(m_groups.begin());
+            }
+            Update();
+            return true;
         }
-        if (!any || !(smallest >= kMinimum) || !(smallest <= kMaximum))
-        {
-            return false;
-        }
-        m_groups.push_back(smallest);
-        if (m_groups.size() > kWindow)
-        {
-            m_groups.erase(m_groups.begin());
-        }
-        Update();
-        return true;
+        return false;
     }
 
 private:
+    struct Point
+    {
+        double product{};
+        double depth{};
+    };
+
+    struct Group
+    {
+        double value{};
+        double depth{};
+    };
+
     void Update()
     {
         if (m_groups.size() < kToLock)
         {
             return;
         }
-        // The newest kToLock groups decide the first lock; a whole window decides a move.
-        const size_t take = m_locked ? m_groups.size() : kToLock;
-        if (m_locked && take < kWindow)
+        // Until something is measured every group so far decides (at least kToLock
+        // of them); after that only a whole window moves the value.
+        const bool measured = m_locked && !m_assumed;
+        if (measured && m_groups.size() < kWindow)
         {
             return;
         }
-        std::vector<double> sorted(m_groups.end() - static_cast<std::ptrdiff_t>(take), m_groups.end());
+        std::vector<double> sorted;
+        sorted.reserve(m_groups.size());
+        for (const auto& group : m_groups)
+        {
+            sorted.push_back(group.value);
+        }
         std::sort(sorted.begin(), sorted.end());
         const auto at = [&sorted](const double aFraction) {
             const double position = aFraction * static_cast<double>(sorted.size() - 1);
@@ -689,10 +771,29 @@ private:
         {
             return;
         }
-        if (!m_locked)
+        // How far apart the screens of the groups that agree were: a quarter of the
+        // groups may be something else, and they must not supply the distances.
+        double nearest = 0.0;
+        double farthest = 0.0;
+        for (const auto& group : m_groups)
+        {
+            if (std::abs(group.value - median) <= kAgreement * median)
+            {
+                nearest = nearest == 0.0 ? group.depth : std::min(nearest, group.depth);
+                farthest = std::max(farthest, group.depth);
+            }
+        }
+        m_nearest = nearest;
+        m_farthest = farthest;
+        if (!(nearest > 0.0) || !(farthest >= nearest * kDepthSpan))
+        {
+            return;
+        }
+        if (!measured)
         {
             m_b = median;
             m_locked = true;
+            m_assumed = false;
             return;
         }
         if (std::abs(median - m_b) > kMove * m_b)
@@ -702,11 +803,14 @@ private:
     }
 
     Convention m_convention{Convention::Unknown};
-    std::vector<double> m_groups;
+    std::vector<Group> m_groups;
     bool m_locked{};
+    bool m_assumed{};
     double m_b{};
     double m_spread{};
     double m_median{};
+    double m_nearest{};
+    double m_farthest{};
 };
 
 /// Where on a screen the calibration looks: a 3 x 3 grid over the middle of the

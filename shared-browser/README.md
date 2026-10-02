@@ -73,6 +73,23 @@ on the picture shows a note saying to use Ctrl+V. A paste is reported to the
 television's log as `browser_ice (paste ...)` -- which key, on what, how many
 characters, or why nothing was sent -- and never the text.
 
+## Volume and mute
+
+The television's volume slider and mute button are the shared browser's too. The
+client page is the server's, so the television (`open77_media/web/tv.js`) cannot
+reach into it: it posts its level to the framed page -- to that page's origin only,
+at every update and once the page has loaded -- and `server/build/open77-volume.js`
+puts it on the stream's media element. The client keeps a volume of its own (saved
+in the browser, and copied back from the element whenever the element's changes),
+so the script also puts the television's level back whenever anything else moves
+it; the client then saves the television's level as its own. Each set has its own
+level, as every television does. The page reports where the level went
+(`volume_applied`/`mute_applied ... via the shared browser's page`) and the client
+page what it did (`browser_ice (volume 35 on 1 element ...)`), when either changes.
+
+Before this the slider and the mute button changed nothing at all on the shared
+browser: they were wired to YouTube's player and to plain video only.
+
 ## When the picture does not come
 
 The stream is WebRTC: UDP to the server's port 59100 first, and TCP to the same
@@ -131,8 +148,8 @@ machine are not touched.
 1. Copy `server/` to `/opt/open77-tvbrowser` (root, 700) and run `up.sh`. The
    first run generates `neko.env` (viewer and admin passwords, API token) and the
    television link `tv-url.secret`, both root-only; later runs reuse them, so the
-   link does not change. It builds `open77/tvbrowser-chromium:4`, checks the
-   image (both scripts in the client page, the policy, no Widevine), and runs the
+   link does not change. It builds `open77/tvbrowser-chromium:5`, checks the
+   image (the three scripts in the client page, the policy, no Widevine), and runs the
    container capped at 4 cores, 4 GB and 2 GB of shared memory, with the client
    on `127.0.0.1:18080` and WebRTC on `59100` (UDP and TCP, published by Docker,
    so the host's INPUT rules are not changed).
@@ -142,17 +159,24 @@ machine are not touched.
    `tv-url.secret` (`url`, `cinemaRecord`, `cinema100Record`; root, 600), and add
    `opx_tvbrowser` to `resources.load` in `server.jsonc` (staging loads an
    explicit list).
-4. `test/e2e.sh`, `test/e2e-page.sh` and `test/e2e-paste.sh` run a Playwright
-   Chromium on the server, so it reaches the browser the way a player does:
-   logged in from the television link, the picture over the public IP (in the
-   four networks above), and a link pasted into the address bar and opened.
+4. `test/e2e.sh`, `test/e2e-page.sh`, `test/e2e-paste.sh` and `test/e2e-volume.sh`
+   run a Playwright Chromium on the server, so it reaches the browser the way a
+   player does: logged in from the television link, the picture over the public
+   IP (in the four networks above), a link pasted into the address bar and
+   opened, and the television's level read back from the stream (2026-10-02, image
+   5: 100, then 35, 35 muted and 75, as asked).
 
-Staging went through four builds of `server/build/`, each a recreate with the
+Staging went through five builds of `server/build/`, each a recreate with the
 same `neko.env`, ports and link, the one before kept for rollback: 1, Widevine
 removed and the policies; 2, `open77-ice.js` and the health check at the path the
 server answers on (neko's own asked `/health`, which a server with a path prefix
 answers under the prefix, so a healthy container reported unhealthy); 3,
-`open77-paste.js`; 4, the paste notes and reports, and new tabs opening Google.
+`open77-paste.js`; 4, the paste notes and reports, and new tabs opening Google; 5,
+`open77-volume.js`. Build 5 also makes the policy and the scripts readable whatever
+modes the build context had: its first rollout was built from files copied from
+Windows, which arrive root-only, so for three minutes (nobody connected) neko
+answered 403 for the scripts and Chromium could not read its policies. `up.sh`
+checks the modes in the image now.
 
 The picture is 1280x720 at 30 fps (`NEKO_DESKTOP_SCREEN`); each viewer is one
 WebRTC stream from the server.
@@ -163,7 +187,7 @@ WebRTC stream from the server.
 cd opx_tvbrowser && lua5.4 tests/run.lua    # the link rule, the commands, which TV, the export (33 checks)
 node server/test/ice-local.mjs              # open77-ice.js against real peer connections (16)
 node server/test/paste-local.mjs            # open77-paste.js: keys, socket, notes, reports (31)
-node tests/tv-page/run.mjs                  # from the repository root: the page's half (44)
+node tests/tv-page/run.mjs                  # from the repository root: the page's half, volume included (54)
 ```
 
 `server/test/e2e*.sh` run on the server against the real container.

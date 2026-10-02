@@ -17,6 +17,7 @@ were wrong with the picture that path drew, and the patch series in
 | `0005` | a screen with part of it behind the camera: the part in front, exactly |
 | `0006` | `0005`'s test target built without Windows' `min`/`max` macros |
 | `0007` | the web host's "no decoder here" answer to the probe is valid JSON |
+| `0008` | the depth test's scale measured only from screens that agree across distances |
 
 They apply with `git am` on open77-base `main` (36772b3b).
 
@@ -58,7 +59,8 @@ The game's own depth buffer knows what is in front, so the fix uses it:
 - **What a value means.** Device depth is `A + B / z` for every perspective
   projection; the two numbers are measured from the screens themselves (the
   producer knows each screen's view depth, and the buffer has the set's own glass
-  in it) and locked once enough looks agree.
+  in it). Since `0008`, reversed depth starts from this game's near plane and a
+  measurement replaces it only when screens seen from different distances agree.
 - **Drawing through it** (`ScreenDepthPass`, `ScreenDepthComposite.hlsl`,
   `ScreenDepth.hlsli`). One draw a screen; the pixel shader works out each pixel's
   exact texture coordinate and view depth from the screen's map, compares it with
@@ -72,6 +74,38 @@ Until it has found the buffer, a screen is drawn exactly as `0001` draws it.
 In game: Ctrl+Shift+F10 shows the depth image in use, Ctrl+Shift+F11 turns the
 test off and on, Ctrl+Shift+F9 tries the next candidate buffer.
 `OP77_TV_DEPTH=0` turns all of it off. Everything is logged as `TV depth:`.
+
+## Not from the player's body (`0008`)
+
+Reported in game on 2026-10-02, the evening after `0001` to `0007` were tested:
+the picture was drawn over the player's body again, went back behind it once the
+player walked a long way off, and over it again on the way back. The log said why.
+Every earlier session had measured `B` (the near plane) as 0.0200 within a second;
+this one sat on "measuring" for two minutes and then locked on 0.186, and moved
+between 0.16 and 0.27 after that -- about ten times too much, so the picture
+counted as ten times nearer than it was, in front of anything closer than 25 to
+40 m. The only screen in view was a 100 ft browser cinema put up in an earlier
+session, and its panel was not in the game's depth behind the picture that
+session: two thirds of the frames' samples saw sky, and the rest saw the player's
+own back, in third person, in front of the middle of the screen. Standing still,
+those agreed with each other well enough to lock. A cinema placed later in the same
+session measured 0.01997 at once.
+
+What tells a body (or a hand, or a wall in front of a screen) from the glass is
+distance: the body stays where it is in front of the camera while the screen does
+not, so what it says follows the screen's distance, and the glass's value does not.
+So the calibration now counts a group only when at least four of its points agree
+(to 2 %) on the lowest value they share, takes a value only from groups that agree
+and saw their screens from distances at least 1.2 times apart, and starts reversed
+depth from this game's near plane, 0.02 m (every lock measured in game was 0.01985
+to 0.01998), so the test is right from the first frame and a screen with no panel
+cannot move it. The log says `assumed what the depth means` at the start and, when
+a measurement replaces it, the distances it was measured from.
+`SceneDepthPolicyTests.cpp` pins that session: a torso 2.6 m from the camera in
+front of a panel-less screen, standing for four windows and walking from 40 m to
+10 m, leaves the near plane where it is.
+
+Why that cinema's panel was missing from the depth that session is not known yet.
 
 ## Cut at the camera (`0005`)
 
@@ -129,7 +163,8 @@ are in the patches.
 ImGui draw list read back), `ScreenDepthTests.cpp` (the shader's arithmetic
 against a ray-traced scene: a hand, a pillar, a wall, three depth conventions,
 upscaled and dynamic-resolution depth), `SceneDepthPolicyTests.cpp` (which buffer,
-what its values mean, when to copy), `ScreenDepthShaderSourceTests.cpp`, and
+what its values mean -- and not the player's body in front of a screen -- when to
+copy), `ScreenDepthShaderSourceTests.cpp`, and
 `ScreenClipTests.cpp` (the cut, the map against a ray-traced camera -- to a
 millionth of a pixel, and within 0.02 px through float32 arithmetic 2 km from
 the origin -- the refusals, the depth pass from the map pixel by pixel, the fan's

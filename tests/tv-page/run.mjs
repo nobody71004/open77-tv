@@ -10,7 +10,9 @@
 // (asking for client page 2), kept across state updates and closed when the TV
 // leaves it; it checks this PC's network once (browser_net) and logs the shared
 // browser's own account of its stream (browser_ice, from the image's
-// open77-ice.js), telling the player when the picture cannot come.
+// open77-ice.js), telling the player when the picture cannot come; and its
+// sound follows the television's volume and mute (the image's open77-volume.js,
+// run here for real in a stand-in client page).
 //
 //   npm i -D playwright && npx playwright install chromium
 //   node tests/tv-page/run.mjs [web dir]          (default: open77_media/web)
@@ -28,6 +30,8 @@ try {
   process.exit(2);
 }
 const webDir = process.argv[2] || path.join(here, "..", "..", "open77_media", "web");
+const volumeScript = process.env.OPEN77_VOLUME_JS ||
+  path.join(here, "..", "..", "shared-browser", "server", "build", "open77-volume.js");
 // The web host's 'disabled' answer exactly as SurfaceClient builds it: the detail
 // is JsonQuote(...) -- already quoted -- inside another pair of quotes.
 const jsonQuote = (s) => JSON.stringify(s);
@@ -72,6 +76,16 @@ const server = http.createServer((req, res) => {
     res.writeHead(200, { "Content-Type": "text/html" });
     return res.end("<html><body>neko<script>const steps=" + steps + ";let i=0;(function next(){if(i>=steps.length)return;" +
       "const s=steps[i++];parent.postMessage({open77SharedBrowser:1,kind:s[0],mode:s[1],text:s[2]},'*');setTimeout(next,60);})();</script></body></html>");
+  }
+  // The shared browser's client page as far as its sound goes: the image's
+  // open77-volume.js, and the media element neko's player streams into.
+  if (url.pathname === "/neko-volume") {
+    res.writeHead(200, { "Content-Type": "text/html" });
+    return res.end('<html><head><script src="/open77-volume.js"></script></head><body>neko<video id="stream"></video></body></html>');
+  }
+  if (url.pathname === "/open77-volume.js") {
+    res.writeHead(200, { "Content-Type": "text/javascript" });
+    return res.end(fs.readFileSync(volumeScript));
   }
   if (url.pathname === "/site") {
     res.writeHead(200, { "Content-Type": "text/html" });
@@ -280,7 +294,56 @@ ice = await iceLines();
 check(ice.length === 1 && /^adindb \[auto\] line one line two/.test(ice[0]) && !/[\n\u0007]/.test(ice[0]),
   "an odd message is reduced to a word and one line: " + JSON.stringify(ice));
 
-// 21. A message after the television left the shared browser is ignored.
+// 21. The shared browser's sound follows the television's volume and mute: the
+// level is posted to its page, whose open77-volume.js puts it on the stream.
+const streamFrame = () => page.frames().find((f) => f.url().includes("/neko-volume"));
+const stream = () => streamFrame().evaluate(() => {
+  const v = document.getElementById("stream");
+  return { volume: v.volume, muted: v.muted };
+});
+const allLines = () => page.evaluate(() => (window.__all || []).map((r) => r[1].status + " | " + r[1].detail));
+await page.evaluate(() => { window.__all = []; });
+await setState({ ...base_state, url: base + "/neko-volume#open77-shared-browser", volume: 40, muted: false });
+await page.waitForTimeout(700);
+let sound = await stream();
+check(Math.abs(sound.volume - 0.4) < 1e-6 && sound.muted === false, "the stream plays at the television's 40: " + JSON.stringify(sound));
+let lines = await allLines();
+check(lines.includes("volume_applied | asked=40 via the shared browser's page"), "the television says where the level went: " + JSON.stringify(lines));
+check(lines.some((x) => /^browser_ice \| volume \[auto\] 40 on 1 element/.test(x)), "and the client page says it put it on the stream: " + JSON.stringify(lines));
+
+// 22. Another player turns it down and mutes it: the same frame, the new level.
+await page.evaluate(() => { window.__frameRef = document.querySelector("#embed iframe"); window.__all = []; });
+await setState({ ...base_state, url: base + "/neko-volume#open77-shared-browser", volume: 10, muted: true });
+await page.waitForTimeout(400);
+sound = await stream();
+check(Math.abs(sound.volume - 0.1) < 1e-6 && sound.muted === true, "muted at 10 after an update: " + JSON.stringify(sound));
+check(await page.evaluate(() => document.querySelector("#embed iframe") === window.__frameRef), "in the same frame (no reconnect)");
+lines = await allLines();
+check(lines.includes("mute_applied | asked=10 muted via the shared browser's page"), "reported as a mute: " + JSON.stringify(lines));
+await setState({ ...base_state, url: base + "/neko-volume#open77-shared-browser", volume: 10, muted: true });
+await page.waitForTimeout(300);
+check((await allLines()).filter((x) => x.startsWith("mute_applied")).length === 1, "an update that changes nothing is not reported again");
+
+// 23. The client putting its own saved level back on the element does not last.
+await streamFrame().evaluate(() => { const v = document.getElementById("stream"); v.muted = false; v.volume = 1; });
+await page.waitForTimeout(300);
+sound = await stream();
+check(Math.abs(sound.volume - 0.1) < 1e-6 && sound.muted === true, "the television's level goes back on: " + JSON.stringify(sound));
+
+// 24. An element the client makes later gets the level as it starts, and a level
+// posted by anything but the television is ignored.
+sound = await streamFrame().evaluate(() => {
+  const late = document.createElement("video");
+  document.body.appendChild(late);
+  late.dispatchEvent(new Event("playing"));
+  window.postMessage({ open77SharedBrowserVolume: 1, volume: 1, muted: false }, "*");
+  return new Promise((resolve) => setTimeout(() => resolve({ volume: late.volume, muted: late.muted,
+    first: document.getElementById("stream").volume }), 250));
+});
+check(Math.abs(sound.volume - 0.1) < 1e-6 && sound.muted === true, "an element made later gets it: " + JSON.stringify(sound));
+check(Math.abs(sound.first - 0.1) < 1e-6, "and a level the page posts to itself is ignored: " + JSON.stringify(sound));
+
+// 25. A message after the television left the shared browser is ignored.
 await page.evaluate(() => { window.__all = []; });
 await setState({ ...base_state, url: "" });
 await page.waitForTimeout(300);

@@ -101,13 +101,15 @@ tests/
   tv-page/run.mjs               the television page in a real Chromium against a
                                 stub host: DRM links named, the host's malformed
                                 probe answer read, sites framed with the decoder off,
-                                the shared browser's network check and stream log
+                                the shared browser's network check and stream log,
+                                and its sound following the television's volume
   fixtures/                     a snapshot of open77_admin's prop-model aliases
 shared-browser/          a real Chromium on the server streamed to a television
                          over WebRTC, the same for everyone at it, without DRM:
                          the resource (/browser, the TV menu's two browser
-                         cinemas), the container, and Ctrl+V pasting a link
-                         copied on the player's PC into it
+                         cinemas), the container, Ctrl+V pasting a link
+                         copied on the player's PC into it, and the TV's volume
+                         and mute on its sound
                          (shared-browser/README.md)
 watch-party/             Netflix watch parties: everyone plays the film in their
                          own browser on their own account, and the party keeps
@@ -399,7 +401,9 @@ existing code rather than a new system.
 * **Volume on a foreign embed.** A YouTube embed is driven through its
   `postMessage` transport, so volume, mute, pause and seek all work. Any other
   site's player lives in a document this page cannot reach: the slider moves and
-  nothing happens, and the page says so rather than pretending.
+  nothing happens, and the page says so rather than pretending. The shared
+  browser is the exception: its client page is ours, so it takes the level
+  (`shared-browser/README.md`, "Volume and mute").
 * **Screen budget.** Eight CEF surfaces per resource, held by the client. A
   server may hold far more televisions than any one client will materialise, so
   the client decides which are worth building from the distances the server
