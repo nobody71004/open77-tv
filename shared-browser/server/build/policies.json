@@ -1,0 +1,54 @@
+{
+  "AutofillAddressEnabled": false,
+  "AutofillCreditCardEnabled": false,
+  "BrowserSignin": 0,
+  "DefaultNotificationsSetting": 2,
+  "DeveloperToolsAvailability": 2,
+  "EditBookmarksEnabled": false,
+  "FullscreenAllowed": true,
+  "IncognitoModeAvailability": 1,
+  "SyncDisabled": true,
+  "AutoplayAllowed": true,
+  "BrowserAddPersonEnabled": false,
+  "BrowserGuestModeEnabled": false,
+  "DefaultPopupsSetting": 2,
+  "DownloadRestrictions": 3,
+  "VideoCaptureAllowed": false,
+  "AudioCaptureAllowed": false,
+  "AllowFileSelectionDialogs": false,
+  "PromptForDownloadLocation": false,
+  "BookmarkBarEnabled": false,
+  "PasswordManagerEnabled": false,
+  "BrowserLabsEnabled": false,
+  "CommandLineFlagSecurityWarningsEnabled": false,
+  "ComponentUpdatesEnabled": false,
+  "MetricsReportingEnabled": false,
+  "HomepageLocation": "https://www.youtube.com/",
+  "RestoreOnStartup": 4,
+  "RestoreOnStartupURLs": [
+    "https://www.youtube.com/"
+  ],
+  "URLAllowlist": [
+    "file:///home/neko/Downloads"
+  ],
+  "URLBlocklist": [
+    "file://*",
+    "chrome://policy",
+    "chrome://components",
+    "localhost",
+    "127.0.0.1",
+    "0.0.0.0",
+    "[::1]",
+    "169.254.169.254",
+    "172.17.0.1"
+  ],
+  "ExtensionInstallForcelist": [
+    "ddkjiahejlhfcafbddmgiahcphecmpfh;https://clients2.google.com/service/update2/crx"
+  ],
+  "ExtensionInstallAllowlist": [
+    "ddkjiahejlhfcafbddmgiahcphecmpfh"
+  ],
+  "ExtensionInstallBlocklist": [
+    "*"
+  ]
+}
