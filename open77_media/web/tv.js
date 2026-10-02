@@ -1208,12 +1208,26 @@
   /// (neko's own paste), and it is told nothing else: the page it loads is the
   /// server's own client, logged in by the link.
   let sharedBrowserNoticeTimer = null;
+  /// The shared browser's client page this television expects (the image's
+  /// open77-ice.js in it). On the link as a parameter so a page a PC still holds
+  /// from an older image is not used: the client page is sent without a cache
+  /// lifetime, and Chromium would otherwise keep it for hours.
+  const SHARED_BROWSER_PAGE = "2";
+  function sharedBrowserPage(src) {
+    try {
+      const url = new URL(src);
+      url.searchParams.set("open77", SHARED_BROWSER_PAGE);
+      return url.toString();
+    } catch (error) {
+      return src;
+    }
+  }
   function showSharedBrowser(src) {
     stopPicture();
     const frame = document.createElement("iframe");
     frame.setAttribute("allow", "autoplay; fullscreen; clipboard-read; clipboard-write");
     frame.setAttribute("referrerpolicy", "no-referrer");
-    frame.src = src;
+    frame.src = sharedBrowserPage(src);
     frame.addEventListener("load", () => report("browser_framed", "shared browser client loaded"));
     elements.embed.appendChild(frame);
     youTubeFrame = frame;
@@ -1227,6 +1241,81 @@
       if (showing.kind === "browser") notice("");
     }, 8000);
     report("browser", "shared browser");
+    checkBrowserNetwork();
+  }
+
+  /// The shared browser's own account of its stream: the image's open77-ice.js,
+  /// in the framed client page, posts what its WebRTC connection did -- the kinds
+  /// of candidates gathered and offered, every pair tried with the checks sent
+  /// and answered, the pair that carried the picture -- and, when it reopens the
+  /// page over TCP or gives up, says so. Kinds and counts only, never an address.
+  /// Logged as `browser_ice`; the player is told when the picture cannot come.
+  /// Only the frame showing the shared browser is listened to.
+  window.addEventListener("message", function (event) {
+    const data = event.data;
+    if (!data || typeof data !== "object" || data.open77SharedBrowser !== 1) return;
+    if (showing.kind !== "browser" || !youTubeFrame || event.source !== youTubeFrame.contentWindow) return;
+    const kind = String(data.kind || "").replace(/[^a-z_]/g, "").slice(0, 24) || "note";
+    const mode = data.mode === "tcp" ? "tcp" : "auto";
+    const text = String(data.text || "").replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, 600);
+    report("browser_ice", kind + " [" + mode + "] " + text);
+    if (kind === "connected") {
+      notice("");
+    } else if (kind === "retry_tcp") {
+      notice("Shared browser: no picture over UDP from this PC -- trying TCP ...");
+    } else if (kind === "gave_up") {
+      notice("Shared browser: its picture cannot reach this PC (UDP and TCP to the server's port 59100 " +
+        "both failed). A firewall on this PC may be blocking the game's browser.");
+    }
+  });
+
+  /// What this PC's network lets the shared browser's stream do, said once per
+  /// page in the log: the stream is WebRTC, and a television that frames the
+  /// browser's page and then stays black is a stream that never connected. The
+  /// question asked is the one that tells the two usual reasons apart: does a
+  /// public STUN server's answer reach this browser at all (`srflx` candidates),
+  /// over UDP? None means UDP answers are not getting back to this PC -- a firewall
+  /// on it, or the network -- and the stream needs a relay over TCP. Only the
+  /// candidate kinds are reported, never an address.
+  let browserNetworkChecked = false;
+  function checkBrowserNetwork() {
+    if (browserNetworkChecked || typeof RTCPeerConnection !== "function") return;
+    browserNetworkChecked = true;
+    const counts = { host: 0, srflx: 0, prflx: 0, relay: 0, udp: 0, tcp: 0 };
+    let connection;
+    try {
+      connection = new RTCPeerConnection({ iceServers: [{ urls: ["stun:stun.l.google.com:19302"] }] });
+    } catch (error) {
+      report("browser_net", "no WebRTC here: " + error);
+      return;
+    }
+    let done = false;
+    const finish = function (why) {
+      if (done) return;
+      done = true;
+      try { connection.close(); } catch (error) { /* closing is best effort */ }
+      report("browser_net", "candidates host=" + counts.host + " srflx=" + counts.srflx +
+        " relay=" + counts.relay + " udp=" + counts.udp + " tcp=" + counts.tcp + " (" + why + ")" +
+        (counts.srflx === 0 ? ": no STUN answer reached this browser over UDP" : ": UDP answers arrive"));
+    };
+    connection.onicecandidate = function (event) {
+      if (!event.candidate) { finish("gathering complete"); return; }
+      const line = String(event.candidate.candidate || "");
+      const type = /\btyp (\w+)/.exec(line);
+      if (type && counts[type[1]] !== undefined) counts[type[1]] += 1;
+      if (/ udp /i.test(line)) counts.udp += 1;
+      if (/ tcp /i.test(line)) counts.tcp += 1;
+    };
+    try {
+      connection.createDataChannel("open77-check");
+      connection.createOffer()
+        .then(function (offer) { return connection.setLocalDescription(offer); })
+        .catch(function (error) { finish("offer failed: " + error); });
+    } catch (error) {
+      finish("offer failed: " + error);
+      return;
+    }
+    setTimeout(function () { finish("timed out"); }, 8000);
   }
 
   /// Puts out whatever the screen was showing, picture and sound: a link that can

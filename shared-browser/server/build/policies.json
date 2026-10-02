@@ -50,5 +50,6 @@
   ],
   "ExtensionInstallBlocklist": [
     "*"
-  ]
+  ],
+  "NewTabPageLocation": "https://www.google.com/"
 }

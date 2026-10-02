@@ -26,6 +26,10 @@ check(L.isShared(GOOD) and not L.isShared("https://www.youtube.com/") and not L.
 check(L.verb({}) == "on" and L.verb({ "here" }) == "on" and L.verb({ "CINEMA" }) == "cinema" and L.verb({ "off" }) == "off",
     "verbs: none/here -> on, cinema, off")
 check(L.verb({ "dance" }) == nil and select(2, L.verb({ "dance" })) == "dance", "an unknown verb is named")
+check(L.cinemaSize({ "cinema" }) == "150" and L.cinemaSize({ "cinema", "150" }) == "150", "a cinema is 150 ft unless asked")
+check(L.cinemaSize({ "cinema", "100" }) == "100" and L.cinemaSize({ "cinema", "100ft" }) == "100" and L.cinemaSize({ "cinema", "100 FT" }) == "100",
+    "100 / 100ft / 100 FT ask for the 100 ft one")
+check(L.cinemaSize({ "cinema", "7" }) == nil and select(2, L.cinemaSize({ "cinema", "7" })) == "7", "any other size is named")
 
 -- ---------------------------------------------------------------------------
 -- The server
@@ -38,7 +42,7 @@ local function loadServer(url)
     _G.AddEventHandler = function() end
     _G.GetCurrentResourceName = function() return "opx_tvbrowser" end
     _G.print = function(text) printed[#printed + 1] = tostring(text) end
-    OpxTvBrowserConfig = { url = url, cinemaRecord = "cinema.150ft" }
+    OpxTvBrowserConfig = { url = url, cinemaRecord = "cinema.150ft.browser", cinema100Record = "cinema.100ft.browser" }
     assert(loadfile("server/main.lua"))()
     return sent, commands, handlers, printed
 end
@@ -50,8 +54,16 @@ check(#sent == 1 and sent[1].name == "opx:tvbrowser:put" and sent[1].target == 7
     "/browser hands the link to the player who asked, and only to them")
 sent[1] = nil
 commands.browser(7, { "cinema" }, "browser cinema")
-check(sent[1] and sent[1].name == "opx:tvbrowser:cinema" and sent[1].args[1].record == "cinema.150ft", "/browser cinema asks for the 150 ft cinema")
+check(sent[1] and sent[1].name == "opx:tvbrowser:cinema" and sent[1].args[1].record == "cinema.150ft.browser", "/browser cinema asks for the 150 ft cinema")
 sent[1] = nil
+commands.browser(7, { "cinema", "100" }, "browser cinema 100")
+check(sent[1] and sent[1].name == "opx:tvbrowser:cinema" and sent[1].args[1].record == "cinema.100ft.browser"
+    and sent[1].args[1].url == GOOD, "/browser cinema 100 asks for the 100 ft browser cinema")
+sent[1] = nil
+commands.browser(7, { "cinema", "7" }, "browser cinema 7")
+check(sent[1] and sent[1].name == "open77:command:result" and sent[1].args[2] == false
+    and tostring(sent[1].args[3]):find("100", 1, true) ~= nil, "an unknown size is refused, naming the sizes")
+for i = #sent, 1, -1 do sent[i] = nil end
 commands.browser(7, { "off" }, "browser off")
 check(sent[1] and sent[1].name == "opx:tvbrowser:off", "/browser off asks the client to clear its TV")
 sent[1] = nil
@@ -61,6 +73,19 @@ for i = #sent, 1, -1 do sent[i] = nil end
 handlers["opx:tvbrowser:report"]({ ok = true, text = string.rep("x", 400) })
 check(true, "a report without a source is ignored")
 
+-- The link export: open77_media's browser cinema asks for it; nobody else is answered.
+do
+    local exported = {}
+    _G.exports = function(name, fn) exported[name] = fn end
+    local invoker = "open77_media"
+    _G.GetInvokingResource = function() return invoker end
+    loadServer(GOOD)
+    check(type(exported.link) == "function", "the link is exported")
+    check(exported.link and exported.link() == GOOD, "open77_media gets the link")
+    invoker = "some_other_resource"
+    check(exported.link and exported.link() == nil, "another resource does not")
+    _G.exports = nil
+end
 do
     local s2, c2 = loadServer(nil)
     c2.browser(3, {}, "browser")
@@ -124,10 +149,18 @@ control = lastServer("open77:media:control")
 check(control and control.args[2].id == 2 and control.args[2].url == "", "off clears a set that shows it")
 
 toServer = {}
-net["opx:tvbrowser:cinema"]({ url = GOOD, record = "cinema.150ft" })
+net["opx:tvbrowser:cinema"]({ url = GOOD, record = "cinema.150ft.browser" })
 local spawn = lastServer("open77:media:spawn")
-check(spawn and spawn.args[1].record == "cinema.150ft" and spawn.args[1].url == GOOD and spawn.args[1].yaw == 90,
+check(spawn and spawn.args[1].record == "cinema.150ft.browser" and spawn.args[1].url == GOOD and spawn.args[1].yaw == 90,
     "cinema spawns the 150 ft record with the link and the player's facing")
+said = lastServer("opx:tvbrowser:report")
+check(said and said.args[1].text:find("150 ft", 1, true), "and says 150 ft")
+toServer = {}
+net["opx:tvbrowser:cinema"]({ url = GOOD, record = "cinema.100ft.browser" })
+spawn = lastServer("open77:media:spawn")
+said = lastServer("opx:tvbrowser:report")
+check(spawn and spawn.args[1].record == "cinema.100ft.browser" and said and said.args[1].text:find("100 ft", 1, true),
+    "the 100 ft one spawns its own record and says 100 ft")
 toServer = {}
 net["opx:tvbrowser:put"]({ url = "https://evil.example/" })
 check(#toServer == 0, "a link without the mark from anywhere is ignored by the client")

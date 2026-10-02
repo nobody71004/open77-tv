@@ -25,6 +25,16 @@ function OpxTvBrowserLink.isShared(url)
     return type(url) == "string" and url:sub(-#OpxTvBrowserLink.MARK) == OpxTvBrowserLink.MARK
 end
 
+---Which browser cinema `/browser cinema [size]` asks for: "100" or "150" (the
+---default), else nil and what was typed.
+function OpxTvBrowserLink.cinemaSize(args)
+    local size = type(args) == "table" and tostring(args[2] or ""):lower() or ""
+    size = size:gsub("%s*f[ee]*t$", ""):gsub("%s*foot$", "")
+    if size == "" or size == "150" then return "150" end
+    if size == "100" then return "100" end
+    return nil, size
+end
+
 ---The words a player reads for a verb they typed: on, cinema, off or help.
 function OpxTvBrowserLink.verb(args)
     local verb = type(args) == "table" and tostring(args[1] or ""):lower() or ""

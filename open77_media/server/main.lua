@@ -717,6 +717,34 @@ local function facingPlacement(record, position, heading)
     }, yaw
 end
 
+---The link a record's picture comes from when another resource provides it (the
+---browser cinema: `linkFrom = "opx_tvbrowser"`), asked of that resource's `link`
+---export when the set is put up, so the set is created showing it rather than
+---created blank and pointed afterwards. nil when the resource is not running or
+---has no link, and the caller says so instead of putting up a blank screen.
+local function linkedUrl(record)
+    local provider = record and record.linkFrom
+    if type(provider) ~= "string" or provider == "" then return nil end
+    if type(exports) ~= "table" and type(exports) ~= "userdata" then return nil end
+    local ok, link = pcall(function() return exports[provider]:link() end)
+    if ok and type(link) == "string" and link ~= "" then return link end
+    -- Why, for the operator: the host's reason when the call failed (it names the
+    -- export, never the link), or what came back instead of one.
+    print(string.format("media: %s gave no link for %s (%s)", provider, tostring(record.id),
+        ok and ("answered " .. type(link)) or tostring(link)))
+    return nil
+end
+
+-- The mark a shared-browser link ends in (opx_tvbrowser's `OpxTvBrowserLink.MARK`,
+-- `SHARED_BROWSER_MARK` in web/tv.js). A spawn of the browser cinema that brings
+-- such a link itself -- `/browser cinema` does, from the server that holds it --
+-- is put up with it when the export cannot be asked.
+local SHARED_BROWSER_MARK = "#open77-shared-browser"
+local function isSharedBrowserLink(url)
+    return type(url) == "string" and #url > #SHARED_BROWSER_MARK
+        and url:sub(-#SHARED_BROWSER_MARK) == SHARED_BROWSER_MARK
+end
+
 local function spawn(recordId, position, yaw, url, source)
     local record = Open77MediaRecord(recordId)
     if record == nil then return nil, "unknown_record" end
@@ -1361,7 +1389,18 @@ RegisterNetEvent("open77:media:spawn", function(payload)
     -- Set down in front of the caller and turned to face them, rather than
     -- created through them. See `facingPlacement`.
     local placed, facing = facingPlacement(definition, position, acceptYaw(payload.yaw))
-    local entry, reason = spawn(record, placed, facing, payload.url, source)
+    -- A set whose picture is another resource's takes that resource's link,
+    -- whatever the panel's link field held: it is what the record is for.
+    local url = payload.url
+    if definition.linkFrom ~= nil then
+        url = linkedUrl(definition) or (isSharedBrowserLink(payload.url) and payload.url or nil)
+        if url == nil then
+            TriggerClientEvent("open77:media:result", source, false,
+                "linked_resource_unavailable:" .. tostring(definition.linkFrom))
+            return
+        end
+    end
+    local entry, reason = spawn(record, placed, facing, url, source)
     if entry == nil then
         TriggerClientEvent("open77:media:result", source, false, tostring(reason))
         return

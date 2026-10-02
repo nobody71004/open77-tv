@@ -6,8 +6,11 @@
 // What it pins: a DRM service is named on the screen and never probed; the
 // malformed answer is repaired and a website is framed with the decoder off; a
 // video file says it needs the decoder; a stream found inside a site is not
-// played when the host cannot decode it; the shared browser is framed as it is,
-// kept across state updates and closed when the TV leaves it.
+// played when the host cannot decode it; the shared browser is framed as it is
+// (asking for client page 2), kept across state updates and closed when the TV
+// leaves it; it checks this PC's network once (browser_net) and logs the shared
+// browser's own account of its stream (browser_ice, from the image's
+// open77-ice.js), telling the player when the picture cannot come.
 //
 //   npm i -D playwright && npx playwright install chromium
 //   node tests/tv-page/run.mjs [web dir]          (default: open77_media/web)
@@ -54,6 +57,22 @@ const server = http.createServer((req, res) => {
     res.writeHead(200, { "Content-Type": "application/json" });
     return res.end(foundAnswer);
   }
+  // A stand-in for the shared browser's client page with the image's
+  // open77-ice.js: it posts to the television what that script would.
+  if (url.pathname === "/neko") {
+    const scripts = {
+      ok: [["start", "auto", "open77-ice 1: peer connection 40 ms after load"], ["state", "auto", "checking after 2 ms"],
+           ["connected", "auto", "gathered udp/hostx1; offered udp/host:59100,tcp/host/passive:59100; pairs udp/host>udp/host:59100 succeeded sent=2 answered=2; using udp/host>udp/host"]],
+      fail: [["start", "auto", "open77-ice 1: peer connection 40 ms after load"],
+             ["retry_tcp", "auto", "not connected after 20000 ms (checking); gathered udp/hostx1; offered udp/host:59100; pairs udp/host>udp/host:59100 in-progress sent=9 answered=0; using none"],
+             ["gave_up", "tcp", "not connected after 20000 ms (checking) over TCP too; gathered udp/hostx1; offered tcp/host/passive:59100; pairs none; using none"]],
+      odd: [["Bad Kind!<b>", "weird", "line one\nline two\u0007 <b>bold</b>"]],
+    };
+    const steps = JSON.stringify(scripts[url.searchParams.get("s")] || []);
+    res.writeHead(200, { "Content-Type": "text/html" });
+    return res.end("<html><body>neko<script>const steps=" + steps + ";let i=0;(function next(){if(i>=steps.length)return;" +
+      "const s=steps[i++];parent.postMessage({open77SharedBrowser:1,kind:s[0],mode:s[1],text:s[2]},'*');setTimeout(next,60);})();</script></body></html>");
+  }
   if (url.pathname === "/site") {
     res.writeHead(200, { "Content-Type": "text/html" });
     return res.end("<html><body>a site</body></html>");
@@ -64,7 +83,7 @@ const server = http.createServer((req, res) => {
   if (file.endsWith("tv.html")) {
     body = body.toString().replace('<script src="tv.js"></script>',
       '<script>window.__reports=[];window.__handlers={};window.Open77={on:function(n,f){window.__handlers[n]=f},' +
-      'emit:function(n,p){window.__reports.push([n,p])},ready:function(){}};</script><script src="tv.js"></script>');
+      'emit:function(n,p){window.__reports.push([n,p]);(window.__all=window.__all||[]).push([n,p])},ready:function(){}};</script><script src="tv.js"></script>');
   }
   res.writeHead(200, { "Content-Type": file.endsWith(".html") ? "text/html" : file.endsWith(".js") ? "text/javascript" : "text/css" });
   res.end(body);
@@ -195,7 +214,7 @@ await setState({ ...base_state, url: base + "/site?b=1#open77-shared-browser" })
 await settle();
 r = await reports();
 const bframe = await page.evaluate(() => { const f = document.querySelector("#embed iframe"); return f ? { src: f.src, allow: f.getAttribute("allow") } : null; });
-check(bframe && bframe.src === base + "/site?b=1", "the shared browser is framed without its mark: " + JSON.stringify(bframe));
+check(bframe && bframe.src === base + "/site?b=1&open77=2", "the shared browser is framed without its mark, asking for client page 2: " + JSON.stringify(bframe));
 check(bframe && /autoplay/.test(bframe.allow) && /clipboard-write/.test(bframe.allow), "with autoplay and clipboard allowed");
 check(r.some((x) => x.startsWith("browser | shared browser")), "reported as browser: " + JSON.stringify(r));
 check(!hits.some((h) => h.startsWith("/op77/media/probe") || h.startsWith("/op77/web/frame")), "no probe and no frame check for it");
@@ -217,6 +236,55 @@ probeMode = "disabledBuggy";
 await setState({ ...base_state, url: "https://cdn.example.invalid/after-browser.mp4" });
 await settle();
 check(await page.evaluate(() => document.querySelectorAll("#embed iframe").length) === 0, "an .mp4 after the browser leaves no hidden browser frame");
+
+
+// 16. The shared browser checks this PC's network once and says what it found.
+await page.waitForTimeout(9000);
+const net = await page.evaluate(() => (window.__all || []).filter((r) => r[1].status === "browser_net").map((r) => r[1].detail));
+check(net.length === 1 && /candidates host=\d+ srflx=\d+ relay=\d+ udp=\d+ tcp=\d+/.test(net[0]),
+  "one browser_net line with the candidate counts: " + JSON.stringify(net));
+check(net.length === 1 && !/\d+\.\d+\.\d+\.\d+/.test(net[0]), "and no address in it");
+
+// 17. The shared browser's account of its stream is logged as browser_ice, and a
+// connection clears the notice.
+const iceLines = () => page.evaluate(() => (window.__all || []).filter((r) => r[1].status === "browser_ice").map((r) => r[1].detail));
+await page.evaluate(() => { window.__all = []; });
+await setState({ ...base_state, url: base + "/neko?s=ok#open77-shared-browser" });
+await page.waitForTimeout(800);
+let ice = await iceLines();
+check(ice.length === 3 && ice[0].startsWith("start [auto] open77-ice 1") && ice[2].startsWith("connected [auto] gathered udp/hostx1"),
+  "the stream's account is logged as browser_ice: " + JSON.stringify(ice));
+check(!(await noticeShown()), "a connected stream clears the notice");
+
+// 18. A stream that cannot come: the retry and the giving up are said on the screen.
+await page.evaluate(() => { window.__all = []; });
+await setState({ ...base_state, url: base + "/neko?s=fail#open77-shared-browser" });
+await page.waitForTimeout(800);
+ice = await iceLines();
+check(ice.length === 3 && /^retry_tcp \[auto\] not connected/.test(ice[1]) && /^gave_up \[tcp\] .*over TCP too/.test(ice[2]),
+  "retry and giving up are logged: " + JSON.stringify(ice));
+n = await text("notice");
+check(await noticeShown() && n.includes("cannot reach this PC") && n.includes("59100") && n.includes("firewall"),
+  "and the player is told why there is no picture: " + n);
+
+// 19. The same message from anything but the shared browser's frame is ignored.
+await page.evaluate(() => { window.__all = []; window.postMessage({ open77SharedBrowser: 1, kind: "connected", mode: "auto", text: "forged" }, "*"); });
+await page.waitForTimeout(300);
+check((await iceLines()).length === 0, "a message that is not from the shared browser's frame is not logged");
+
+// 20. What is logged is the shape the television allows: a word for the kind, one line of text.
+await page.evaluate(() => { window.__all = []; });
+await setState({ ...base_state, url: base + "/neko?s=odd#open77-shared-browser" });
+await page.waitForTimeout(600);
+ice = await iceLines();
+check(ice.length === 1 && /^adindb \[auto\] line one line two/.test(ice[0]) && !/[\n\u0007]/.test(ice[0]),
+  "an odd message is reduced to a word and one line: " + JSON.stringify(ice));
+
+// 21. A message after the television left the shared browser is ignored.
+await page.evaluate(() => { window.__all = []; });
+await setState({ ...base_state, url: "" });
+await page.waitForTimeout(300);
+check((await iceLines()).length === 0, "nothing is logged once the shared browser is gone");
 
 check(errors.length === 0, "no page errors: " + JSON.stringify(errors));
 await browser.close();

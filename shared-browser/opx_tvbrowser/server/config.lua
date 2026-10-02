@@ -5,5 +5,6 @@
 -- a bundle carries: with no link, /browser says the browser is not set up here.
 OpxTvBrowserConfig = {
     url = nil,
-    cinemaRecord = "cinema.150ft",
+    cinemaRecord = "cinema.150ft.browser",
+    cinema100Record = "cinema.100ft.browser",
 }

@@ -22,7 +22,9 @@ The catalogue suite is not the only one: the placement arithmetic (which way
 is in its programme, so two screens showing one link stay together), the
 ad-blocklist grammar a server pushes (and the receipt that says whether the host
 took it) and the client half (which screens a client materialises, and what it
-releases when the session ends) are pure Lua too, and all five run here.
+releases when the session ends) are pure Lua too, and so is the server half of the
+browser cinema (a record whose picture another resource provides, asked for at
+spawn): all six run here.
 
 usage:
   python tools/run-suite.py [--lua <interpreter>] [--from <checkout>]
@@ -47,16 +49,19 @@ PLACEMENT_SUITE = "open77_media/tests/placement_test.lua"
 CLOCK_SUITE = "open77_media/tests/clock_test.lua"
 ADBLOCK_SUITE = "open77_media/tests/adblock_test.lua"
 CLIENT_SUITE = "open77_media/tests/client_test.lua"
+LINKED_SUITE = "open77_media/tests/linked_test.lua"
 SERVER_CONFIG = "open77_media/server/config.lua"
 SERVER_ADBLOCK = "open77_media/server/adblock.lua"
 RESOURCE = "open77_media"
 
-# The five pure suites, in the order they have to run.
+# The six pure suites, in the order they have to run.
 #
 # The catalogue suite comes first because it is the only one that needs the
 # admin alias list. The ad-block suite is the server's half of a policy the
 # browser host validates again -- so it loads the two server modules it is the
-# grammar of -- and the client suite comes LAST because it installs process-wide
+# grammar of. The linked suite loads the whole server half against stubs (so it
+# preloads everything that half reads as it loads) and puts every global it
+# stubbed back when it is done. The client suite comes LAST because it installs process-wide
 # `Open77`, `CreateThread` and `Wait` stubs so the resource can be loaded outside
 # the game -- a suite that ran after it would see those instead of nothing.
 # `tools/lua-test/run.lua` in the monorepo makes the same point.
@@ -65,6 +70,7 @@ SUITES = [
     ("open77_media / placement", [PLACEMENT], PLACEMENT_SUITE),
     ("open77_media / clock", [CLOCK], CLOCK_SUITE),
     ("open77_media / adblock", [SERVER_CONFIG, SERVER_ADBLOCK], ADBLOCK_SUITE),
+    ("open77_media / linked", [RECORDS, PLACEMENT, CLOCK, SERVER_CONFIG, SERVER_ADBLOCK], LINKED_SUITE),
     ("open77_media / client", [RECORDS], CLIENT_SUITE),
 ]
 
@@ -172,7 +178,7 @@ def main():
         print("preloading the vendored admin-model snapshot "
               "(pass --from <checkout> for the live list)")
 
-    # The client suite resolves the resource through `OPEN77_REPO_ROOT` (the
+    # The client and linked suites resolve the resource through `OPEN77_REPO_ROOT` (the
     # monorepo layout, `resources/system/open77_media/...`). This repository is
     # not that layout, so one is staged in a temp directory rather than teaching
     # the suite a second way to find its own resource -- the suite is a copy of
@@ -181,14 +187,14 @@ def main():
     layout = staged / "resources" / "system"
     layout.mkdir(parents=True)
     shutil.copytree(HERE / RESOURCE, layout / RESOURCE)
-    print(f"staged the resource at {layout / RESOURCE} for the client suite")
+    print(f"staged the resource at {layout / RESOURCE} for the client and linked suites")
 
     body = [f"assert(loadfile({lua_literal(admin)}))()\n"]
     for name, preload, suite in SUITES:
         chunk = []
-        # The client suite is the only one that needs to know where the resource
-        # lives, and it reads that from a global rather than from the CWD.
-        if suite == CLIENT_SUITE:
+        # The client and linked suites are the ones that need to know where the
+        # resource lives, and they read that from a global rather than from the CWD.
+        if suite in (CLIENT_SUITE, LINKED_SUITE):
             chunk.append(f"OPEN77_REPO_ROOT = {lua_literal(staged)}\n")
         for path in preload:
             chunk.append(f"assert(loadfile({lua_literal(HERE / path)}))()\n")

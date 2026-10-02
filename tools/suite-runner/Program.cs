@@ -48,6 +48,7 @@ internal static class Program
     private const string ClockSuite = "open77_media/tests/clock_test.lua";
     private const string AdblockSuite = "open77_media/tests/adblock_test.lua";
     private const string ClientSuite = "open77_media/tests/client_test.lua";
+    private const string LinkedSuite = "open77_media/tests/linked_test.lua";
 
     /// <summary>
     /// The directories whose contents are only ever loaded because the manifest
@@ -77,12 +78,14 @@ internal static class Program
     private const string AdminConfigPatch = "patches/resources__system__open77_admin__shared__config.lua.diff";
 
     /// <summary>
-    /// The five suites, in the order they are authored for.
+    /// The six suites, in the order they are authored for.
     ///
     /// The catalogue suite comes first because it is the only one that needs the
     /// admin alias list. The ad-block suite is the server's half of a policy the
     /// browser host validates again, so it loads the two server modules it is the
-    /// grammar of. The client suite comes LAST because it installs process-wide
+    /// grammar of. The linked suite loads the whole server half against stubs, so
+    /// it preloads everything that half reads as it loads, and it needs the staged
+    /// layout to find that half. The client suite comes LAST because it installs process-wide
     /// `Open77`, `CreateThread` and `Wait` stubs so the resource can be loaded
     /// outside the game; one state per suite already keeps those out of any other
     /// suite, but the order is the contract the monorepo's `run.lua` follows and
@@ -94,6 +97,7 @@ internal static class Program
         new("open77_media / placement", [Placement], PlacementSuite, NeedsRepoRoot: false),
         new("open77_media / clock", [Clock], ClockSuite, NeedsRepoRoot: false),
         new("open77_media / adblock", [ServerConfig, ServerAdblock], AdblockSuite, NeedsRepoRoot: false),
+        new("open77_media / linked", [Records, Placement, Clock, ServerConfig, ServerAdblock], LinkedSuite, NeedsRepoRoot: true),
         new("open77_media / client", [Records], ClientSuite, NeedsRepoRoot: true),
     ];
 
@@ -163,7 +167,7 @@ internal static class Program
         var staged = StageResource(repo);
         try
         {
-            Console.WriteLine($"staged the resource at {Path.Combine(staged, "resources", "system", Resource)} for the client suite");
+            Console.WriteLine($"staged the resource at {Path.Combine(staged, "resources", "system", Resource)} for the client and linked suites");
 
             // The manifest first, and fatally. Every suite below loads its modules
             // by PATH, so a manifest that has lost a declaration passes all of them

@@ -18,10 +18,12 @@ open77_media/          the resource -- this is the television
                          every rule again before it enforces it
   client/main.lua        binds a surface to a prop, keeps the quad on it, decides
                          which sets are worth materialising, releases pages on exit
-  shared/records.lua     the catalogue: 38 records -- the game's real televisions,
+  shared/records.lua     the catalogue: 40 records -- the game's real televisions,
                          monitors, panels, frames, a security monitor, and a
-                         scaled cinema family (a 100 ft and a 150 ft 16:9 panel) --
-                         each with a quad measured from its own mesh (see below)
+                         scaled cinema family (a 100 ft and a 150 ft 16:9 panel,
+                         each also as a browser cinema that comes up showing the
+                         shared browser) -- each with a quad measured from its
+                         own mesh (see below)
   shared/placement.lua   where "nudge it left" points, as arithmetic
   web/tv.html|css|js     the page one television shows: YouTube's own player, a
                          framed third-party site, or the host's decode route for a
@@ -36,8 +38,8 @@ open77_media/          the resource -- this is the television
   shared/clock.lua       where in its programme a set is: the server owns the
                          playhead, so two screens showing one link stay together
                          and a set that joins late opens where the others are
-  tests/                 five suites: records (1572 assertions), placement (132),
-                         clock (30), adblock (351), client (148)
+  tests/                 six suites: records (1675 assertions), placement (132),
+                         clock (30), adblock (351), linked (19), client (148)
 native/
   MediaScreens.hpp|cpp   the host-side module: bind a surface to a prop, project
                          its screen quad, publish overlay items, line-of-sight test
@@ -98,11 +100,14 @@ tests/
                                 probe, pinned across the three languages it spans
   tv-page/run.mjs               the television page in a real Chromium against a
                                 stub host: DRM links named, the host's malformed
-                                probe answer read, sites framed with the decoder off
+                                probe answer read, sites framed with the decoder off,
+                                the shared browser's network check and stream log
   fixtures/                     a snapshot of open77_admin's prop-model aliases
 shared-browser/          a real Chromium on the server streamed to a television
                          over WebRTC, the same for everyone at it, without DRM:
-                         the resource (/browser) and the container
+                         the resource (/browser, the TV menu's two browser
+                         cinemas), the container, and Ctrl+V pasting a link
+                         copied on the player's PC into it
                          (shared-browser/README.md)
 watch-party/             Netflix watch parties: everyone plays the film in their
                          own browser on their own account, and the party keeps
@@ -110,10 +115,10 @@ watch-party/             Netflix watch parties: everyone plays the film in their
                          the Edge/Chrome extension, its store listing and its
                          privacy policy (watch-party/README.md)
 tools/
-  suite-runner/          check the manifest declares every module, run the five
+  suite-runner/          check the manifest declares every module, run the six
                          Lua suites and maintain the vendored snapshot, with no
                          Lua interpreter (KeraLua)
-  run-suite.py           the same five suites through a real lua5.4
+  run-suite.py           the same six suites through a real lua5.4
   extract-tv-patches.py  regenerate patches/ from a checkout
 ```
 
@@ -169,7 +174,9 @@ which is our own arithmetic. Write one of them wrong and a 1.16 m picture hangs 
 the middle of a 30 m panel. `records_test.lua` therefore *derives* each scaled
 record's expected quad from the same model's record at scale 1, so an edit to
 either half fails in the suite instead of on a cinema screen in front of an
-audience.
+audience. The two browser cinemas (`cinema.100ft.browser`, `cinema.150ft.browser`)
+are those panels again, and the suite holds them to it: same scale, quad, reach
+and collider, and `linkFrom = "opx_tvbrowser"` on them and nothing else.
 
 The other half is where it lands. The spawn stand-off used to be a flat 1.1 m in
 front of the player, which for the 100 ft panel puts its centre almost 2 m
@@ -217,7 +224,7 @@ and the method are in `docs/webui-media-and-audio.md`:
 | `.mp3` / `.m4a` / `.aac` | **decoded by the host** through the transcode route, like `.mp4` |
 | a link this build cannot decode (`.mp4`, `.m4v`, `.mov`, `.m3u8`, `.mpd`, `.ts`, `.flv`, `.mkv`) | **the host decodes it** — `/op77/media/probe` asks `ffprobe` what the link is, and `/op77/media/stream` hands the page the same link re-encoded to VP9/Opus WebM. The page shows the decoder's first picture, and the seek bar disables itself until the stream declares a duration rather than lying. Without the decoder staged the verdict is `disabled` and the screen says which tools are missing. |
 | a site somebody pasted (`hdtoday`-style pages, anything without a media extension) | **framed, and its own player decides** — the media policy frames any `https:` origin, so the site's page is shown in a sandboxed frame and the log says `embed_framed` when a document arrived. If the link is a shell that refuses framing (`X-Frame-Options` / `frame-ancestors`) the host resolves it first and the *app inside* is framed instead — that is what `123movie-tv.it.com` turned out to be: 5.7 KB that refuses framing, wrapping two apps that do not. Whether its *video* plays is then the site's own business: these sites are JS shells over HLS/MP4 that is H.264 + AAC, the pair this build cannot decode, so a site whose player does no codec detection will show its UI and refuse the stream. Nothing about the site is the problem; the codec is. |
-| any site, through the shared browser (`/browser`) | **plays in a real Chromium on the server** — its picture and sound reach the television over WebRTC as VP8 and Opus, which this build decodes, so H.264 players and Twitch play there; everyone at the television sees the same browser, and F8 drives it. It has no DRM module, so protected video does not play in it (`shared-browser/`). |
+| any site, through the shared browser (`/browser`, or a browser cinema from the TV menu) | **plays in a real Chromium on the server** — its picture and sound reach the television over WebRTC as VP8 and Opus, which this build decodes, so H.264 players and Twitch play there; everyone at the television sees the same browser, F8 drives it, and Ctrl+V pastes a link copied on your PC into it. It has no DRM module, so protected video does not play in it (`shared-browser/`). |
 | Netflix, and any Widevine/PlayReady service | **impossible** — no CDM. A CDM cannot ship inside a process running under EAC, and Netflix additionally gates desktop playback on a hardware signature a CEF host cannot present. A pasted link to one says so on the screen (`PROTECTED_SERVICES` in `web/tv.js`) instead of probing it. For Netflix, a watch party (`watch-party/`) keeps everyone's own browser in step instead. |
 
 The refusals are deliberate and visible: the page names the codec and why, on
@@ -424,7 +431,7 @@ dotnet run --project tools/suite-runner -- --from /path/to/open77-base
 
 No Lua interpreter is needed: `tools/suite-runner` carries Lua 5.4 through
 KeraLua, the binding the monorepo's `Open77.Server.Tests` already uses, so the
-five suites run anywhere `dotnet` does — and CI runs them on Linux and Windows
+six suites run anywhere `dotnet` does — and CI runs them on Linux and Windows
 (`.github/workflows/ci.yml`), which is the first time these suites have been a
 gate rather than something somebody remembers to run.
 
@@ -435,7 +442,7 @@ npm i -D playwright && npx playwright install chromium
 node tests/tv-page/run.mjs
 ```
 
-`tools/run-suite.py` runs the same five files through a real `lua5.4` (pass
+`tools/run-suite.py` runs the same six files through a real `lua5.4` (pass
 `--lua /path/to/lua` if it is not on `PATH`). It refreshes the snapshot too. Both
 runners write it byte for byte, so the file does not depend on which one you used.
 

@@ -59,7 +59,7 @@ RegisterNetEvent("opx:tvbrowser:put", function(payload)
     local screen, distance, inReach = nearestScreen()
     if screen == nil or not inReach then
         local where = screen and string.format(" (the nearest, %s, is %.0f m away)", nameOf(screen), distance) or ""
-        return report(false, "no TV in reach" .. where .. ": stand at one, or /browser cinema puts up a 150 ft screen")
+        return report(false, "no TV in reach" .. where .. ": stand at one, or /browser cinema puts up a cinema screen with it (/browser cinema 100 for 100 ft)")
     end
     if screen.url == payload.url then
         return report(true, nameOf(screen) .. " already shows the shared browser: press F8 at the screen to use it")
@@ -88,8 +88,10 @@ RegisterNetEvent("opx:tvbrowser:cinema", function(payload)
         local ok, character = pcall(Open77.character.state)
         if ok and type(character) == "table" then yaw = character.yaw end
     end
-    TriggerServerEvent("open77:media:spawn", { record = tostring(payload.record or "cinema.150ft"), url = payload.url, yaw = yaw })
-    report(true, "putting up a 150 ft cinema in front of you with the shared browser on it: press F8 at the screen to use it")
+    local record = tostring(payload.record or "cinema.150ft.browser")
+    TriggerServerEvent("open77:media:spawn", { record = record, url = payload.url, yaw = yaw })
+    report(true, "putting up a " .. (record:find("100ft", 1, true) and "100" or "150") ..
+        " ft cinema in front of you with the shared browser on it: press F8 at the screen to use it")
 end)
 
 AddEventHandler("onClientResourceStart", function(name)

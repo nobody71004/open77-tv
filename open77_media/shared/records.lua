@@ -838,6 +838,51 @@ local records = {
             faces = { 0.0, 1.0, 0.0 },
         },
     },
+    -- The 100 ft and 150 ft panels again, put up showing the shared browser: a
+    -- real Chromium on the server, streamed to the screen, the same for everyone
+    -- in front of it (opx_tvbrowser). Their picture is another resource's, so the
+    -- records name that resource rather than a link: `linkFrom` is asked for the
+    -- link when the set is put up (`linkedUrl` in server/main.lua), and a server
+    -- without it says so instead of putting up a blank screen. Each is its
+    -- cinema's panel exactly: the same scale, quad, reach and collider.
+    {
+        id = "cinema.100ft.browser",
+        label = "Browser cinema, 100 ft",
+        model = "electronics.tv.screen.16x9",
+        blurb = "The 100 ft panel showing the shared browser -- a real Chromium on the server, the same for everyone. F8 at the screen to use it.",
+        scale = 26.2758621,
+        streamingRadius = 300.0,
+        border = "#3fb6ff",
+        collision = true,
+        linkFrom = "opx_tvbrowser",
+        quad = {
+            offset = { 0.0, 3.032077, 11.035862 },
+            right = { 1.0, 0.0, 0.0 },
+            up = { 0.0, 0.0, 1.0 },
+            width = 30.48,
+            height = 17.3421,
+            faces = { 0.0, 1.0, 0.0 },
+        },
+    },
+    {
+        id = "cinema.150ft.browser",
+        label = "Browser cinema, 150 ft",
+        model = "electronics.tv.screen.16x9",
+        blurb = "The 150 ft panel showing the shared browser -- a real Chromium on the server, the same for everyone. F8 at the screen to use it.",
+        scale = 39.4137931,
+        streamingRadius = 400.0,
+        border = "#3fb6ff",
+        collision = true,
+        linkFrom = "opx_tvbrowser",
+        quad = {
+            offset = { 0.0, 4.548115, 16.553793 },
+            right = { 1.0, 0.0, 0.0 },
+            up = { 0.0, 0.0, 1.0 },
+            width = 45.72,
+            height = 26.0131,
+            faces = { 0.0, 1.0, 0.0 },
+        },
+    },
 
     -- -------------------------------------------------------------------------
     -- One special case
