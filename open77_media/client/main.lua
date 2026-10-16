@@ -234,6 +234,16 @@ local function watchPartiesRunning()
     return ok and (name == "running" or name == "started" or name == "starting")
 end
 
+-- The panel's access to the sets, as the server last said it.
+--
+-- Only the SERVER can answer "may this player drive a television" -- a client cannot
+-- read its own ACEs -- so the answer travels with the snapshot and is kept here for the
+-- page, whose controls are greyed by it. Nil until a policy arrives, which is read as
+-- "may drive": the panel is a courtesy and the server is the boundary, so a client
+-- talking to an older server draws a live panel and is refused per action, exactly as
+-- it was before this existed.
+local controlAccess = nil   -- { adminOnly = bool, canControl = bool, reason = string }
+
 ---What the page is told. The page owns no state of its own: everything it shows
 ---came from the server through here, so two clients watching the same television
 ---cannot disagree about what is playing.
@@ -260,6 +270,14 @@ local function pageState(entry)
         -- and a hint that says "press the screen key" teaches nobody.
         key = remoteKeyName(),
         parties = watchPartiesRunning(),
+        -- Whether THIS player may drive a set at all, from the operator's admin-only
+        -- switch, which the server enforces in the one handler every control passes
+        -- through. The page greys its controls for a player who may not, and says
+        -- why: a click would be refused either way, and a panel that looks live and
+        -- does nothing is exactly the complaint this answers.
+        controlDenied = (controlAccess ~= nil and not controlAccess.canControl)
+            and (controlAccess.reason ~= "" and controlAccess.reason or "media_control_is_admin_only")
+            or nil,
     }
 end
 
@@ -626,6 +644,16 @@ local function materialisePage(entry)
     -- The page's curtain button. Same path as its URL bar and its volume keys:
     -- the request goes to the server, so the curtain every client sees is the one
     -- the server holds.
+    -- The page's admin lock button. Like every control it goes to the server,
+    -- which obeys it only for a holder of the command.media.lock ACE and refuses
+    -- a non-admin's attempt to lock or unlock. The lock comes back with the next
+    -- media:state.
+    page:on("media:lock", function(payload)
+        if type(payload) ~= "table" or type(payload.locked) ~= "boolean" then return end
+        TriggerServerEvent("open77:media:control", "lock",
+            { id = entry.spec.id, value = payload.locked })
+    end)
+
     page:on("media:curtain", function(payload)
         if type(payload) ~= "table" or type(payload.curtain) ~= "string" then return end
         TriggerServerEvent("open77:media:control", "curtain",
@@ -837,7 +865,24 @@ RegisterNetEvent("open77:media:adblock", function(payload)
     adBlockPending = { revision = revision, deadline = 3.0 }
 end)
 
-RegisterNetEvent("open77:media:snapshot", applySnapshot)
+-- The snapshot and the policy that came with it. The policy is optional on purpose:
+-- a server older than it sends one argument, and that is not an error to report.
+RegisterNetEvent("open77:media:snapshot", function(snapshot, policy)
+    if type(policy) == "table" then
+        local before = controlAccess == nil or controlAccess.canControl
+        controlAccess = {
+            adminOnly = policy.adminOnly == true,
+            canControl = policy.canControl == true,
+            reason = tostring(policy.reason or ""),
+        }
+        -- Gaining or losing the ACE mid-session changes what every panel may do, and
+        -- that is drawn per screen: the screens already on the glass are told again.
+        if controlAccess.canControl ~= before then
+            for _, entry in pairs(screens) do refreshPage(entry) end
+        end
+    end
+    applySnapshot(snapshot)
+end)
 
 -- Logged here and nowhere re-emitted. A resource that wants the answer registers
 -- the same net event and receives it from the server directly, exactly as this

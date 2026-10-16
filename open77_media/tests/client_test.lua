@@ -468,6 +468,57 @@ check(#tvPage.sent == 0,
     "a snapshot that changes nothing the page renders is not sent to it")
 
 -- =============================================================================
+-- A panel that may not drive a set is told so, and the glass says why
+-- -----------------------------------------------------------------------------
+-- The operator's admin-only switch (`adminOnlyControl`) is enforced on the SERVER,
+-- in the one handler every panel control passes through (`open77:media:control`).
+-- The answer travels with the snapshot because a client cannot read its own ACEs,
+-- and becomes `controlDenied` on the page -- which is what greys the strip and
+-- prints the reason instead of leaving a panel that looks live and does nothing.
+--
+-- Both directions are pinned, and so is the refresh: a player who GAINS the ACE
+-- mid-session must not be left with a locked-looking panel until the next thing on
+-- the server happens to change. The spec is byte for byte the one before it, so
+-- nothing but the access itself can be what the page is re-told about.
+-- =============================================================================
+
+local function oneSet()
+    return {
+        {
+            id = 1, prop = "4242", record = "tv.16x9", label = "Reception",
+            url = "https://example.invalid/x", volume = 75, muted = false, paused = false,
+            curtain = "closed", border = "#c8102e", quad = quad,
+            position = { x = 105.0, y = 200.0, z = 10.0 },
+        },
+    }
+end
+
+tvPage.sent = {}
+handlers["open77:media:snapshot"](oneSet(),
+    { adminOnly = true, canControl = false, reason = "media_control_is_admin_only" })
+local denied = lastSent(tvPage, "media:state")
+check(denied ~= nil and denied.controlDenied == "media_control_is_admin_only",
+    "a player who may not drive a television is told so, for the page to grey: " ..
+    tostring(denied ~= nil and denied.controlDenied or nil))
+
+tvPage.sent = {}
+handlers["open77:media:snapshot"](oneSet(), { adminOnly = true, canControl = true, reason = "" })
+local allowed = lastSent(tvPage, "media:state")
+check(allowed ~= nil and allowed.controlDenied == nil,
+    "and a player who gains the ACE mid-session is told that too, on the same set: " ..
+    tostring(allowed ~= nil and allowed.controlDenied or nil))
+
+-- A server older than this sends no policy at all, and that is read as "may drive":
+-- the panel is a courtesy and the server is the boundary, so an older server must not
+-- draw a panel every player is told they cannot use.
+tvPage.sent = {}
+handlers["open77:media:snapshot"](oneSet())
+local legacy = lastSent(tvPage, "media:state")
+check(legacy == nil or legacy.controlDenied == nil,
+    "a snapshot with no policy at all leaves the panel as it always was (nothing sent, or sent without a " ..
+    "denial): " .. tostring(legacy ~= nil and legacy.controlDenied or "nothing sent"))
+
+-- =============================================================================
 -- A set that is withdrawn loses its page, and the local event says so
 -- =============================================================================
 

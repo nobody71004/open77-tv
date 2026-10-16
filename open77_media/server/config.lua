@@ -56,6 +56,26 @@
 -- =============================================================================
 
 MediaServerConfig = {
+    -- WHO MAY DRIVE A TELEVISION.
+    --
+    -- True (the default) is admin-only TV control: every panel action -- the link,
+    -- the volume, the mute, the pause, the curtain, the placement, and removing a
+    -- set -- needs the same ACE the screen-lock does, `command.media.lock`. That is
+    -- the ACE an admin is given anyway, so granting it is the whole story; a player
+    -- without it sees a panel that reads as locked and one line saying why, and the
+    -- refusal is enforced on the SERVER, in the one handler every control passes
+    -- through (`open77:media:control`), not in the page.
+    --
+    -- False opens the panel back up to everyone: any player may drive any set that
+    -- no admin has locked with `media.lock`. Both answers are real ones -- one
+    -- server's television is its admin's, another's is a toy for whoever finds it --
+    -- and the screen-lock still gates a locked set either way. The console is always
+    -- an admin, so `media.*` commands keep working with this on.
+    --
+    -- The value travels to each client with its snapshot, so a client can grey the
+    -- controls it may not use; only the server can read a player's ACEs.
+    adminOnlyControl = true,
+
     -- The layer as a whole. Off means nothing is read or pushed from here; the
     -- compiled list still protects every client, because that half is not this
     -- server's to turn off.

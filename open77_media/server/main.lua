@@ -142,6 +142,35 @@ local function isLockAdmin(source)
     return IsPlayerAceAllowed(source, LOCK_ACE) == true
 end
 
+-- Is the panel a thing this player may drive at all?
+--
+-- The screen-lock above is about ONE set somebody is using. This is about the whole
+-- feature, and it exists because the lock alone is not the boundary an operator who
+-- says "only admins put things on the glass" is asking for: with `adminOnlyControl`
+-- off (the default), any player may spawn, link, move and remove any set that no
+-- admin has locked, and with it on only the holders of the same ACE as the lock may --
+-- `command.media.lock`, which is the ACE an admin is given anyway. A server that wants
+-- its televisions driven by one person sets it in `server/config.lua`.
+--
+-- Answered as { adminOnly, canControl, reason } and sent to each client with its
+-- snapshot, because only the SERVER can ask "may this player" -- a client cannot read
+-- its own ACEs -- and a player whose panel is refused everywhere deserves to be told
+-- why rather than left with controls that do nothing. The console (source <= 0) is
+-- always an admin, exactly as it is for the lock.
+local CONTROL_REFUSAL = "media_control_is_admin_only"
+
+-- The operator's own switch, read and validated further down where the rest of
+-- `server/config.lua` is read. True until that reader says otherwise, because that is
+-- the default the file documents: a television is driven by an admin unless an
+-- operator says otherwise.
+local adminOnlyControl = true
+
+local function controlPolicy(source)
+    if not adminOnlyControl then return { adminOnly = false, canControl = true, reason = "" } end
+    local admin = isLockAdmin(source)
+    return { adminOnly = true, canControl = admin, reason = admin and "" or CONTROL_REFUSAL }
+end
+
 local function payload(entry)
     -- `quad` is on the wire, not looked up from `records.lua` on the client, and
     -- that is what makes the quad tunable in game: the server holds the effective
@@ -388,6 +417,24 @@ local blockConfig, blockProblems = AdBlock.buildConfig(MediaServerConfig)
 for _, problem in ipairs(blockProblems) do
     print("[open77_media] adblock config: " .. tostring(problem))
 end
+
+-- Who may drive a television, from the operator's own file.
+--
+-- `adminOnlyControl` is about the whole panel, not one screen (the screen-lock is
+-- `keep`/`media.lock`): with it on -- the default, and what `server/config.lua`
+-- documents -- every control a panel can send needs `LOCK_ACE`, so a server whose
+-- televisions are one person's can say so in one line. A value that is not a boolean
+-- is not a decision, so the safe answer is taken and said out loud, the way every
+-- other unclear setting in this resource is.
+if type(blockConfig.adminOnlyControl) ~= "boolean" then
+    print(string.format("[open77_media] media config: adminOnlyControl must be true or false (got %s); " ..
+        "treating it as true", type(blockConfig.adminOnlyControl)))
+else
+    adminOnlyControl = blockConfig.adminOnlyControl
+end
+print(string.format("[open77_media] panel controls: %s", adminOnlyControl and
+    ("admin-only (the ACE " .. LOCK_ACE .. ")") or
+    "every player may drive any set that is not locked"))
 
 -- The live list, and where it came from. `blockSource` is reported on every push
 -- and in every banner, because "which list is in force" is the first question
@@ -1317,7 +1364,7 @@ RegisterNetEvent("open77:media:ready", function()
     local source = source
     if source == nil then return end
     local entries = liveEntries()
-    TriggerClientEvent("open77:media:snapshot", source, snapshotFor(entries))
+    TriggerClientEvent("open77:media:snapshot", source, snapshotFor(entries), controlPolicy(source))
     -- The blocklist goes out with the snapshot, and for the same reason: a client
     -- that has just joined is exactly the client whose television is about to
     -- load somebody else's page. It is pushed again whenever the list changes, so
@@ -1356,6 +1403,17 @@ RegisterNetEvent("open77:media:control", function(action, payload)
         -- entity. Reaching here with "spawn" means a caller used the wrong
         -- event, and saying so is cheaper than guessing.
         TriggerClientEvent("open77:media:result", source, false, "use_open77_media_spawn")
+        return
+    end
+
+    -- The operator's admin-only switch, enforced here -- the one handler every panel
+    -- control passes through -- and not in the page: a greyed-out button is a
+    -- courtesy, and this is the boundary. It is checked BEFORE the screen-lock so
+    -- that a player who may not drive anything is told that, rather than told about
+    -- one set's lock.
+    local policy = controlPolicy(source)
+    if not policy.canControl then
+        TriggerClientEvent("open77:media:result", source, false, policy.reason)
         return
     end
 

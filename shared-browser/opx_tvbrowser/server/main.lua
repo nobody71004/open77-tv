@@ -15,6 +15,23 @@ local HELP = "/browser -- the shared browser on the TV in front of you. /browser
     "showing it (/browser cinema 100 -- a 100 ft one). /browser off -- take it off this TV. " ..
     "Press F8 at the screen to use it; Ctrl+V pastes a link into it."
 
+-- The link is a credential, not a URL.
+--
+-- It carries the browser's viewer password, and that password is a whole session on
+-- the room's desktop: whoever has the link can open that desktop from their own PC
+-- and use whatever is signed into it there. So /browser -- the one place a link is
+-- handed to a player -- is admin-only, and a player who is not an admin is told that
+-- rather than being given it. Nothing else changes: the cinemas are put up through
+-- this resource's `link` export, which answers open77_media alone.
+local ADMIN_ACE = type(config.adminAce) == "string" and config.adminAce ~= ""
+    and config.adminAce or "command.media.lock"
+
+local function isAdmin(source)
+    if source == nil or source <= 0 then return true end
+    if type(IsPlayerAceAllowed) ~= "function" then return false end
+    return IsPlayerAceAllowed(source, ADMIN_ACE) == true
+end
+
 ---Answers the player who typed a command (both channels the other resources use:
 ---the host's own result line, and the gamemode's answer line on this server).
 local function tell(source, raw, success, text)
@@ -35,6 +52,12 @@ RegisterCommand("browser", function(source, args, raw)
     local verb, unknown = OpxTvBrowserLink.verb(args)
     if verb == nil then return tell(source, raw, false, "unknown: " .. tostring(unknown) .. ". " .. HELP) end
     if verb == "help" then return tell(source, raw, true, HELP) end
+    -- Before the link is read, let alone sent: this command is the one path that
+    -- hands the browser's own credentials to a player.
+    if not isAdmin(source) then
+        return tell(source, raw, false, "the shared browser is admin-only on this server (ACE " ..
+            ADMIN_ACE .. ")")
+    end
     if LINK == nil then
         return tell(source, raw, false, "the shared browser is not set up on this server")
     end
@@ -76,7 +99,8 @@ end)
 AddEventHandler("onResourceStart", function(name)
     if name ~= GetCurrentResourceName() then return end
     if LINK then
-        print(string.format("[opx_tvbrowser] ready %s: /browser puts the shared browser on a TV", VERSION))
+        print(string.format("[opx_tvbrowser] ready %s: /browser (admin-only, ACE %s) puts the shared browser on a TV",
+            VERSION, ADMIN_ACE))
     else
         print(string.format("[opx_tvbrowser] ready %s WITHOUT a browser link (%s): /browser says so",
             VERSION, tostring(linkReason)))
