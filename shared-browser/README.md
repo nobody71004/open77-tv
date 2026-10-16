@@ -7,13 +7,46 @@ sound to a television over WebRTC, as VP8 and Opus, which the game's browser doe
 play. Everyone at that television sees the same browser; whoever presses F8 at
 the screen drives it with the mouse and keyboard.
 
+## The link is a credential (read this before a server has accounts signed in)
+
+The television's link (`/opt/open77-tvbrowser/tv-url.secret`, root-only) carries
+`?usr=open77&pwd=<the viewer password>`. That password is a whole session on the
+room's desktop: **anyone who has the link can open that desktop from their own PC,
+watch it and drive it** -- the mouse, the keyboard, and whatever is signed into
+that Chromium. It is the same desktop the players at the television see, so the
+link cannot be "not given out" to them; it is given out on purpose, inside the
+frame the television loads.
+
+What that means, and what was done about it (2026-10-16):
+
+- `/browser` is ADMIN-ONLY. It was the one path that handed the link to any player
+  who typed it; it now needs `command.media.lock` (`server/config.lua`,
+  `adminAce`), and a player without it is told so instead of being handed the
+  credentials. The browser cinemas are unaffected: they get the link from this
+  resource's `link` export, which answers `open77_media` and nothing else.
+- The page the television loads is the room's own desktop, so a player who is at a
+  television can still see it, and the link is in that page's address. Treat it as
+  **extractable** by anyone who is allowed to see the screen.
+- So the accounts signed into that Chromium must not be personal ones: sign in with
+  an account made for the room (a shared/free account), not the operator's own
+  Netflix or Google. Signing out under a link that has leaked is the only thing that
+  actually revokes it.
+- ROTATE the viewer password after any leak (`neko.env`,
+  `NEKO_MEMBER_MULTIUSER_USER_PASSWORD`), which means rebuilding the link and
+  re-writing the servers' `opx_tvbrowser` config from it -- `server/up.sh` refuses to
+  recreate a container whose `tv-url.secret` no longer matches `neko.env`, which is
+  what stops a half-rotated install. Note that `up.sh` recreates the container, and
+  the browser's own profile (its cookies and sessions) lives in that container: a
+  rotation signs the room out, so do it when nothing is signed in rather than
+  around one.
+
 ```
-opx_tvbrowser/   the resource: /browser puts it on the TV in front of you,
-                 /browser cinema puts up a 150 ft cinema showing it (/browser
+opx_tvbrowser/   the resource: /browser (admin-only) puts it on the TV in front of
+                 you, /browser cinema puts up a 150 ft cinema showing it (/browser
                  cinema 100: a 100 ft one), /browser off; and the link the TV
                  menu's two browser cinemas are put up with
 server/          the container beside the game server: neko's Chromium image
-                 without Widevine, its browser policies, the two scripts the
+                 without Widevine, its browser policies, the four scripts the
                  image puts in the client page, and the scripts that build it,
                  publish it and check it
 ```
@@ -117,6 +150,137 @@ volume mixer) or the game being louder.
 Before this the slider and the mute button changed nothing at all on the shared
 browser: they were wired to YouTube's player and to plain video only.
 
+## A box the picture does not fill
+
+The television hands the framed client page the WHOLE screen box, edge to edge,
+and the box is often not the stream's shape: the game's sets are 16:9, 21:9 and
+2.35, the television's control strip takes its height out of the box while
+someone is using it, and a client drives the surface with the picture across its
+own viewport, whose shape is that PC's monitor (5120x1440, 32:9, measured
+2026-10-16). The stream is one shape for all of them: the room's Chromium renders
+1280x720 (`NEKO_DESKTOP_SCREEN`), and it is the same picture for everyone at the
+television.
+
+Four answers have now been measured on a television, and four were rejected:
+**leaving the rest black**, which is what the bars were -- black stripes down the
+sides of the set, the first thing reported; a **blurred copy** of the stream
+("the two side bars are blurs": fog where a page's own chrome or a film's letterbox
+has to read as the picture); the same stream **scaled to cover** the box and clipped
+to the bar ("showing another part of the video... double letters": the video again in
+the bar, and a second element can trail the picture by a frame); and finally the
+picture's own **edge column, stretched** across the bar -- a one-pixel column has no
+structure of its own, so stretched sideways it draws a horizontal smear per row, and
+the television said so in one line: "it is like stretching the video", with a
+screenshot of the cinema panel (2026-10-16).
+
+The television's page does not touch the picture at all (`web/tv.js`: the frame is
+the box, exactly, and the picture inside it keeps its shape). What happens inside
+that box is the framed page's own business, and `open77-fit.js` in the image answers
+it there -- with two answers, because there are only two ways this ends well:
+
+- **COVER**, wherever the box is within a THIRD of the picture's own shape: the
+  cinema panel's 1280x728 (1 %), that panel with the strip up (6 %), a 21:9 set
+  (25 %). The picture is scaled up, keeping its shape, until it reaches every edge of
+  the box, and the overhang is cut -- `object-fit: cover`, which is the browser's own
+  uniform scale, so the picture is cropped and never stretched. The 8 px stripe the
+  cinema panel reported is simply gone: the screen is the picture and nothing else.
+- **A GLOW**, past that third, where cutting the picture up would cost more than the
+  gap is worth: a 32:9 client surface, where covering takes half the picture, and a
+  portrait box (68 %). The picture is left exactly as the client laid it out -- same
+  rect, same `object-fit`, same inline style -- and each gap carries the picture's own
+  edge COLOURS, averaged into six stops down (or along) that edge and drawn as a wash
+  that follows the rows of the picture beside it, dimmed to 60 %, redrawn at 20 fps.
+  A wash has no structure, so nothing in it can look like a stretched picture, and it
+  cannot show the video twice because it is not the video.
+
+The cover is a **class** the script adds and takes away (`open77-cover`), never an
+inline style: the picture's own style attribute belongs to the page -- neko sizes that
+element itself -- so nothing here writes to it, and taking the class off restores the
+page's layout exactly.
+
+What that script does, and why it is put where it is:- The client page's black is `div.player` (`background: #000`) around a centred
+  16:9 `div.player-container`, with the picture absolutely positioned inside it
+  (measured in the room's own image, 2026-10-16). In the glow case that is exactly
+  what is left alone; in the cover case the class puts the picture over the whole box,
+  and the black is behind a picture that reaches every edge.
+- Each glow gap is a canvas, placed exactly on that gap, holding the picture's own
+  edge strip averaged into six stops and drawn as a gradient that follows the
+  picture's own rows (or columns) -- so the wash and the picture meet row for row at
+  the seam, and the colour at the picture's top row is the picture's own colour there.
+  Drawing the strip SMALL is the averaging: the browser does it, and the script never
+  reads the picture a pixel at a time.
+- The bars carry **no second stream at all** (`streams: 0` is a check in both tests),
+  and no filter anywhere (`filter: none`): the sound needs no care at all, and nothing
+  in a gap can show the video again or trail the picture by a frame.
+- Where the layer is put is the other half of the trick, and the first draft got it
+  wrong: it goes **immediately before the picture inside the picture's own box**,
+  sized to the viewport -- which is the box, since the television frames this page
+  1:1. A child paints over its ancestors' backgrounds but under what follows it in
+  the page's order, so a layer one ancestor further out (that draft chose the
+  outermost ancestor that paints a colour and still covers the picture -- the
+  client's `rgba(0,0,0,.4)` wrapper) sits UNDER the black that shows the bars and
+  paints nothing at all. `test/fit-local.mjs` measures it in pixels and says so.
+- In the glow case the picture is not touched: not its size, not its `object-fit`,
+  not its place, and no crop. The one thing the script will do to a picture a client
+  lays out in the document's flow rather than positioning is lift it
+  (`position: relative`, no offsets, no z-index) so that the page's own order still
+  puts it over the layer -- the client's overlays stay over the picture.
+- Nothing is added where there is nothing to crop or fill (a box of the picture's own
+  shape -- the 16:9 set), and nothing is done while the picture has no shape at all:
+  before the first frames a picture reads as 0x0, which would be a gap on every side,
+  and a wash of it would cover the whole box. The cover is taken off and the layer
+  re-made if the client rebuilds the player (a reconnect, a source change) or the box
+  changes shape (the control strip taking its height). What it did is reported to the
+  television as `kind fit` (logged as `browser_ice`), once per box shape, and the
+  television's page reports the box itself as `browser_box`.
+
+The glow is meant to read as the picture's own light spilling past the edge of the
+glass: what a player sees in a gap is the colour the picture has at that edge,
+averaged and dimmed. On a dark page that is a dark wash -- it is that part of the
+picture's own edge, and not a hole, but it is not a bright frame either.
+
+**Measured** on 2026-10-16, on the real page in the real container
+(`server/test/e2e-fit.sh`, Playwright on the VPS, the television's own link):
+
+- the 150 ft cinema panel's own surface, 1280x728: **cover** -- the picture is the
+  whole box wearing the class, `object-fit: cover`, and no layer exists at all. All ten
+  gap samples, which read exactly `[0,0,0]` on the same page with the script's request
+  refused, now read the picture (`[[0,11,9],[3,24,19],[5,27,20],...]`): the 8 px black
+  stripe is gone.
+- a 32:9 client's viewport, 5120x1440: **glow** -- the picture is 2560x1440 centred in
+  the box, its rect, its `object-fit` and its inline style the same with the script as
+  without it, the layer a layer of the whole box under it with one sharp canvas per
+  gap and no second stream, and both 1280 px pillars the picture's own edge colours,
+  stop for stop, read against the picture's own edge strip. The same ten points without
+  the script read exactly `[0,0,0]`.
+
+The comparison is per gap and per stop -- the bar's own pixels against the edge strip
+of the picture itself, drawn small and dimmed the way the script draws it -- and the
+control is the same box on the same page with the script's request refused, whose gaps
+read exactly `[0,0,0]` (the client page's own black; a decoded frame of video, however
+dark, is not three zeroes). It is also the comparison the two rejected fills failed:
+the overnight run before this one read the left pillar of that 32:9 box as
+`[118,127,46], [255,255,253], [4,2,0]...` against the picture's own `[124,135,10]`
+-- another part of the frame, exactly as the television reported it.
+
+`server/test/fit-local.mjs` is the same set of questions against a local stand-in
+shaped from the room's own CSS, with a real WebRTC stream: 62 checks over six box
+shapes (1280x728, 1280x675 with the strip up, 2560x1080 and the 16:9 box for the
+cover side -- 1 %, 6 %, 25 % and nothing -- and 5120x1440 and 720x1280 for the glow
+side, 50 % and 68 %), each with the control run WITHOUT the script, which must read
+black in exactly the places the script fills, or the check proves nothing. The
+cover shapes are measured as: the element IS the box, the computed `object-fit` is
+`cover`, the class is on, no layer exists, the box's own edges are the picture, and
+the synthetic stream's square white mark is still SQUARE (78x78 on the cinema panel,
+156x156 on the 21:9 box) and still the middle of the screen -- a stretched picture
+shows a rectangle there. The glow shapes are measured as: the picture's rect,
+`object-fit` and inline style are the same as the same page without the script, and
+the bars' own pixels equal the picture's edge strip, stop for stop, to within
+rounding (`[0,115,153]` and `[138,10,124]` cyan and magenta, dimmed). The last section
+puts both scripts on the one page, as the room runs them, and holds the sound on the
+picture element (`on: "stream"`) with nothing else in the layer to carry it: the fill
+adds no media element at all.
+
 ## When the picture does not come
 
 The stream is WebRTC: UDP to the server's port 59100 first, and TCP to the same
@@ -182,8 +346,8 @@ machine are not touched.
 1. Copy `server/` to `/opt/open77-tvbrowser` (root, 700) and run `up.sh`. The
    first run generates `neko.env` (viewer and admin passwords, API token) and the
    television link `tv-url.secret`, both root-only; later runs reuse them, so the
-   link does not change. It builds `open77/tvbrowser-chromium:6`, checks the
-   image (the three scripts in the client page, the policy, no Widevine baked
+   link does not change. It builds `open77/tvbrowser-chromium:7`, checks the
+   image (the four scripts in the client page, the policy, no Widevine baked
    in) and the host CDM, and runs the container capped at 4 cores, 4 GB and
    2 GB of shared memory, with the client on `127.0.0.1:18080` and WebRTC on
    `59100` (UDP and TCP, published by Docker, so the host's INPUT rules are not
@@ -194,7 +358,8 @@ machine are not touched.
    `tv-url.secret` (`url`, `cinemaRecord`, `cinema100Record`; root, 600), and add
    `opx_tvbrowser` to `resources.load` in `server.jsonc` (staging loads an
    explicit list).
-4. `test/e2e.sh`, `test/e2e-page.sh`, `test/e2e-paste.sh` and `test/e2e-volume.sh`
+4. `test/e2e.sh`, `test/e2e-page.sh`, `test/e2e-paste.sh`, `test/e2e-volume.sh`
+   and `test/e2e-fit.sh`
    run a Playwright Chromium on the server, so it reaches the browser the way a
    player does: logged in from the television link, the picture over the public
    IP (in the four networks above), a link pasted into the address bar and
@@ -204,13 +369,18 @@ machine are not touched.
    make-up gain, as computed). Those readings are the curve *before* 2026-10-16;
    the level went up that day (below), so a fresh run reads higher.
 
-Staging went through six builds of `server/build/`, each a recreate with the
+Staging went through seven builds of `server/build/`, each a recreate with the
 same `neko.env`, ports and link, the one before kept for rollback: 1, Widevine
 removed and the policies; 2, `open77-ice.js` and the health check at the path the
 server answers on (neko's own asked `/health`, which a server with a path prefix
 answers under the prefix, so a healthy container reported unhealthy); 3,
 `open77-paste.js`; 4, the paste notes and reports, and new tabs opening Google; 5,
-`open77-volume.js` on the element; 6, the level through Web Audio. Build 5 also
+`open77-volume.js` on the element; 6, the level through Web Audio; 7,
+`open77-fit.js` -- the picture fills the bar, after the day the television's own
+page filled it by cropping. Build 7 is in the running container by `docker cp`
+and built as the image tag from `build/`; the recreate onto image 7 is the one
+step left, and it wipes the browser's own state, so it waits for a moment nobody
+is watching. Build 5 also
 makes the policy and the scripts readable whatever modes the build context had: its
 first rollout was built from files copied from Windows, which arrive root-only, so
 for three minutes (nobody connected) neko answered 403 for the scripts and Chromium
@@ -248,10 +418,12 @@ cd opx_tvbrowser && lua5.4 tests/run.lua    # the link rule, the commands, which
 node server/test/ice-local.mjs              # open77-ice.js against real peer connections (16)
 node server/test/paste-local.mjs            # open77-paste.js: keys, socket, notes, reports (31)
 node server/test/volume-local.mjs           # open77-volume.js on a real WebRTC stream: gain, leveler, mute, reconnect, autoplay (20)
-node tests/tv-page/run.mjs                  # from the repository root: the page's half, volume included (54)
+node server/test/fit-local.mjs              # open77-fit.js: the box's edges are the picture, six shapes, each with its control (41)
+node tests/tv-page/run.mjs                  # from the repository root: the page's half, volume included (85)
 ```
 
-`server/test/e2e*.sh` run on the server against the real container.
+`server/test/e2e*.sh` run on the server against the real container; `e2e-fit.sh`
+reads the bars in pixels on the real page, with the script and without it.
 
 Seen in game, 2026-10-02: the browser cinema from the TV menu, the picture over
 UDP, F8 driving the browser. A Ctrl+V paste is verified end to end on the server;
