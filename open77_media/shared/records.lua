@@ -885,6 +885,102 @@ local records = {
     },
 
     -- -------------------------------------------------------------------------
+    -- The 100 ft and 150 ft panels again, put up showing the remote screen
+    -- capture (opx_screenmirror): a live, view-only picture of a remote PC's
+    -- desktop, the same for everyone in front of it. Their picture is another
+    -- resource's, so the records name that resource rather than a link: linkFrom
+    -- is asked for the link when the set is put up (linkedUrl in server/main.lua).
+    -- Each is its cinema's panel exactly: the same scale, quad, reach and
+    -- collider. No DRM: protected video on the remote PC comes through black by
+    -- design, and nothing is sent back to that PC -- view-only.
+    {
+        id = "cinema.100ft.capture",
+        label = "Capture cinema, 100 ft",
+        model = "electronics.tv.screen.16x9",
+        blurb = "The 100 ft panel showing a remote PC's screen -- a live, view-only capture, the same for everyone.",
+        scale = 26.2758621,
+        streamingRadius = 300.0,
+        border = "#3fd98a",
+        collision = true,
+        linkFrom = "opx_screenmirror",
+        quad = {
+            offset = { 0.0, 3.032077, 11.035862 },
+            right = { 1.0, 0.0, 0.0 },
+            up = { 0.0, 0.0, 1.0 },
+            width = 30.48,
+            height = 17.3421,
+            faces = { 0.0, 1.0, 0.0 },
+        },
+    },
+    {
+        id = "cinema.150ft.capture",
+        label = "Capture cinema, 150 ft",
+        model = "electronics.tv.screen.16x9",
+        blurb = "The 150 ft panel showing a remote PC's screen -- a live, view-only capture, the same for everyone. Half again the 100 ft panel.",
+        scale = 39.4137931,
+        streamingRadius = 400.0,
+        border = "#3fd98a",
+        collision = true,
+        linkFrom = "opx_screenmirror",
+        quad = {
+            offset = { 0.0, 4.548115, 16.553793 },
+            right = { 1.0, 0.0, 0.0 },
+            up = { 0.0, 0.0, 1.0 },
+            width = 45.72,
+            height = 26.0131,
+            faces = { 0.0, 1.0, 0.0 },
+        },
+    },
+
+    -- -------------------------------------------------------------------------
+    -- The 100 ft and 150 ft panels again, put up showing a Netflix watch party
+    -- (opx_watchparty): the party's screen -- what is playing, where the film
+    -- is, how many browsers are in step -- the same for everyone in front of
+    -- it. Their picture is another resource's, so the records name that
+    -- resource rather than a link: linkFrom is asked for the link when the set
+    -- is put up (linkedUrl in server/main.lua). Each is its cinema's panel
+    -- exactly: the same scale, quad, reach and collider. The film itself never
+    -- appears here: every viewer plays it in their own browser, on their own
+    -- Netflix account -- which is why this screen can exist at all.
+    {
+        id = "cinema.100ft.watchparty",
+        label = "Netflix watch party, 100 ft",
+        model = "electronics.tv.screen.16x9",
+        blurb = "The 100 ft panel showing a Netflix watch party's screen -- what is playing and where the film is, the same for everyone. Start one with /watch; each viewer watches on their own Netflix account.",
+        scale = 26.2758621,
+        streamingRadius = 300.0,
+        border = "#e50914",
+        collision = true,
+        linkFrom = "opx_watchparty",
+        quad = {
+            offset = { 0.0, 3.032077, 11.035862 },
+            right = { 1.0, 0.0, 0.0 },
+            up = { 0.0, 0.0, 1.0 },
+            width = 30.48,
+            height = 17.3421,
+            faces = { 0.0, 1.0, 0.0 },
+        },
+    },
+    {
+        id = "cinema.150ft.watchparty",
+        label = "Netflix watch party, 150 ft",
+        model = "electronics.tv.screen.16x9",
+        blurb = "The 150 ft panel showing a Netflix watch party's screen -- what is playing and where the film is, the same for everyone. Half again the 100 ft panel.",
+        scale = 39.4137931,
+        streamingRadius = 400.0,
+        border = "#e50914",
+        collision = true,
+        linkFrom = "opx_watchparty",
+        quad = {
+            offset = { 0.0, 4.548115, 16.553793 },
+            right = { 1.0, 0.0, 0.0 },
+            up = { 0.0, 0.0, 1.0 },
+            width = 45.72,
+            height = 26.0131,
+            faces = { 0.0, 1.0, 0.0 },
+        },
+    },
+
     -- One special case
     -- -------------------------------------------------------------------------
     {

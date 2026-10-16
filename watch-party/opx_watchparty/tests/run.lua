@@ -232,7 +232,8 @@ check("health answers", call("GET", "/v1/health") == 200)
 
 -- ======================================================= server main =======
 section("the server, booted against a stand-in platform")
-local Host = { events = {}, clientEvents = {}, commands = {}, threads = {}, prints = {}, http = nil }
+local Host = { events = {}, clientEvents = {}, commands = {}, threads = {}, prints = {}, http = nil,
+    exports = {}, invoker = nil }
 local function resetGlobals()
     _G.source = nil
     _G.json = Json
@@ -249,6 +250,8 @@ local function resetGlobals()
     _G.AddEventHandler = function(name, fn) Host.events[name] = fn end
     _G.TriggerClientEvent = function(name, target, ...) Host.clientEvents[#Host.clientEvents + 1] = { name = name, target = target, args = { ... } } end
     _G.RegisterCommand = function(name, fn, restricted) Host.commands[name] = { fn = fn, restricted = restricted } end
+    _G.exports = function(name, fn) Host.exports[name] = fn end
+    _G.GetInvokingResource = function() return Host.invoker end
     _G.CreateThread = function(fn) Host.threads[#Host.threads + 1] = fn end
     _G.Wait = function() end
 end
@@ -268,7 +271,7 @@ local function lastClient(name, target)
     end
 end
 local banner = Host.prints[#Host.prints] or ""
-check("it serves browsers on start and says where", banner:find("ready 1.0.1: browsers reach https://xbuniverse.duckdns.org/opx-watch-xb-staging", 1, true) ~= nil, banner)
+check("it serves browsers on start and says where", banner:find("ready 1.1.0: browsers reach https://xbuniverse.duckdns.org/opx-watch-xb-staging", 1, true) ~= nil, banner)
 check("/watch is a command every player may use", Host.commands.watch ~= nil and Host.commands.watch.restricted == false)
 Host.clientEvents = {}
 Host.commands.watch.fn(7, { "netflix", "https://www.netflix.com/watch/80057281", "Dark", "S1" }, "watch netflix ...")
@@ -316,6 +319,53 @@ Host.events["opx:watch:stop"]()
 local release = lastClient("opx:watch:releasetv", 7)
 check("the host ends it: both are told, and the set is handed back",
     release ~= nil and release.args[1].tvId == 4 and lastClient("opx:watch:you", 8).args[1].code == false)
+Host.clientEvents = {}
+_G.source = 7
+Host.events["opx:watch:start"]({ netflixId = "80057281", title = "Dark S1", tvId = 4 })
+local ccode = lastClient("opx:watch:you", 7).args[1].code
+local cbase = "https://xbuniverse.duckdns.org/opx-watch-xb-staging"
+Host.clientEvents = {}
+Host.commands.watch.fn(7, { "cinema" }, "watch cinema")
+local cine = lastClient("opx:watch:cinema", 7)
+check("/watch cinema puts this party on its own 150 ft screen",
+    cine ~= nil and cine.args[1].record == "cinema.150ft.watchparty"
+        and cine.args[1].url == cbase .. "/v1/tv/" .. ccode)
+Host.clientEvents = {}
+Host.commands.watch.fn(7, { "cinema", "100" }, "watch cinema 100")
+check("/watch cinema 100 takes the 100 ft one",
+    lastClient("opx:watch:cinema", 7).args[1].record == "cinema.100ft.watchparty")
+Host.clientEvents = {}
+Host.commands.watch.fn(7, { "cinema", "50" }, "watch cinema 50")
+local badsize = lastClient("opx:watch:result", 7)
+check("any other size is refused with the two that exist",
+    badsize ~= nil and badsize.args[1].ok == false and lastClient("opx:watch:cinema", 7) == nil)
+Host.clientEvents = {}
+Host.commands.watch.fn(8, { "cinema" }, "watch cinema")
+check("a player with no party gets no cinema screen",
+    lastClient("opx:watch:cinema", 8) == nil and lastClient("opx:watch:result", 8).args[1].ok == false)
+Host.clientEvents = {}
+Host.events["opx:watch:cinema"]({})
+check("the panel's Cinema button reaches the same screen",
+    lastClient("opx:watch:cinema", 7).args[1].record == "cinema.150ft.watchparty")
+Host.invoker = "open77_media"
+check("the TV menu link answers open77_media while exactly one party runs",
+    Host.exports.link() == cbase .. "/v1/tv/" .. ccode)
+Host.invoker = "someone_else"
+check("and nobody else", Host.exports.link() == nil)
+Host.invoker = "open77_media"
+_G.source = 8
+Host.events["opx:watch:start"]({ netflixId = "81231974", title = "Second" })
+check("with two parties the menu cannot know which is meant", Host.exports.link() == nil)
+_G.source = 8
+Host.events["opx:watch:stop"]()
+_G.source = 7
+Host.events["opx:watch:stop"]()
+check("with none running there is no page", Host.exports.link() == nil)
+local seeded, realSeed = 0, math.randomseed
+math.randomseed = function(s) seeded = seeded + 1; return realSeed(s) end
+Host.events.onResourceStart("opx_watchparty")
+math.randomseed = realSeed
+check("starting the resource seeds the dice behind codes and keys", seeded == 1)
 check("the server's clock thread is running", #Host.threads == 1)
 
 -- ======================================================= client main =======
@@ -360,12 +410,32 @@ local ctl = lastServer("open77:media:control")
 check("the set is pointed at the party's page through open77_media's own control",
     ctl ~= nil and ctl.args[1] == "url" and ctl.args[2].id == 4 and ctl.args[2].url == "https://example.test/v1/tv/ABC234")
 C.events["opx:watch:you"]({ code = "ABC234", key = "k3ykeyk3ykey" })
-C.events["opx:watch:state"]({ parties = { { code = "ABC234", tvId = 4, netflixId = "80057281", title = "Dark",
+C.events["opx:watch:state"]({ base = "https://xbuniverse.duckdns.org/opx-watch-xb-staging",
+    parties = { { code = "ABC234", tvId = 4, netflixId = "80057281", title = "Dark",
     playing = true, positionMs = 95000, members = 1, browsers = 0, inSync = 0, host = 7, hostName = "Matt" } } })
 clock = clock + 2000
 C.events["opx:watch:copylink"]()
 check("Copy browser link puts the title, the time and the player's own code and key on the clipboard",
     C.clipboard == "https://www.netflix.com/watch/80057281?t=97#opxwatch=ABC234.k3ykeyk3ykey", C.clipboard)
+local savedServer = C.server
+C.server = {}
+C.events["opx:watch:cinema"]({ url = "https://xbuniverse.duckdns.org/opx-watch-xb-staging/v1/tv/ABC234",
+    record = "cinema.150ft.watchparty" })
+local spawn = lastServer("open77:media:spawn")
+check("the cinema event puts this party on its own screen record",
+    spawn ~= nil and spawn.args[1].record == "cinema.150ft.watchparty"
+        and spawn.args[1].url:find("ABC234", 1, true) ~= nil)
+C.server = {}
+C.events["opx:watch:cinema"]({ url = "https://evil.test/v1/tv/ABC234", record = "cinema.150ft.watchparty" })
+check("a page that is not this party's is not spawned", lastServer("open77:media:spawn") == nil)
+C.server = {}
+C.events["opx:watch:cinema"]({ url = "https://xbuniverse.duckdns.org/opx-watch-xb-staging/v1/tv/ABC234",
+    record = "cinema.150ft.browser" })
+check("and neither is another record", lastServer("open77:media:spawn") == nil)
+C.pageEvents["watch:action"]({ action = "cinema" })
+check("the panel's Cinema screen button asks the server",
+    lastServer("opx:watch:cinema") ~= nil)
+C.server = savedServer
 C.events["opx:watch:panel"](true)
 local last = C.sent[#C.sent]
 check("/watch opens the panel with the keyboard, on the party and as its host",

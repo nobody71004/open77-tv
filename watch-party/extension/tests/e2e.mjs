@@ -17,7 +17,13 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
-const { chromium } = require(path.join(execFileSync("npm", ["root", "-g"]).toString().trim(), "playwright"));
+// `npm` resolves as a shell script on POSIX but only as npm.cmd on Windows,
+// which needs a shell to launch -- try both so the harness runs either side.
+function globalRoot() {
+  try { return execFileSync("npm", ["root", "-g"]).toString().trim(); }
+  catch (e) { return execFileSync("npm.cmd", ["root", "-g"], { shell: true }).toString().trim(); }
+}
+const { chromium } = require(path.join(globalRoot(), "playwright"));
 const here = path.dirname(fileURLToPath(import.meta.url));
 const extensionDir = path.resolve(here, "..");
 const resourceDir = path.resolve(process.argv[2] || path.join(extensionDir, "..", "opx_watchparty"));

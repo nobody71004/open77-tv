@@ -24,7 +24,8 @@ PRIVACY.md        the extension's privacy policy
 ## Tests
 
 ```bash
-cd opx_watchparty && lua5.4 tests/run.lua         # 75 checks: playhead, links, parties, HTTP, both main.lua files
+cd opx_watchparty && lua5.4 tests/run.lua         # 89 checks: playhead, links, parties, HTTP, both main.lua files,
+                                                  # the cinema screen, the TV-menu link and the dice seeding
 cd extension && node tests/sync-core.test.js      # the follower's decisions, against the server's own cases
 cd extension && node tests/e2e.mjs                # a real Chromium with the extension, a stand-in player
                                                   # page and the server's Lua rules (needs Playwright, lua5.4)

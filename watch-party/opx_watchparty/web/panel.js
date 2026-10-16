@@ -121,6 +121,7 @@
   $("seek-go").addEventListener("click", seekTyped);
   $("seek-at").addEventListener("keydown", function (e) { if (e.key === "Enter") seekTyped(); });
   $("copy").addEventListener("click", function () { emit("copylink"); });
+  $("cinema").addEventListener("click", function () { emit("cinema"); });
   $("leave").addEventListener("click", function () { emit("leave"); });
   $("stop").addEventListener("click", function () { emit("stop"); });
   $("start").addEventListener("click", function () {

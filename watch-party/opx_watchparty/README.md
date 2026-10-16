@@ -25,7 +25,29 @@ the title number and where the film is.
    follows within about two seconds.
 
 Chat: `/watch netflix <link> [title]`, `/watch play | pause | seek 1:02:03 | +30 |
--10 | join <code> | leave | stop | link | status | help`.
+-10 | join <code> | leave | stop | link | status | help`, `/watch cinema [100]`.
+
+## Its own cinema screen
+
+`/watch cinema` puts the player's party on a 150 ft watch-party panel in front
+of them (`cinema.150ft.watchparty` in open77_media; `100` for the 100 ft one,
+and a Cinema screen button in the panel). The TV menu lists the same panels:
+with exactly one party running they show its screen, otherwise they say so
+instead of a blank screen. Either way the film never appears on the panel --
+every viewer plays it in their own browser, on their own Netflix account.
+
+## Where the secrets come from
+
+Nobody signs in anywhere shared: each viewer signs in to their own Netflix
+account in their own browser, and the extension only keeps that browser's player
+where the party is. A member's browser key travels in the link's fragment (never
+sent over the wire), is wiped from the address bar on arrival, dies when the
+membership ends, and moves the party at most 8 times in 10 s. Party codes and
+keys come from a generator seeded once at resource start from the millisecond
+timer mixed with a heap address -- the sandbox withholds io/os/debug, so there
+is no wall clock or urandom to read. That is prediction resistance for 60-bit
+short-lived single-scope secrets, documented here as not-a-CSPRNG, and the
+tests hand the registry its own dice so production seeding never touches them.
 
 ## How it is put together
 
@@ -39,7 +61,7 @@ Chat: `/watch netflix <link> [title]`, `/watch play | pause | seek 1:02:03 | +30
 | `server/main.lua` | wiring: chat commands, the panel's requests, `Open77.http.listen`, the state every client draws |
 | `client/main.lua` | the panel, which television a party goes on (open77_media's set list), "Copy browser link" |
 | `web/panel.*` | the /watch remote |
-| `tests/` | `lua tests/run.lua` (75 checks); `tests/e2e_bridge.lua` serves the extension's end-to-end test |
+| `tests/` | `lua tests/run.lua` (89 checks); `tests/e2e_bridge.lua` serves the extension's end-to-end test |
 
 The television: open77_media owns the sets. A party started at one points that set at
 `<public base>/v1/tv/<CODE>` through open77_media's own control message (the request its

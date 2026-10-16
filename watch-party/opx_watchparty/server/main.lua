@@ -4,7 +4,7 @@
 -- client draws), the browser side (Open77.http.listen) and the clock that keeps
 -- parties tidy. The rules are in party.lua and http.lua.
 
-local VERSION = "1.0.1"
+local VERSION = "1.1.0"
 
 local function convar(name, fallback)
     if type(GetConvar) == "function" then
@@ -29,6 +29,33 @@ end
 
 local registry = WatchParty.new({ clock = nowMs, random = function(n) return math.random(n) end })
 local httpRoute, httpReason = nil, nil
+
+local CINEMA = "cinema.150ft.watchparty"
+local CINEMA_100 = "cinema.100ft.watchparty"
+
+---Seeds the generator behind party codes and browser keys. The sandbox
+---withholds io/os/debug, so there is no wall clock or urandom to read: the
+---millisecond timer (scheduling jitter lives in its low bits) is mixed with a
+---heap address (ASLR), and the first outputs are thrown away. This is
+---prediction resistance for 60-bit single-scope keys that die with their
+---membership -- documented as not-a-CSPRNG in the README -- not a substitute
+---for one, and the tests hand the registry its own dice so none of this
+---touches them.
+local function seedRandom()
+    if type(math.randomseed) ~= "function" then return end
+    local timer = 0
+    if type(GetGameTimer) == "function" then
+        local ok, t = pcall(GetGameTimer)
+        if ok and type(t) == "number" then timer = t end
+    end
+    local addr = tostring({}):match("0[xX](%x+)") or "0"
+    local hash = 0
+    for i = 1, #addr do hash = (hash * 33 + addr:byte(i)) % 4294967296 end
+    local seed = ((math.floor(timer) % 2147483648) * 33 + hash) % 2147483648
+    if seed == 0 then seed = 1 end
+    math.randomseed(seed)
+    for _ = 1, 64 do math.random() end
+end
 
 local function nameOf(player)
     if type(GetPlayerName) == "function" then
@@ -238,6 +265,55 @@ RegisterNetEvent("opx:watch:stop", function()
         text = party and ("ended watch party " .. party.code) or why(reason) })
 end)
 
+---Puts the player's party on its own cinema screen: a 150 ft watch-party panel
+---(100 ft with "100") in front of them, showing the party's page. The client
+---spawns it through open77_media, the same way /browser cinema does.
+local function cinemaFor(source, size)
+    local party = registry:partyOf(source)
+    if party == nil then
+        TriggerClientEvent("opx:watch:result", source, { ok = false, text = why("not_in_a_party") })
+        return
+    end
+    if size ~= "100" and size ~= "150" then
+        TriggerClientEvent("opx:watch:result", source, { ok = false,
+            text = "no " .. tostring(size) .. " cinema: /watch cinema (150 ft) or /watch cinema 100" })
+        return
+    end
+    TriggerClientEvent("opx:watch:cinema", source,
+        { url = tvUrl(party.code), record = size == "100" and CINEMA_100 or CINEMA })
+end
+
+RegisterNetEvent("opx:watch:cinema", function(payload)
+    local source = source
+    if source == nil then return end
+    local size = type(payload) == "table" and tostring(payload.size or "") or ""
+    if size == "" then size = "150" end
+    cinemaFor(source, size)
+end)
+
+-- The watch-party cinemas in the TV menu (open77_media's
+-- `cinema.100ft.watchparty` and `cinema.150ft.watchparty`,
+-- `linkFrom = "opx_watchparty"`) ask for the link when the set is put up. Only
+-- open77_media is answered, and only when exactly one real party is running:
+-- with none there is no page, and with two or more the menu cannot know which
+-- one is meant (the /watch cinema command names the player's own).
+local function publish(name, fn)
+    if exports == nil then return false end
+    return (pcall(exports, name, fn))
+end
+publish("link", function()
+    if GetInvokingResource() ~= "open77_media" then return nil end
+    local found = nil
+    for _, state in ipairs(registry:list()) do
+        if state.test == nil then
+            if found ~= nil then return nil end
+            found = state
+        end
+    end
+    if found == nil then return nil end
+    return tvUrl(found.code)
+end)
+
 local function forget(player)
     player = tonumber(player)
     if player == nil then return end
@@ -247,7 +323,7 @@ AddEventHandler("onPlayerDisconnected", function(playerId) forget(playerId) end)
 AddEventHandler("playerDropped", function() forget(source) end)
 
 local HELP = "/watch -- the panel. /watch netflix <link> [title] -- start a party at the TV in front of you. " ..
-    "/watch play | pause | seek 1:02:03 | +30 | -10 | join <code> | leave | stop | link | status"
+    "/watch play | pause | seek 1:02:03 | +30 | -10 | join <code> | leave | stop | link | status | cinema [100]"
 
 RegisterCommand("watch", function(source, args, raw)
     source = tonumber(source) or 0
@@ -296,6 +372,11 @@ RegisterCommand("watch", function(source, args, raw)
         local party, reason = stopFor(source)
         if party == nil then return tell(source, raw, false, why(reason)) end
         return tell(source, raw, true, "ended watch party " .. party.code)
+    end
+    if verb == "cinema" then
+        local size = args[2] or "150"
+        cinemaFor(source, size)
+        return
     end
     if verb == "link" then
         if registry:partyOf(source) == nil then return tell(source, raw, false, why("not_in_a_party")) end
@@ -363,6 +444,7 @@ end
 
 AddEventHandler("onResourceStart", function(name)
     if name ~= GetCurrentResourceName() then return end
+    seedRandom()
     listen()
     if httpRoute then
         print(string.format("[opx_watchparty] ready %s: browsers reach %s (served at %s); televisions show %s/v1/tv/<code>",

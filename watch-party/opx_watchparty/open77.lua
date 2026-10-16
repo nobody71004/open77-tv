@@ -27,8 +27,24 @@
 -- Join. Each viewer presses "Copy browser link" and opens it in their browser
 -- with the extension installed. Chat: /watch netflix <link> [title], /watch
 -- play | pause | seek 1:02:03 | +30 | -10 | join <code> | leave | stop | link | status.
+--
+-- ITS OWN CINEMA. /watch cinema puts the player's party on a 150 ft watch-party
+-- panel (100 ft with "100", and a Cinema screen button in the panel) -- the
+-- `cinema.150ft.watchparty` / `cinema.100ft.watchparty` records in open77_media,
+-- which show the party's screen through `linkFrom = "opx_watchparty"`.
+--
+-- SIGNING IN, SECURELY. Nobody signs in anywhere shared: each viewer signs in to
+-- their OWN Netflix account in their OWN browser on their OWN machine, and the
+-- extension only keeps that browser's player where the party is. What crosses to
+-- the server is the title number, the playhead and the member's own key -- never
+-- credentials, cookies, history or anything of the film. The key travels in the
+-- link's fragment (never sent over the wire), is wiped from the address bar on
+-- arrival, dies when the membership ends, and moves the party at most 8 times
+-- in 10 s. Party codes and keys come from a generator seeded at resource start
+-- (see server/main.lua): the sandbox withholds os/crypto, so this is prediction
+-- resistance for short-lived single-scope secrets, documented as not-a-CSPRNG.
 resource "opx_watchparty"
-version "1.0.1"
+version "1.1.0"
 open77_version ">=0.0.1"
 auto_start true
 
