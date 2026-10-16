@@ -88,28 +88,30 @@ the element at 75, 90 and 100 was one loudness, and that one too quiet (2026-10-
 So the stream's own audio track is disabled -- WebRTC plays a disabled remote track
 at zero, which silences the element -- and a clone of it, which disabling the
 original does not silence, goes through a leveler, a gain and a limiter to the
-page's output. The leveler (a compressor at -36 dB, 6:1, with its make-up gain)
+page's output. The leveler (a compressor at -42 dB, 6:1, with its make-up gain)
 is there because twice the stream's level was still too quiet in game: a film on
 a streaming site sits far below the game's own sound, and gain alone only made
-its loud moments clip. It pulls everything above -36 dBFS into a narrow band near
--15 dBFS -- quiet passages raised by up to about 18 dB, loud ones held down. The
-gain is `3 x (level / 100) ^ 1.5` on the leveled sound: 100 is +9.5 dB (about
--6 dBFS rms, as loud as sound gets without distortion), 75 is 1.95, 50 is 1.06, 0
-and mute are silence; the limiter (-1.5 dB, 20:1) keeps the peaks under full
-scale. Each step was a player's "still too quiet" in game on 2026-10-02: the
-element's volume (no effect), twice the stream's level, then a gentler leveler
-at twice (-11.3 dBFS rms at 100, in game), then this. Until Web Audio may start (a game that holds a page's sound back
+its loud moments clip. It pulls everything above -42 dBFS into a narrow band near
+-15 dBFS -- quiet passages raised by up to about 24 dB, loud ones held down. The
+gain is `4.5 x (level / 100) ^ 1.25` on the leveled sound: 100 is +13 dB (about
+-5 dBFS rms, as loud as sound gets without distortion), 75 is 3.15 (+10 dB), 50 is
+1.90, 35 is 1.19, 0 and mute are silence; the limiter (-1.0 dB, 20:1) keeps the
+peaks under full scale. Each step was a player's "still too quiet" in game: the
+element's volume (no effect), twice the stream's level, a gentler leveler
+at twice (-11.3 dBFS rms at 100, in game, 2026-10-02), then the leveler and curve
+raised again after a live in-game test on 2026-10-16 (below: dialogue +5.8 dB on
+the same page and tone). Until Web Audio may start (a game that holds a page's sound back
 until a click) the element keeps its own sound, with the level on it; the first
 click or key on the picture starts it. A new stream (the client reconnecting) is
 taken over the same way, and a track something turns back on is turned off again.
 
 The page reports where the level went (`volume_applied`/`mute_applied ... via the
 shared browser's page`) and the client page what it did, when that changes:
-`browser_ice (volume 75 on the stream's sound (gain 1.30, Web Audio running))`, or
+`browser_ice (volume 75 on the stream's sound (gain 3.14, Web Audio running))`, or
 `... on 1 element (Web Audio suspended)` before it can start -- and, five seconds
-after a change, how loud it came out: `browser_ice (volume output -6.2 dBFS rms at
-100 (gain 3.00))`. A page cannot go above full scale; sound that is still too quiet
-with the output near -6 dBFS is the PC's mixer (the game's web host in Windows'
+after a change, how loud it came out: `browser_ice (volume output -5.2 dBFS rms at
+90 (gain 3.94))`. A page cannot go above full scale; sound that is still too quiet
+with the output near -5 dBFS is the PC's mixer (the game's web host in Windows'
 volume mixer) or the game being louder.
 
 Before this the slider and the mute button changed nothing at all on the shared
@@ -199,7 +201,8 @@ machine are not touched.
    opened, and the television's level measured in the sound it puts out (2026-10-02,
    image 6, a -24 dBFS tone played into the browser's own output: 2.43 times it at
    100, 0.50 at 35, silence muted, 1.58 at 75 -- the gain curve and the limiter's
-   make-up gain, as computed).
+   make-up gain, as computed). Those readings are the curve *before* 2026-10-16;
+   the level went up that day (below), so a fresh run reads higher.
 
 Staging went through six builds of `server/build/`, each a recreate with the
 same `neko.env`, ports and link, the one before kept for rollback: 1, Widevine
@@ -218,6 +221,22 @@ the container is recreated on image 6 when nobody is watching. After build 6,
 the container runs with the host's WidevineCdm mounted read-only (the image
 still ships none); EME measured `WIDEVINE_AVAILABLE` on 2026-10-16, against
 `NotSupportedError` without the mount.
+
+The television's level went up again on 2026-10-16, after a live in-game test:
+with a film playing in the room, the room's own output measured peak -7.9 dBFS /
+rms -26.6 dBFS, and the curve of the day (3 at 100, 1.95 at 75) still sat well
+under the game's own mix -- audible, but too quiet to follow dialogue over the
+game. So the leveler's threshold went -36 dB to -42 dB and the level is now
+`4.5 * volume^1.25` (100 is +13 dB, 75 is 3.15, 50 is 1.90, 35 is 1.19, 0
+silence) instead of `3 * volume^1.5`. Measured with `server/test/volume-local.mjs`
+on the same framed page and the same tone, before -> after: a -40 dBFS tone (film
+dialogue) came out 22.8x -> 44.7x louder (+5.8 dB), the output at 90 read -6.7 ->
+-5.2 dBFS rms, and a full-scale tone still stayed under full scale (peak 0.97, the
+limiter doing it). That is the shape of the change on purpose: loud material was
+already at the ceiling the limiter sets, while dialogue -- the part that was
+unintelligible -- had the room to move. The script was copied into the running
+container (`docker cp`, so the page a player had open stayed up) and the image tag
+rebuilt from `build/`; a recreate keeps it.
 
 The picture is 1280x720 at 30 fps (`NEKO_DESKTOP_SCREEN`); each viewer is one
 WebRTC stream from the server.
