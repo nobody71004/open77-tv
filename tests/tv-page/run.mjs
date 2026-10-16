@@ -14,7 +14,12 @@
 // sound follows the television's volume and mute (the image's open77-volume.js,
 // run here for real in a stand-in client page). And the control strip sits under
 // the picture, never over it: the shared browser's frame ends where the strip
-// begins, on wide screens and narrow ones.
+// begins, on wide screens and narrow ones. And the box a live picture is drawn in
+// is handed over whole and measured: the frame is the screen box edge to edge, no
+// inset and nothing past it, on sets that are 16:9, ultrawide and portrait alike,
+// with the box's shape said in the log once per shape -- a page that fits the
+// picture to the box either crops it or bars it, and on 2026-10-16 a 32:9 client
+// lost 44 % of the picture's height to exactly that.
 //
 //   npm i -D playwright && npx playwright install chromium
 //   node tests/tv-page/run.mjs [web dir]          (default: open77_media/web)
@@ -78,6 +83,17 @@ const server = http.createServer((req, res) => {
     res.writeHead(200, { "Content-Type": "text/html" });
     return res.end("<html><body>neko<script>const steps=" + steps + ";let i=0;(function next(){if(i>=steps.length)return;" +
       "const s=steps[i++];parent.postMessage({open77SharedBrowser:1,kind:s[0],mode:s[1],text:s[2]},'*');setTimeout(next,60);})();</script></body></html>");
+  }
+  // The shared browser's client page as far as its PICTURE goes: its player shows
+  // a 16:9 stream, so a box that is not 16:9 gets black down the sides of it --
+  // inside the frame, where no measurement taken outside the frame can see it.
+  // That letterbox IS the 2026-10-16 report, so the pixel check below needs a
+  // stand-in that paints it: a 16:9 picture centred in black.
+  if (url.pathname === "/neko-screen") {
+    res.writeHead(200, { "Content-Type": "text/html" });
+    return res.end("<html><head><style>html,body{margin:0;height:100%;background:#000}" +
+      "#pic{position:absolute;inset:0;margin:auto;aspect-ratio:16/9;max-width:100%;max-height:100%;background:rgb(0,192,255)}" +
+      "</style></head><body><div id=\"pic\"></div></body></html>");
   }
   // The shared browser's client page as far as its sound goes: the image's
   // open77-volume.js, and the media element neko's player streams into.
@@ -396,8 +412,16 @@ await page.waitForTimeout(500);
 let L = await layout();
 check(!L.hidden && L.strip && near(L.strip.bottom, L.vh) && L.screen.top === 0 && L.screen.bottom <= L.strip.top + 0.5,
   "with focus the strip is shown under the screen, not over it: " + JSON.stringify({ screen: L.screen, strip: L.strip }));
-check(L.frame && L.frame.top >= 0 && L.frame.bottom <= L.strip.top + 0.5 && near(L.frame.height, L.vh - L.strip.height),
-  "the shared browser's frame ends where the strip begins: " + JSON.stringify({ frame: L.frame, strip: L.strip }));
+// The picture fills the screen box and stops at the strip. Since 2026-10-16 the
+// frame is the picture's own shape (16:9) scaled to COVER that box (see 32), so
+// on a box the strip has made slightly wider than 16:9 the frame is taller than
+// the box and the screen's own overflow crops it -- what must hold either way is
+// that the picture covers the box, and that the strip is neither behind nor over
+// it (`aboveStrip` and `onGo` below are the click halves of that).
+check(L.frame && near(L.screen.top, 0) && L.screen.bottom <= L.strip.top + 0.5 &&
+  L.frame.top <= L.screen.top + 0.5 && L.frame.bottom >= L.screen.bottom - 0.5,
+  "the shared browser's picture fills the screen and stops at the strip: " +
+  JSON.stringify({ frame: L.frame, screen: L.screen, strip: L.strip }));
 check(L.aboveStrip === "iframe", "a click just above the strip lands in the shared browser: " + L.aboveStrip);
 check(L.onGo === "go", "and the strip's own buttons are still clickable: " + L.onGo);
 check(L.rows === 1 && L.strip.height <= 0.1 * L.vh, "on a 16:9 screen the strip is one row, under a tenth of the height: " +
@@ -449,6 +473,103 @@ check(L.curtain && L.curtain.height > 0 && L.curtain.bottom <= L.strip.top + 0.5
   "a shut curtain stops at the strip, whose buttons stay clickable: " + JSON.stringify({ curtain: L.curtain, strip: L.strip, onGo: L.onGo }));
 await setState({ ...base_state, url: "", curtain: "open" });
 await focusOn(false);
+
+// 31. The Widevine CDM probe MEASURES instead of assuming: the notice names
+// what `requestMediaKeySystemAccess(com.widevine.alpha)` actually returned, and
+// both answers keep the words the screen owes the player ("DRM-protected", and
+// "/watch" where this server runs watch parties). Stubbed both ways, because a
+// fresh browser profile carries no CDM either way and the point is the two
+// messages, not the machine's.
+const lastWidevine = () => page.evaluate(() => {
+  const w = (window.__all || []).filter((r) => r[1].status === "widevine").map((r) => r[1].detail);
+  return w[w.length - 1] || "";
+});
+const setWidevine = (resolve) => page.evaluate((resolve) => {
+  navigator.requestMediaKeySystemAccess = () => resolve ? Promise.resolve({}) : Promise.reject(new TypeError("No CDM"));
+}, resolve);
+await setWidevine(true);
+await setState({ ...base_state, url: "https://www.netflix.com/watch/8123", parties: true });
+await page.waitForTimeout(600);
+n = await text("notice");
+check(n.includes("carries a Widevine module") && n.includes("DRM-protected") && n.includes("/watch"),
+  "with a CDM the notice says so, still naming DRM and /watch: " + n);
+check((await lastWidevine()) === "available", "and the log reports widevine available: " + (await lastWidevine()));
+await setWidevine(false);
+await setState({ ...base_state, url: "https://www.netflix.com/watch/8123", parties: true });
+await page.waitForTimeout(600);
+n = await text("notice");
+check(n.includes("carries no Widevine DRM module") && n.includes("DRM-protected"),
+  "without a CDM the notice says it measured none: " + n);
+check((await lastWidevine()) === "unavailable", "and the log reports widevine unavailable: " + (await lastWidevine()));
+
+// 32. The frame IS the screen box, on every shape of box, and this page does not
+// fit the picture to it. A live picture's own shape is the framed player's
+// business: covering a box wider than the picture crops the picture (a
+// 5120x1440, 32:9 client lost 44 % of the height that way on 2026-10-16 -- the
+// top of the browser's own window), and fitting it whole inside leaves the bars
+// the same player reported first. So the page hands over the whole box, edge to
+// edge, and the framed page fills its own letterbox with the picture itself
+// (`open77-fit.js` in the shared browser's image; measured by
+// `shared-browser/server/test/fit-local.mjs`, where a real stream is in play).
+// What is pinned here is this page's half: the frame is the box exactly, the
+// corners of the box belong to the picture rather than to this page's
+// background, the box is MEASURED and reported (which is how the 32:9 client's
+// box was found at all), and a click above the strip still lands in the browser.
+//
+// The reveal the last block left running draws over the picture (it is a cinema
+// curtain, that is its job) and would swallow the click this section makes, so
+// let it finish first: the beats are leadIn + three ticks + the panels' travel.
+await setState({ ...base_state, url: "", curtain: "open" });
+await page.waitForTimeout(7000);
+const corners = () => page.evaluate(() => {
+  const box = document.getElementById("screen").getBoundingClientRect();
+  const inset = 2;
+  const at = (x, y) => {
+    const el = document.elementFromPoint(x, y);
+    return el ? (el.id || el.tagName.toLowerCase()) : null;
+  };
+  return { tl: at(box.left + inset, box.top + inset), tr: at(box.right - inset, box.top + inset),
+    bl: at(box.left + inset, box.bottom - inset), br: at(box.right - inset, box.bottom - inset),
+    mid: at(box.left + box.width / 2, box.top + box.height / 2) };
+});
+for (const [w, h, shape] of [[2560, 1080, "ultrawide"], [720, 1280, "portrait"], [1280, 720, "16:9"]]) {
+  await page.setViewportSize({ width: w, height: h });
+  await setState({ ...base_state, url: base + "/neko?s=ok#open77-shared-browser" });
+  await focusOn(true);
+  await page.waitForTimeout(400);
+  L = await layout();
+  check(L.frame && L.screen && near(L.frame.left, L.screen.left) && near(L.frame.top, L.screen.top) &&
+    near(L.frame.right, L.screen.right) && near(L.frame.bottom, L.screen.bottom),
+    shape + " " + w + "x" + h + ": the frame is the box exactly -- nothing inset, nothing past it: " +
+    JSON.stringify({ frame: L.frame, screen: L.screen }));
+  check(L.screen.bottom <= L.strip.top + 0.5, shape + ": and the box stops at the strip, never under it");
+  const c = await corners();
+  check(c.tl === "iframe" && c.tr === "iframe" && c.bl === "iframe" && c.br === "iframe" && c.mid === "iframe",
+    shape + ": every corner of the box is the picture, so none of this page's own background is on it: " + JSON.stringify(c));
+  const hit = await page.evaluate(() => {
+    const strip = document.getElementById("controls").getBoundingClientRect();
+    const el = document.elementFromPoint(innerWidth / 2, strip.top - 3);
+    return el ? (el.id || el.tagName.toLowerCase()) : null;
+  });
+  check(hit === "iframe", shape + ": a click above the strip still lands in the shared browser: " + hit);
+}
+// The box is measured, once per shape it is in, and the line names it. A picture
+// that does not match its box is then a number in the log rather than a puzzle:
+// the 32:9 client was found because this page is told the box it is drawn in.
+const boxes = await page.evaluate(() => (window.__all || []).filter((r) => r[1].status === "browser_box").map((r) => r[1].detail));
+check(new Set(boxes.map((b) => (b.match(/in a (\d+x\d+)/) || [])[1])).size >= 2 &&
+  boxes.length > 0 && boxes.every((b) => /^the shared browser's 1\.78 picture in a \d+x\d+, \d\.\d\d screen box: the frame is the box, the picture whole$/.test(b)),
+  "the box is measured once per shape, in the log: " + JSON.stringify(boxes));
+// With the strip down the box is the whole surface. The picture's shape is still
+// not this page's business -- but the box it hands over is the surface's own.
+await focusOn(false);
+await page.waitForTimeout(400);
+L = await layout();
+check(L.frame && near(L.frame.width, L.screen.width) && near(L.frame.height, L.screen.height) && near(L.screen.height, L.vh),
+  "with the strip hidden the box is the whole surface and the frame is that box: " +
+  JSON.stringify({ frame: L.frame, screen: L.screen, vh: L.vh }));
+await page.setViewportSize({ width: 1280, height: 720 });
+await setState({ ...base_state, url: "" });
 
 check(errors.length === 0, "no page errors: " + JSON.stringify(errors));
 await browser.close();

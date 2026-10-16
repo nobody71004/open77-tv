@@ -64,7 +64,7 @@ index db02375c..13e8666f 100644
  
  std::mutex s_focusMutex;
  SurfaceId s_focusSurface{};
-@@ -520,17 +564,23 @@ bool LaunchHost(std::string& aError)
+@@ -520,17 +564,31 @@ bool LaunchHost(std::string& aError)
      if (directoryError)
      {
          aError = "web_data_directory_failed";
@@ -75,14 +75,22 @@ index db02375c..13e8666f 100644
 +    // host resolves the two executables from exactly this path -- no PATH
 +    // search, no fallback -- so a missing tool disables the transcode routes
 +    // with a named reason instead of executing whatever it finds.
-+    const std::wstring decoderDirectory = s_pluginDirectory / L"decoder";
++     const std::wstring decoderDirectory = s_pluginDirectory / L"decoder";
++    // Opt-in DRM, forwarded to the host process: with OP77_WEBUI_WIDEVINE=1 in
++    // the client's environment the host is launched with --open77-widevine, so
++    // its component updater may fetch Google's official Widevine CDM
++    // (docs/widevine-cdm-integration.md). Default off: no flag, no CDM, and
++    // the host behaves exactly as before.
      const std::wstring command = QuoteArgument(s_hostExecutable.wstring()) + L" " +
          QuoteArgument(L"--open77-pipe=" + s_pipeName) + L" " +
          QuoteArgument(L"--open77-token=" + Utf8ToWide(s_token)) + L" " +
          QuoteArgument(L"--open77-parent=" + std::to_wstring(GetCurrentProcessId())) + L" " +
 -        QuoteArgument(L"--open77-data=" + s_dataDirectory.wstring());
 +        QuoteArgument(L"--open77-data=" + s_dataDirectory.wstring()) + L" " +
-+        QuoteArgument(L"--open77-decoder-dir=" + decoderDirectory);
++        QuoteArgument(L"--open77-decoder-dir=" + decoderDirectory) +
++        (GetEnvironmentVariableW(L"OP77_WEBUI_WIDEVINE", nullptr, 0) != 0
++             ? std::wstring(L" ") + QuoteArgument(std::wstring(L"--open77-widevine"))
++             : std::wstring());
      std::vector<wchar_t> mutableCommand(command.begin(), command.end());
      mutableCommand.push_back(L'\0');
      STARTUPINFOW startup{sizeof(startup)};

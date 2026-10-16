@@ -28,7 +28,9 @@ while (Date.now() < until) {
   if (msgs.some((m) => /^(connected|gave_up)/.test(m))) { await page.waitForTimeout(2500); break; }
 }
 const frame = page.frames().find((f) => f !== page.mainFrame());
-if (frame) video = await frame.evaluate(() => { const v = document.querySelector("video"); return v ? { readyState: v.readyState, t: Math.round(v.currentTime * 10) / 10, w: v.videoWidth, h: v.videoHeight } : null; }).catch(() => null);
+// The picture, not open77-fit.js's edge strips: they carry the same stream and the
+// same size, but the picture element is the one whose state is being reported.
+if (frame) video = await frame.evaluate(() => { const v = document.querySelector("video:not([data-open77-fit])"); return v ? { readyState: v.readyState, t: Math.round(v.currentTime * 10) / 10, w: v.videoWidth, h: v.videoHeight } : null; }).catch(() => null);
 const msgs = await page.evaluate(() => __msgs);
 console.log(JSON.stringify({ video, ice: frame ? new URL(frame.url()).searchParams.get("ice") : null,
   messages: msgs.map((m) => m.replace(/pwd=[^&\s]*/g, "pwd=REDACTED")) }, null, 1));

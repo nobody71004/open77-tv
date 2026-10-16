@@ -109,8 +109,9 @@ tests/
                                 stub host: DRM links named, the host's malformed
                                 probe answer read, sites framed with the decoder off,
                                 the shared browser's network check and stream log,
-                                its sound following the television's volume, and
-                                the control strip under the picture, never over it
+                                its sound following the television's volume,
+                                the control strip under the picture, never over it,
+                                and the picture read in pixels on a non-16:9 set
   fixtures/                     a snapshot of open77_admin's prop-model aliases
 shared-browser/          a real Chromium on the server streamed to a television
                          over WebRTC, the same for everyone at it, without DRM:
@@ -166,7 +167,18 @@ of the wrong shape stretches the picture. The game's real screens are 16:9, 21:9
 the surface is derived from the rectangle by `Open77MediaSurfaceFor` -- long side
 1280, short side rounded to the nearest even pixel -- and the client calls it with
 the quad it was actually sent, so `media.quad` retunes the surface too. A 21:9
-screen showing a 16:9 video letterboxes it, which is what a 21:9 screen does.
+screen showing a 16:9 video letterboxes it, which is what a 21:9 screen does —
+that is the `<video>` path, and the letterbox there is a choice
+(`shared/records.lua`). The live picture in the frame is the other way round, and
+is left alone: the frame is the screen box exactly, on every shape, and the
+picture inside it keeps the stream's own 16:9 — a television that scaled the
+picture to the box would crop it, which is what a 32:9 client reported the day
+that was tried (2026-10-16; `tests/tv-page/run.mjs` sections 32–33 pin the frame
+to the box in pixels). What is left over is filled inside the frame by the shared
+browser's own page — a blurred copy of the same stream under the picture
+(`open77-fit.js` in the image; `shared-browser/README.md`, "A box the picture
+does not fill") — so a shared browser reaches the edges of a set of any shape
+with nothing cut off.
 
 `server/main.lua` creates a television at volume 75 (`DEFAULT_VOLUME`), and the
 page starts at the same 75 so the slider and the mixer agree from the first frame.
@@ -235,7 +247,7 @@ and the method are in `docs/webui-media-and-audio.md`:
 | a link this build cannot decode (`.mp4`, `.m4v`, `.mov`, `.m3u8`, `.mpd`, `.ts`, `.flv`, `.mkv`) | **the host decodes it** — `/op77/media/probe` asks `ffprobe` what the link is, and `/op77/media/stream` hands the page the same link re-encoded to VP9/Opus WebM. The page shows the decoder's first picture, and the seek bar disables itself until the stream declares a duration rather than lying. Without the decoder staged the verdict is `disabled` and the screen says which tools are missing. |
 | a site somebody pasted (`hdtoday`-style pages, anything without a media extension) | **framed, and its own player decides** — the media policy frames any `https:` origin, so the site's page is shown in a sandboxed frame and the log says `embed_framed` when a document arrived. If the link is a shell that refuses framing (`X-Frame-Options` / `frame-ancestors`) the host resolves it first and the *app inside* is framed instead — that is what `123movie-tv.it.com` turned out to be: 5.7 KB that refuses framing, wrapping two apps that do not. Whether its *video* plays is then the site's own business: these sites are JS shells over HLS/MP4 that is H.264 + AAC, the pair this build cannot decode, so a site whose player does no codec detection will show its UI and refuse the stream. Nothing about the site is the problem; the codec is. |
 | any site, through the shared browser (`/browser`, or a browser cinema from the TV menu) | **plays in a real Chromium on the server** — its picture and sound reach the television over WebRTC as VP8 and Opus, which this build decodes, so H.264 players and Twitch play there; everyone at the television sees the same browser, F8 drives it, and Ctrl+V pastes a link copied on your PC into it. It has no DRM module, so protected video does not play in it (`shared-browser/`). |
-| Netflix, and any Widevine/PlayReady service | **impossible** — no CDM. A CDM cannot ship inside a process running under EAC, and Netflix additionally gates desktop playback on a hardware signature a CEF host cannot present. A pasted link to one says so on the screen (`PROTECTED_SERVICES` in `web/tv.js`) instead of probing it. For Netflix, a watch party (`watch-party/`) keeps everyone's own browser in step instead. |
+| Netflix, and any Widevine/PlayReady service | **measured, and gated twice over** — the page now *asks* `requestMediaKeySystemAccess(com.widevine.alpha)` (`PROTECTED_SERVICES` in `web/tv.js`) instead of assuming no CDM. Playback needs Google's official Widevine CDM *and* a top-level surface (Netflix refuses to be framed) *and* Netflix accepting that host — a CDM alone is not enough, and we do not forge Netflix's device check. Wire the CDM in per `docs/widevine-cdm-integration.md`; the shared browser is the surface that can carry it. For Netflix, a watch party (`watch-party/`) keeps everyone's own browser in step instead. |
 
 The refusals are deliberate and visible: the page names the codec and why, on
 screen. Handing an `.mp4` to a `<video>` element produces a silent black

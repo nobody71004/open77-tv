@@ -39,6 +39,11 @@
 // is told back to it when that changes (kind `volume`, which the television logs
 // as browser_ice): a level, a gain and a state, and five seconds after a change
 // how loud the result is (the root mean square of the output, in dBFS).
+//
+// open77-fit.js's strips are left alone (see `decor`): they are the same stream
+// again, muted, on the picture's edges, and the sound is the picture element's
+// alone -- a level on a strip would be reported as being on one, and without Web
+// Audio it would unmute one and play the stream a second time.
 (function () {
   "use strict";
   if (!window.parent || window.parent === window) return;
@@ -57,6 +62,15 @@
 
   function isMedia(target) {
     return !!target && (target.tagName === "VIDEO" || target.tagName === "AUDIO");
+  }
+
+  // open77-fit.js's strips: the same stream again, on the picture's edges, muted,
+  // carrying the game's bars. They are decor -- the sound is the picture's own
+  // element -- so they are never hooked (the level would then be reported as being
+  // on a strip) and never given a level either: without Web Audio the loop below
+  // would unmute one and play the stream a second time.
+  function decor(target) {
+    return !!target && typeof target.closest === "function" && target.closest("#open77-fit") !== null;
   }
 
   function gainFor(level) {
@@ -150,6 +164,7 @@
     var onGain = 0;
     for (var i = 0; i < elements.length; i++) {
       var element = elements[i];
+      if (decor(element)) continue;
       if (onGain === 0 && hook(element)) {
         onGain++;
         continue;
@@ -253,7 +268,7 @@
     } else if (hooked === null && audio && audio.context.state === "running") {
       var elements = document.querySelectorAll("video, audio");
       for (var i = 0; i < elements.length; i++) {
-        if (audioTrackOf(elements[i]) !== null) {
+        if (!decor(elements[i]) && audioTrackOf(elements[i]) !== null) {
           apply("stream found");
           break;
         }
@@ -276,6 +291,11 @@
       wanted: wanted, hooked: hooked !== null, audio: audio ? audio.context.state : (audio === false ? "none" : "not made"),
       gain: audio ? audio.gain.gain.value : null, original: hooked !== null ? hooked.track.enabled : null, level: level,
       peak: peak,
+      // Which element carries the sound: the picture, and never one of
+      // open77-fit.js's strips (they are the same stream again, muted, on the
+      // picture's edges -- see `decor`).
+      on: hooked === null ? null : (hooked.element.id || hooked.element.getAttribute("data-open77-fit") ||
+        hooked.element.tagName.toLowerCase()),
     };
   };
 })();

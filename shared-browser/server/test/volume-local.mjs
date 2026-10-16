@@ -93,7 +93,8 @@ async function loudness(frame) {
   await page.evaluate(() => __post(1, false));
   await wait(1500);
   let s = await state(frame);
-  check(s.hooked && s.audio === "running" && s.original === false, "at 100 the stream's sound goes through Web Audio and the element's own is off: " + JSON.stringify(s));
+  check(s.hooked && s.audio === "running" && s.original === false && s.on === "stream",
+    "at 100 the stream's sound goes through Web Audio, on the picture element, and the element's own is off: " + JSON.stringify(s));
   check(Math.abs(s.gain - 4.5) < 0.01, "100 is four and a half times the leveled sound: gain " + s.gain);
   const loud = await loudness(frame);
   check(loud > 0.2, "and it is heard: output level " + loud.toFixed(3));
@@ -180,7 +181,8 @@ async function loudness(frame) {
   await frame.click("body", { position: { x: 20, y: 20 } });
   await wait(1500);
   s = await state(frame);
-  check(s.hooked && s.audio === "running" && s.original === false, "a click starts it, and the sound goes through the gain: " + JSON.stringify(s));
+  check(s.hooked && s.audio === "running" && s.original === false && s.on === "stream",
+    "a click starts it, and the sound goes through the gain, on the picture element: " + JSON.stringify(s));
   check((await loudness(frame)) > 0.1, "and it is heard");
   check(errors.length === 0, "no page errors: " + JSON.stringify(errors));
   await browser.close();
