@@ -457,8 +457,8 @@ local LINKED_CINEMAS = {
     ["cinema.150ft.browser"] = { panel = "cinema.150ft", provider = "opx_tvbrowser" },
     ["cinema.100ft.capture"] = { panel = "cinema.100ft", provider = "opx_screenmirror" },
     ["cinema.150ft.capture"] = { panel = "cinema.150ft", provider = "opx_screenmirror" },
-    ["cinema.100ft.watchparty"] = { panel = "cinema.100ft", provider = "opx_watchparty" },
-    ["cinema.150ft.watchparty"] = { panel = "cinema.150ft", provider = "opx_watchparty" },
+    ["cinema.100ft.watchparty"] = { panel = "cinema.100ft", provider = "opx_watchparty", fallback = "opx_tvbrowser" },
+    ["cinema.150ft.watchparty"] = { panel = "cinema.150ft", provider = "opx_watchparty", fallback = "opx_tvbrowser" },
 }
 local linked = 0
 for _, record in ipairs(catalogue) do
@@ -468,6 +468,9 @@ for _, record in ipairs(catalogue) do
         check(spec ~= nil and record.linkFrom == spec.provider,
             string.format("record '%s' names linkFrom '%s'; only the linked cinemas name their provider",
                 record.id, tostring(record.linkFrom)))
+        check(spec ~= nil and record.linkFallback == spec.fallback,
+            string.format("record '%s' names linkFallback '%s'; only the watch-party cinemas fall back to the shared browser",
+                record.id, tostring(record.linkFallback)))
         local base = spec and spec.panel or nil
         local panel = base and Open77MediaRecord(base)
         if panel ~= nil then

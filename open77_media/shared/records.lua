@@ -938,10 +938,13 @@ local records = {
     -- is, how many browsers are in step -- the same for everyone in front of
     -- it. Their picture is another resource's, so the records name that
     -- resource rather than a link: linkFrom is asked for the link when the set
-    -- is put up (linkedUrl in server/main.lua). Each is its cinema's panel
-    -- exactly: the same scale, quad, reach and collider. The film itself never
-    -- appears here: every viewer plays it in their own browser, on their own
-    -- Netflix account -- which is why this screen can exist at all.
+    -- is put up (linkedUrl in server/main.lua). With no party to show they fall
+    -- back to the shared browser (linkFallback): the menu spawn always lands
+    -- somewhere usable -- a full browser to paste a link into and sign in on.
+    -- Each is its cinema's panel exactly: the same scale, quad, reach and
+    -- collider. The film itself never appears here: every viewer plays it in
+    -- their own browser, on their own Netflix account -- which is why this
+    -- screen can exist at all.
     {
         id = "cinema.100ft.watchparty",
         label = "Netflix watch party, 100 ft",
@@ -952,6 +955,7 @@ local records = {
         border = "#e50914",
         collision = true,
         linkFrom = "opx_watchparty",
+        linkFallback = "opx_tvbrowser",
         quad = {
             offset = { 0.0, 3.032077, 11.035862 },
             right = { 1.0, 0.0, 0.0 },
@@ -971,6 +975,7 @@ local records = {
         border = "#e50914",
         collision = true,
         linkFrom = "opx_watchparty",
+        linkFallback = "opx_tvbrowser",
         quad = {
             offset = { 0.0, 4.548115, 16.553793 },
             right = { 1.0, 0.0, 0.0 },

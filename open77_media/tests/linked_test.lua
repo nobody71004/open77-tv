@@ -192,6 +192,39 @@ result = spawnAs(7, { record = "cinema.150ft.watchparty", url = "https://evil.te
 check(result ~= nil and result[1] == false and result[2] == "linked_resource_unavailable:opx_watchparty",
     "no linkWhy: refused by name (" .. tostring(result and result[2]) .. ")")
 
+-- 6. A linked record with a fallback lands on the fallback's link when the
+-- provider has nothing: the watch-party cinema is a full browser with no party.
+local ROOM = "https://browser.example/room/?usr=open77&pwd=x&embed=1#open77-shared-browser"
+providers.opx_watchparty = function() return nil end
+claimers.opx_watchparty = nil
+providers.opx_tvbrowser = function() return ROOM end
+whys.opx_watchparty = function() return "no_watch_party_running" end
+created = {}
+live = {}
+result, snapshot = spawnAs(7, { record = "cinema.150ft.watchparty", yaw = 90 })
+check(result ~= nil and result[1] == true, "no party: put up (" .. tostring(result and result[2]) .. ")")
+set = findRecord(snapshot, "cinema.150ft.watchparty")
+check(set ~= nil and set.url == ROOM, "showing the shared browser, to paste a link into")
+check(#created == 1 and created[1].scale == 39.4137931, "on the 150 ft panel")
+
+-- 6b. A live party still wins over the fallback.
+providers.opx_watchparty = function() return WPARTY end
+created = {}
+live = {}
+result, snapshot = spawnAs(7, { record = "cinema.150ft.watchparty", yaw = 90 })
+check(result ~= nil and result[1] == true, "one party: put up")
+set = findRecord(snapshot, "cinema.150ft.watchparty")
+check(set ~= nil and set.url == WPARTY, "showing the party's screen, not the browser")
+
+-- 6c. With neither, the menu is told why.
+providers.opx_watchparty = function() return nil end
+providers.opx_tvbrowser = function() return nil end
+createdBefore = #created
+result = spawnAs(7, { record = "cinema.150ft.watchparty", yaw = 90 })
+check(result ~= nil and result[1] == false and result[2] == "no_watch_party_running",
+    "nothing anywhere: refused with the reason (" .. tostring(result and result[2]) .. ")")
+check(#created == createdBefore, "and nothing is put up for it")
+
 -- 4. A record without linkFrom keeps the link it was given.
 providers.opx_tvbrowser = function() return LINK end
 result, snapshot = spawnAs(7, { record = "cinema.150ft", url = "https://www.youtube.com/watch?v=abc" })

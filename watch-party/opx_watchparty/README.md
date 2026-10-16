@@ -34,9 +34,11 @@ status | help`, `/watch cinema [100]` (screen for the party you are in).
 `/watch cinema` puts the player's party on a 150 ft watch-party panel in front
 of them (`cinema.150ft.watchparty` in open77_media; `100` for the 100 ft one,
 and a Cinema screen button in the panel). The TV menu lists the same panels:
-with exactly one party running they show its screen, otherwise the refusal
-says why (`no_watch_party_running` -- start one first with /watch netflix
-<link> -- or `too_many_watch_parties`) instead of a blank screen. /watch
+with exactly one party running they show its screen; with none to show they
+fall back to the shared browser instead of refusing -- the menu spawn always
+lands somewhere usable, a full browser to paste a link into and sign in on.
+(Only the shared screen's own session: protected video still needs each
+viewer's own browser, which is what the party is for.) /watch
 cinema names the player's own party, so it works even with several running:
 open77_media asks this resource to vouch for the link (`claim` export). Either way the film never appears on the panel --
 every viewer plays it in their own browser, on their own Netflix account.

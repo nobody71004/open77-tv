@@ -767,6 +767,21 @@ local function claimedUrl(record, url)
     return nil
 end
 
+---The shared browser behind a linked record that names one: a record's optional
+---`linkFallback` is a second provider asked when the first has nothing -- the
+---watch-party cinemas fall back to the shared browser, so spawning one from the
+---menu always lands somewhere usable: the party's screen while exactly one runs,
+---a full browser to paste a link into and sign in on otherwise. nil when no
+---fallback is named, or it has nothing either.
+local function fallbackUrl(record)
+    local fallback = type(record) == "table" and record.linkFallback or nil
+    if type(fallback) ~= "string" or fallback == "" then return nil end
+    if type(exports) ~= "table" and type(exports) ~= "userdata" then return nil end
+    local ok, link = pcall(function() return exports[fallback]:link() end)
+    if ok and type(link) == "string" and link ~= "" then return link end
+    return nil
+end
+
 ---Why a provider's `link` export answered nil, in the player's words: the
 ---provider's `linkWhy` export names the reason (`no_watch_party_running`), and
 ---it is forwarded as the refusal. nil when the provider does not say -- older
@@ -1536,6 +1551,7 @@ RegisterNetEvent("open77:media:spawn", function(payload)
     if definition.linkFrom ~= nil then
         url = linkedUrl(definition) or claimedUrl(definition, payload.url)
             or (isSharedBrowserLink(payload.url) and payload.url or nil)
+            or fallbackUrl(definition)
         if url == nil then
             TriggerClientEvent("open77:media:result", source, false,
                 linkedWhy(definition) or ("linked_resource_unavailable:" .. tostring(definition.linkFrom)))
