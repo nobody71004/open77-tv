@@ -140,15 +140,22 @@ every later one connected over UDP in about 0.1 s. A PC that stays black: look a
 its firewall's rules for the game's web host,
 `red4ext\plugins\Open77\web\Open77.WebHost.exe`.
 
-## No DRM, on purpose
+## DRM via the host's own CDM
 
-This browser's picture is captured and streamed to players, so protected video
-must not be able to play in it at all. The neko image ships Widevine; the
-`Dockerfile` removes it and the policy turns component updates off, so it is not
-fetched back. `server/drmcheck.sh` asks both images (stock and ours) for the
-Widevine key system: on XBUNIVERSE staging, 2026-10-02, the stock image answered
-`WIDEVINE_AVAILABLE` and ours `NotSupportedError`. Netflix and the other DRM
-services do not play in it; for Netflix, use a watch party (`watch-party/`).
+This browser's picture is captured and streamed to players, and protected video
+(Netflix and the rest) plays in it through the normal Encrypted Media Extensions
+path. The neko image ships Widevine; the `Dockerfile` still removes it --
+Google's CDM binary is not baked into (or redistributed with) our image -- and
+`server/up.sh` mounts the host's own Chrome copy read-only at run time
+(`/opt/google/chrome/WidevineCdm` to `/usr/lib/chromium/WidevineCdm`). The policy
+keeps component updates off, so nothing else is fetched back.
+`server/drmcheck.sh` asks both images (stock and ours) for the Widevine key
+system: on XBUNIVERSE staging, 2026-10-02, the stock image answered
+`WIDEVINE_AVAILABLE` and ours `NotSupportedError`. With the host CDM mounted,
+measured 2026-10-16, the room Chromium answers `WIDEVINE_AVAILABLE` -- so the
+mount, not the image, is what the CDM comes from. Where a service refuses this
+host anyway (Netflix's own device check), that refusal is the answer; the
+honest fallback stays the watch party (`watch-party/`).
 
 ## Shared, and what that means
 
@@ -174,10 +181,11 @@ machine are not touched.
    first run generates `neko.env` (viewer and admin passwords, API token) and the
    television link `tv-url.secret`, both root-only; later runs reuse them, so the
    link does not change. It builds `open77/tvbrowser-chromium:6`, checks the
-   image (the three scripts in the client page, the policy, no Widevine), and runs the
-   container capped at 4 cores, 4 GB and 2 GB of shared memory, with the client
-   on `127.0.0.1:18080` and WebRTC on `59100` (UDP and TCP, published by Docker,
-   so the host's INPUT rules are not changed).
+   image (the three scripts in the client page, the policy, no Widevine baked
+   in) and the host CDM, and runs the container capped at 4 cores, 4 GB and
+   2 GB of shared memory, with the client on `127.0.0.1:18080` and WebRTC on
+   `59100` (UDP and TCP, published by Docker, so the host's INPUT rules are not
+   changed), plus the host CDM mounted read-only for Widevine.
 2. `nginx.sh` adds `/tv-browser-xb-staging/` (websocket) to the site, after
    backing it up and `nginx -t`.
 3. Install `opx_tvbrowser` in `resources/`, write `server/config.lua` from
@@ -206,7 +214,10 @@ for three minutes (nobody connected) neko answered 403 for the scripts and Chrom
 could not read its policies. `up.sh` checks the modes in the image now. Build 6's
 script was first copied into the running container (`docker cp`, the image 5 copy
 kept in its /tmp), so the page a player had open in the shared browser stayed open;
-the container is recreated on image 6 when nobody is watching.
+the container is recreated on image 6 when nobody is watching. After build 6,
+the container runs with the host's WidevineCdm mounted read-only (the image
+still ships none); EME measured `WIDEVINE_AVAILABLE` on 2026-10-16, against
+`NotSupportedError` without the mount.
 
 The picture is 1280x720 at 30 fps (`NEKO_DESKTOP_SCREEN`); each viewer is one
 WebRTC stream from the server.

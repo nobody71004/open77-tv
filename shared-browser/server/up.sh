@@ -1,12 +1,18 @@
 #!/usr/bin/env bash
 # The shared browser for Open77 televisions on XBUNIVERSE STAGING: neko's Chromium
-# without Widevine, streamed over WebRTC (build/, run as image 6). Builds the
+# with Widevine, streamed over WebRTC (build/, run as image 6). Builds the
 # image and (re)creates the container -- which also wipes the browser's own state
 # (sessions, history). The first run generates neko.env (viewer and admin
 # passwords, API token) and the televisions' link (tv-url.secret), both
 # root-only; later runs reuse them, so the link a server's opx_tvbrowser holds
 # does not change. No firewall or nginx change (nginx.sh does the site).
 # Production servers are not touched. Prints no secret.
+#
+# Widevine is NOT baked into the image (build/ still removes it, so the image
+# stays redistributable without Google's CDM binary). It arrives at runtime as
+# a read-only mount of the host's own Chrome copy
+# (/opt/google/chrome/WidevineCdm); measured 2026-10-16, the room Chromium
+# answers WIDEVINE_AVAILABLE with the mount and NotSupportedError without it.
 set -euo pipefail
 D=/opt/open77-tvbrowser; NAME=open77-tvbrowser-xbs; IMAGE=open77/tvbrowser-chromium:6
 cd "$D"
@@ -43,18 +49,24 @@ chmod 600 tv-url.secret
 
 docker build -q -t "$IMAGE" "$D/build" >/dev/null
 echo "== image $IMAGE built: $(docker image inspect "$IMAGE" --format '{{.Id}}' | cut -c1-19)"
+# The host CDM this room's Widevine comes from: Google's official module from
+# the host's own Chrome install, mounted read-only, never copied into the image.
+CDM_SRC=/opt/google/chrome/WidevineCdm
+[ -f "$CDM_SRC/manifest.json" ] || { echo "no host CDM at $CDM_SRC: not recreating"; exit 1; }
+echo "== host CDM: $(grep -o '"version": *"[^"]*"' "$CDM_SRC/manifest.json" | head -1)"
 docker run --rm --entrypoint sh "$IMAGE" -c \
   'grep -q "src=\"open77-ice.js\"></script><script src=\"open77-paste.js\"></script><script src=\"open77-volume.js\"" /var/www/index.html && test -s /var/www/open77-ice.js && test -s /var/www/open77-paste.js && test -s /var/www/open77-volume.js && grep -q "\"NewTabPageLocation\"" /etc/chromium/policies/managed/policies.json && ! find / -xdev -iname "*widevine*" 2>/dev/null | grep -q .' \
-  || { echo "the image is missing its scripts or its policy, or still has a DRM module: not recreating"; exit 1; }
+  || { echo "the image is missing its scripts or its policy, or has a DRM module baked in: not recreating"; exit 1; }
 docker run --rm --entrypoint sh "$IMAGE" -c 'for f in /etc/chromium/policies/managed/policies.json /var/www/open77-ice.js /var/www/open77-paste.js /var/www/open77-volume.js; do [ "$(stat -c %a "$f")" = 644 ] || exit 1; done' \
   || { echo "the image's policy or scripts are not readable by the browser: not recreating"; exit 1; }
-echo "== image checked: client page loads open77-ice.js, open77-paste.js and open77-volume.js, all readable; policies in place; no Widevine"
+echo "== image checked: client page loads open77-ice.js, open77-paste.js and open77-volume.js, all readable; policies in place; no Widevine baked in (it is mounted at run)"
 
 if docker ps -a --format '{{.Names}}' | grep -qx "$NAME"; then docker rm -f "$NAME" >/dev/null; echo "== previous container removed"; fi
 docker run -d --name "$NAME" --restart unless-stopped \
   --cpus 4 --memory 4g --memory-swap 4g --pids-limit 2048 --shm-size 2g \
   --log-opt max-size=10m --log-opt max-file=3 \
   -p 127.0.0.1:18080:8080 -p 59100:59100/udp -p 59100:59100/tcp \
+  -v "$CDM_SRC:/usr/lib/chromium/WidevineCdm:ro" \
   --env-file "$D/neko.env" \
   "$IMAGE" >/dev/null
 echo "== container $NAME started on $IMAGE"

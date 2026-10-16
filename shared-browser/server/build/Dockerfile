@@ -5,10 +5,11 @@
 # check at the path the server answers on. No port, capability or setting changes.
 FROM ghcr.io/m1k1o/neko/chromium:3@sha256:2471119c7b4010067f76f3421a78a8bcf35e3c223b2d1f4db084914ec915fb30
 
-# No DRM module. This browser's picture is captured and streamed to players, so
-# protected video (Netflix and the like) must not be able to play in it at all:
-# the image ships Widevine, and it is removed here. Component updates are off in
-# the policy below, so it is not fetched back.
+# No DRM module baked in. The room plays protected video (Netflix and the like)
+# through the host's own Widevine copy, mounted read-only at run time (up.sh),
+# so Google's CDM binary is never copied into -- or redistributed with -- this
+# image: the image ships Widevine, and it is removed here. Component updates are
+# off in the policy below, so it is not fetched back either.
 RUN rm -rf /usr/lib/chromium/WidevineCdm \
  && ! find / -xdev -iname '*widevine*' 2>/dev/null | grep -q .
 
