@@ -361,6 +361,27 @@ Host.events["opx:watch:stop"]()
 _G.source = 7
 Host.events["opx:watch:stop"]()
 check("with none running there is no page", Host.exports.link() == nil)
+check("with none running the menu is told why, in the player's words",
+    Host.exports.linkWhy() == "no_watch_party_running")
+_G.source = 7
+Host.events["opx:watch:start"]({ netflixId = "80057281", title = "Dark S1", tvId = 4 })
+local dcode = lastClient("opx:watch:you", 7).args[1].code
+check("a spawner's own party page is vouched for",
+    Host.exports.claim(cbase .. "/v1/tv/" .. dcode) == cbase .. "/v1/tv/" .. dcode)
+check("but no other address is",
+    Host.exports.claim("https://evil.test/v1/tv/" .. dcode) == nil
+    and Host.exports.claim(cbase .. "/v1/tv/ABCDEF") == nil)
+check("with exactly one the menu needs no reason", Host.exports.linkWhy() == nil)
+Host.invoker = "someone_else"
+check("and neither answer leaves open77_media",
+    Host.exports.claim(cbase .. "/v1/tv/" .. dcode) == nil and Host.exports.linkWhy() == nil)
+Host.invoker = "open77_media"
+_G.source = 8
+Host.events["opx:watch:start"]({ netflixId = "81231974", title = "Second" })
+check("with two parties the menu is told it cannot choose",
+    Host.exports.linkWhy() == "too_many_watch_parties")
+check("but each spawner still vouches their own page",
+    Host.exports.claim(cbase .. "/v1/tv/" .. dcode) == cbase .. "/v1/tv/" .. dcode)
 local seeded, realSeed = 0, math.randomseed
 math.randomseed = function(s) seeded = seeded + 1; return realSeed(s) end
 Host.events.onResourceStart("opx_watchparty")

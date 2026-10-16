@@ -61,13 +61,21 @@ _G.Open77 = {
     time = { monotonic = function() return 0 end },
 }
 
--- `exports.<resource>:link()`, as the host's synchronous export proxy answers it.
+-- `exports.<resource>:link()`, as the host's synchronous export proxy answers it --
+-- with `claim` and `linkWhy` beside it, nil when the provider has neither (older
+-- providers only have `link`).
 local providers = {}
+local claimers, whys = {}, {}
 _G.exports = setmetatable({}, {
     __index = function(_, resource)
         local provider = providers[resource]
         if provider == nil then error("export_target_missing: " .. tostring(resource)) end
-        return { link = function(_) return provider() end }
+        local claimer, why = claimers[resource], whys[resource]
+        return {
+            link = function(_) return provider() end,
+            claim = function(_, url) return claimer ~= nil and claimer(url) or nil end,
+            linkWhy = function(_) return why ~= nil and why() or nil end,
+        }
     end,
 })
 
@@ -156,6 +164,33 @@ check(result ~= nil and result[1] == false, "the bare mark is not a link")
 providers.opx_tvbrowser = function() return nil end
 result = spawnAs(7, { record = "cinema.150ft.browser" })
 check(result ~= nil and result[1] == false, "a provider with no link is refused too")
+
+-- 5. A provider vouches for a link the spawner brought: the watch-party cinema
+-- goes up for a live party page even when the shared link cannot choose.
+local WPARTY = "https://xbuniverse.duckdns.org/opx-watch-xb-staging/v1/tv/ABC234"
+providers.opx_watchparty = function() return nil end
+claimers.opx_watchparty = function(url) if url == WPARTY then return url end return nil end
+whys.opx_watchparty = function() return "too_many_watch_parties" end
+created = {}
+result, snapshot = spawnAs(7, { record = "cinema.150ft.watchparty", url = WPARTY, yaw = 90 })
+check(result ~= nil and result[1] == true, "a vouched party page is put up: " .. tostring(result and result[2]))
+set = findRecord(snapshot, "cinema.150ft.watchparty")
+check(set ~= nil and set.url == WPARTY, "showing the vouched page")
+check(#created == 1 and created[1].scale == 39.4137931, "on the 150 ft panel")
+
+-- 5b. An unvouched link is refused, and the menu is told why in the player's
+-- words instead of the resource's name.
+createdBefore = #created
+result = spawnAs(7, { record = "cinema.150ft.watchparty", url = "https://evil.test/" })
+check(result ~= nil and result[1] == false and result[2] == "too_many_watch_parties",
+    "an unvouched link is refused with the reason (" .. tostring(result and result[2]) .. ")")
+check(#created == createdBefore, "and nothing is put up for it")
+
+-- 5c. A provider without linkWhy keeps the old naming refusal.
+whys.opx_watchparty = nil
+result = spawnAs(7, { record = "cinema.150ft.watchparty", url = "https://evil.test/" })
+check(result ~= nil and result[1] == false and result[2] == "linked_resource_unavailable:opx_watchparty",
+    "no linkWhy: refused by name (" .. tostring(result and result[2]) .. ")")
 
 -- 4. A record without linkFrom keeps the link it was given.
 providers.opx_tvbrowser = function() return LINK end

@@ -129,6 +129,19 @@ end
 ---id, the record id (for the quad) and the playback state, and nothing else.
 ---No owner, no proposer, no bucket -- a client that wants a bucket wants the
 ---prop registry.
+-- The admin screen-lock's gate. A set is locked by an admin so other players
+-- cannot change the screen somebody is using. Whoever holds this ACE may lock,
+-- unlock and bypass the lock; nobody else may change a locked set. It is the
+-- same ACE the restricted `media.lock` command is gated by (a restricted
+-- `media.lock` command is granted to holders of `command.media.lock`), so giving
+-- an admin that one ACE is the whole story. The server console is always admin.
+local LOCK_ACE = "command.media.lock"
+local function isLockAdmin(source)
+    if source == nil or source <= 0 then return true end
+    if type(IsPlayerAceAllowed) ~= "function" then return false end
+    return IsPlayerAceAllowed(source, LOCK_ACE) == true
+end
+
 local function payload(entry)
     -- `quad` is on the wire, not looked up from `records.lua` on the client, and
     -- that is what makes the quad tunable in game: the server holds the effective
@@ -166,6 +179,10 @@ local function payload(entry)
         -- closed curtain, and a join in the middle of a reveal sees the reveal.
         border = entry.border,
         curtain = entry.curtain,
+        -- The admin screen-lock: when true, only a lock-admin may change this set.
+        -- Broadcast so every panel can show it and grey out its controls (the real
+        -- gate is on the server, in `open77:media:control`).
+        locked = entry.locked == true,
         -- The panel's heading, for the client half of the reveal effect: the
         -- fireworks are placed in the world, in front of the panel, and the
         -- quad's own offset is in the prop's local frame -- so a client that
@@ -735,6 +752,35 @@ local function linkedUrl(record)
     return nil
 end
 
+---A provider vouches for a link the spawner brought: `exports[provider]:claim(url)`
+---answers it back when it is one of the provider's live pages, nil otherwise.
+---Lets a spawner put up their own screen -- the /watch cinema command names the
+---player's own party -- when the shared `link` export cannot choose (no party,
+---or several). A provider without `claim` vouches for nothing.
+local function claimedUrl(record, url)
+    local provider = record and record.linkFrom
+    if type(provider) ~= "string" or provider == "" then return nil end
+    if type(url) ~= "string" or url == "" then return nil end
+    if type(exports) ~= "table" and type(exports) ~= "userdata" then return nil end
+    local ok, answer = pcall(function() return exports[provider]:claim(url) end)
+    if ok and type(answer) == "string" and answer ~= "" then return answer end
+    return nil
+end
+
+---Why a provider's `link` export answered nil, in the player's words: the
+---provider's `linkWhy` export names the reason (`no_watch_party_running`), and
+---it is forwarded as the refusal. nil when the provider does not say -- older
+---providers only have `link` -- and the caller falls back to naming the
+---resource, as before.
+local function linkedWhy(record)
+    local provider = record and record.linkFrom
+    if type(provider) ~= "string" or provider == "" then return nil end
+    if type(exports) ~= "table" and type(exports) ~= "userdata" then return nil end
+    local ok, why = pcall(function() return exports[provider]:linkWhy() end)
+    if ok and type(why) == "string" and why ~= "" then return why end
+    return nil
+end
+
 -- The mark a shared-browser link ends in (opx_tvbrowser's `OpxTvBrowserLink.MARK`,
 -- `SHARED_BROWSER_MARK` in web/tv.js). A spawn of the browser cinema that brings
 -- such a link itself -- `/browser cinema` does, from the server that holds it --
@@ -996,6 +1042,22 @@ command("media.curtain", "media.curtain <id> <open|closed|reveal>", true,
         output(source, raw, true, string.format(
             "television %d curtain=%s", entry.id, state))
     end)
+
+-- The admin screen-lock, from the console or any restricted command path.
+-- Restricted (ACE `command.media.lock`): only a lock-admin may run it, matching
+-- who may bypass the lock. Locking a set stops other players changing the screen
+-- somebody is using; unlocking hands it back.
+command("media.lock", "media.lock <id> <on|off>", true, function(source, args, raw)
+    if args.n ~= 2 then error("wrong argument count", 0) end
+    local entry = media[math.floor(number(args[1]))]
+    if entry == nil then return output(source, raw, false, "no such television") end
+    local state = string.lower(tostring(args[2]))
+    if state ~= "on" and state ~= "off" then error("state must be on or off", 0) end
+    entry.locked = state == "on"
+    entry.lockedBy = entry.locked and source or nil
+    broadcast(nil)
+    output(source, raw, true, string.format("television %d locked=%s", entry.id, tostring(entry.locked)))
+end)
 
 command("media.remove", "media.remove <id>", true, function(source, args, raw)
     if args.n ~= 1 then error("wrong argument count", 0) end
@@ -1282,6 +1344,17 @@ RegisterNetEvent("open77:media:control", function(action, payload)
         return
     end
 
+    -- The admin screen-lock. While a set is locked, a player who is not a
+    -- lock-admin may not change it -- not the link, volume, mute, pause, curtain,
+    -- placement, and not remove it. This is the enforcement, on the server, in
+    -- the one handler every panel control passes through; a greyed-out button in
+    -- the page is a courtesy, not a boundary. The `lock` action is let through
+    -- here and gated in its own branch, so an admin can lock or unlock a set.
+    if entry.locked and not isLockAdmin(source) and action ~= "lock" then
+        TriggerClientEvent("open77:media:result", source, false, "screen_locked_by_admin")
+        return
+    end
+
     if action == "quad" then
         -- Not reachable from the panel and not meant to be: there is no UI for a
         -- screen rectangle and a player nudging one would move a screen other
@@ -1406,6 +1479,20 @@ RegisterNetEvent("open77:media:control", function(action, payload)
                 "rotate_refused:" .. tostring(turnReason))
             return
         end
+    elseif action == "lock" then
+        -- Admin-only: the enforcement above let a `lock` action through to here
+        -- so an admin can toggle it, and this is where a non-admin is turned
+        -- away. `payload.value` is the new state.
+        if not isLockAdmin(source) then
+            TriggerClientEvent("open77:media:result", source, false, "lock_is_admin_only")
+            return
+        end
+        if type(payload.value) ~= "boolean" then
+            TriggerClientEvent("open77:media:result", source, false, "value_must_be_boolean")
+            return
+        end
+        entry.locked = payload.value
+        entry.lockedBy = payload.value and source or nil
     elseif action == "remove" then
         remove(entry.id)
     else
@@ -1447,10 +1534,11 @@ RegisterNetEvent("open77:media:spawn", function(payload)
     -- whatever the panel's link field held: it is what the record is for.
     local url = payload.url
     if definition.linkFrom ~= nil then
-        url = linkedUrl(definition) or (isSharedBrowserLink(payload.url) and payload.url or nil)
+        url = linkedUrl(definition) or claimedUrl(definition, payload.url)
+            or (isSharedBrowserLink(payload.url) and payload.url or nil)
         if url == nil then
             TriggerClientEvent("open77:media:result", source, false,
-                "linked_resource_unavailable:" .. tostring(definition.linkFrom))
+                linkedWhy(definition) or ("linked_resource_unavailable:" .. tostring(definition.linkFrom)))
             return
         end
     end

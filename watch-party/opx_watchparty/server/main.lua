@@ -301,17 +301,48 @@ local function publish(name, fn)
     if exports == nil then return false end
     return (pcall(exports, name, fn))
 end
+-- The real parties, in list order: test entries (the extension's end-to-end
+-- stand-ins) never count, here or anywhere a player looks.
+local function realParties()
+    local out = {}
+    for _, state in ipairs(registry:list()) do
+        if state.test == nil then out[#out + 1] = state end
+    end
+    return out
+end
+
 publish("link", function()
     if GetInvokingResource() ~= "open77_media" then return nil end
-    local found = nil
-    for _, state in ipairs(registry:list()) do
-        if state.test == nil then
-            if found ~= nil then return nil end
-            found = state
-        end
+    local real = realParties()
+    if #real ~= 1 then return nil end
+    return tvUrl(real[1].code)
+end)
+
+-- The /watch cinema command names the player's OWN party, which the shared
+-- `link` export cannot choose when several run: open77_media asks `claim` with
+-- the link the spawner brought, and it is answered back only when it is one of
+-- this resource's live party pages. Anything else -- a typed address, another
+-- site, a finished party's page -- is not vouched for, so a watch-party record
+-- can never be pointed at an arbitrary screen.
+publish("claim", function(url)
+    if GetInvokingResource() ~= "open77_media" then return nil end
+    if type(url) ~= "string" then return nil end
+    for _, state in ipairs(realParties()) do
+        if url == tvUrl(state.code) then return url end
     end
-    if found == nil then return nil end
-    return tvUrl(found.code)
+    return nil
+end)
+
+-- Why `link` answered nil, in the player's words: open77_media forwards the
+-- code when a cinema cannot be put up, so "start a party first" arrives
+-- instead of "linked_resource_unavailable". nil when there is nothing to
+-- explain -- exactly one party running is `link`'s own answer.
+publish("linkWhy", function()
+    if GetInvokingResource() ~= "open77_media" then return nil end
+    local real = realParties()
+    if #real == 0 then return "no_watch_party_running" end
+    if #real > 1 then return "too_many_watch_parties" end
+    return nil
 end)
 
 local function forget(player)
