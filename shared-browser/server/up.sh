@@ -55,7 +55,7 @@ CDM_SRC=/opt/google/chrome/WidevineCdm
 [ -f "$CDM_SRC/manifest.json" ] || { echo "no host CDM at $CDM_SRC: not recreating"; exit 1; }
 echo "== host CDM: $(grep -o '"version": *"[^"]*"' "$CDM_SRC/manifest.json" | head -1)"
 docker run --rm --entrypoint sh "$IMAGE" -c \
-  'grep -q "src=\"open77-ice.js\"></script><script src=\"open77-paste.js\"></script><script src=\"open77-volume.js\"></script><script src=\"open77-fit.js\"" /var/www/index.html && test -s /var/www/open77-ice.js && test -s /var/www/open77-paste.js && test -s /var/www/open77-volume.js && test -s /var/www/open77-fit.js && grep -q "\"NewTabPageLocation\"" /etc/chromium/policies/managed/policies.json && ! find / -xdev -iname "*widevine*" 2>/dev/null | grep -q .' \
+  'grep -q "src=\"open77-ice.js\"></script><script src=\"open77-paste.js\"></script><script src=\"open77-volume.js\"></script><script src=\"open77-fit.js?v=3\"" /var/www/index.html && test -s /var/www/open77-ice.js && test -s /var/www/open77-paste.js && test -s /var/www/open77-volume.js && test -s /var/www/open77-fit.js && grep -q "\"NewTabPageLocation\"" /etc/chromium/policies/managed/policies.json && ! find / -xdev -iname "*widevine*" 2>/dev/null | grep -q .' \
   || { echo "the image is missing its scripts or its policy, or has a DRM module baked in: not recreating"; exit 1; }
 docker run --rm --entrypoint sh "$IMAGE" -c 'for f in /etc/chromium/policies/managed/policies.json /var/www/open77-ice.js /var/www/open77-paste.js /var/www/open77-volume.js /var/www/open77-fit.js; do [ "$(stat -c %a "$f")" = 644 ] || exit 1; done' \
   || { echo "the image's policy or scripts are not readable by the browser: not recreating"; exit 1; }

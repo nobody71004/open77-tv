@@ -176,22 +176,19 @@ screenshot of the cinema panel (2026-10-16).
 The television's page does not touch the picture at all (`web/tv.js`: the frame is
 the box, exactly, and the picture inside it keeps its shape). What happens inside
 that box is the framed page's own business, and `open77-fit.js` in the image answers
-it there -- with two answers, because there are only two ways this ends well:
+it there, with one answer on every shape: **THE PICTURE FILLS THE BOX**. It is scaled
+up, keeping its shape, until it reaches every edge of the box, and the overhang is cut
+-- `object-fit: cover`, which is the browser's own uniform scale, so the picture is
+cropped and never stretched. Nothing is drawn beside it, because there is nothing
+beside it: no canvas, no layer, no second stream, no fill of any kind. The 8 px stripe
+the cinema panel reported is simply gone, and so is every other gap.
 
-- **COVER**, wherever the box is within a THIRD of the picture's own shape: the
-  cinema panel's 1280x728 (1 %), that panel with the strip up (6 %), a 21:9 set
-  (25 %). The picture is scaled up, keeping its shape, until it reaches every edge of
-  the box, and the overhang is cut -- `object-fit: cover`, which is the browser's own
-  uniform scale, so the picture is cropped and never stretched. The 8 px stripe the
-  cinema panel reported is simply gone: the screen is the picture and nothing else.
-- **A GLOW**, past that third, where cutting the picture up would cost more than the
-  gap is worth: a 32:9 client surface, where covering takes half the picture, and a
-  portrait box (68 %). The picture is left exactly as the client laid it out -- same
-  rect, same `object-fit`, same inline style -- and each gap carries the picture's own
-  edge COLOURS, averaged into six stops down (or along) that edge and drawn as a wash
-  that follows the rows of the picture beside it, dimmed to 60 %, redrawn at 20 fps.
-  A wash has no structure, so nothing in it can look like a stretched picture, and it
-  cannot show the video twice because it is not the video.
+What that costs is honest and measured: a 16:9 picture in a 2.39 box loses 26 % of its
+height (13 % off the top and 13 % off the bottom), and on a 32:9 client's own surface
+it loses half of it. That was reported too ("the top of the browser's own window gone")
+-- and it is what a screen with no bars means. Five fills that left something beside the
+picture were each measured on a television on 2026-10-16 and each was rejected as bars;
+the one that keeps every pixel is the one with bars in it.
 
 The cover is a **class** the script adds and takes away (`open77-cover`), never an
 inline style: the picture's own style attribute belongs to the page -- neko sizes that
@@ -247,12 +244,10 @@ picture's own edge, and not a hole, but it is not a bright frame either.
   gap samples, which read exactly `[0,0,0]` on the same page with the script's request
   refused, now read the picture (`[[0,11,9],[3,24,19],[5,27,20],...]`): the 8 px black
   stripe is gone.
-- a 32:9 client's viewport, 5120x1440: **glow** -- the picture is 2560x1440 centred in
-  the box, its rect, its `object-fit` and its inline style the same with the script as
-  without it, the layer a layer of the whole box under it with one sharp canvas per
-  gap and no second stream, and both 1280 px pillars the picture's own edge colours,
-  stop for stop, read against the picture's own edge strip. The same ten points without
-  the script read exactly `[0,0,0]`.
+- a 32:9 client's viewport, 5120x1440: **cover** too -- the picture is the whole box
+  wearing the class with `object-fit: cover`, no layer at all, half of the picture's
+  height cut (25 % off the top, 25 % off the bottom), and the same ten points, which
+  read exactly `[0,0,0]` without the script, now read the picture.
 
 The comparison is per gap and per stop -- the bar's own pixels against the edge strip
 of the picture itself, drawn small and dimmed the way the script draws it -- and the
@@ -264,22 +259,20 @@ the overnight run before this one read the left pillar of that 32:9 box as
 -- another part of the frame, exactly as the television reported it.
 
 `server/test/fit-local.mjs` is the same set of questions against a local stand-in
-shaped from the room's own CSS, with a real WebRTC stream: 62 checks over six box
-shapes (1280x728, 1280x675 with the strip up, 2560x1080 and the 16:9 box for the
-cover side -- 1 %, 6 %, 25 % and nothing -- and 5120x1440 and 720x1280 for the glow
-side, 50 % and 68 %), each with the control run WITHOUT the script, which must read
-black in exactly the places the script fills, or the check proves nothing. The
-cover shapes are measured as: the element IS the box, the computed `object-fit` is
-`cover`, the class is on, no layer exists, the box's own edges are the picture, and
-the synthetic stream's square white mark is still SQUARE (78x78 on the cinema panel,
-156x156 on the 21:9 box) and still the middle of the screen -- a stretched picture
-shows a rectangle there. The glow shapes are measured as: the picture's rect,
-`object-fit` and inline style are the same as the same page without the script, and
-the bars' own pixels equal the picture's edge strip, stop for stop, to within
-rounding (`[0,115,153]` and `[138,10,124]` cyan and magenta, dimmed). The last section
-puts both scripts on the one page, as the room runs them, and holds the sound on the
-picture element (`on: "stream"`) with nothing else in the layer to carry it: the fill
-adds no media element at all.
+shaped from the room's own CSS, with a real WebRTC stream: 70 checks over six box
+shapes (1280x728, 1280x675 with the strip up, 2560x1080, 5120x1440, 720x1280, and the
+16:9 box where nothing is to be cropped), each with the control run WITHOUT the script,
+which must read black in exactly the places the cover fills, or the check proves
+nothing. Every filled shape is measured as: the element IS the box, the computed
+`object-fit` is `cover`, the class is on, NO layer and NO canvas exist, the box's own
+edges are the picture, the synthetic stream's square white mark is still SQUARE
+(78x78 on the cinema panel, 156x156 on the 21:9 box) and still the middle of the
+screen (a stretched picture shows a rectangle off-centre), and the page's own inline
+style attribute is byte for byte what it was before a stream existed -- the cover is a
+class, and the only thing this script ever writes to that attribute is the lift a
+client that lays its picture out in the document's flow needs. The last section puts
+both scripts on the one page, as the room runs them, and holds the sound on the picture
+element (`on: "stream"`): the cover adds no media element at all.
 
 ## When the picture does not come
 

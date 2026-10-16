@@ -9,24 +9,18 @@
 // (0,0,0) -- that black is the stripe a player reported -- and which also fixes the
 // points this test samples. Then the same box with the script, at those same points.
 //
-// Two answers are checked, and which one is right is decided here from the box and the
+// The answer is one answer, on both boxes, and it is decided here from the box and the
 // picture's own shape (the rect the client laid the picture out in), not from what the
-// script says it did:
+// script says it did: THE PICTURE FILLS THE BOX. The picture element IS the box, it is
+// wearing the cover class with `object-fit: cover` (the browser's own uniform scale, so
+// the picture is cropped and never stretched), no layer exists at all -- five fills with
+// something beside the picture were measured on a television on 2026-10-16 and all five
+// were rejected (the last one, the picture's own edge colours as a dimmed wash, as "the
+// blur side bars are back") -- and every point that was the page's own black is now the
+// picture.
 //
-//   * COVER (the box is within a third of the picture's shape): the picture element IS
-//     the box, wearing the cover class, with `object-fit: cover` -- the browser's own
-//     uniform scale, so the picture is cropped and never stretched -- no layer exists,
-//     and every point that was the page's black is now the picture.
-//   * GLOW (covering would cost more than a third of the picture): the picture is
-//     exactly the rect, the object-fit and the inline style it has without the script,
-//     the layer is a layer of the whole box under the picture (one sharp canvas per
-//     gap, no second stream), no bar is black, and each bar's own pixels are the
-//     picture's own edge strip, drawn small and dimmed the way the script draws it.
-//
-// Exits non-zero when a box the picture does not fill is left black, when the picture
-// was cropped where it should have been left whole (or the other way round), when the
-// layer is not a layer of the whole box under the picture, or when the bars are not the
-// picture's own edge colours.
+// Exits non-zero when a box the picture does not fill is left black, when the picture is
+// not the box, or when anything at all has been added beside it.
 //
 // usage: node e2e-fit.mjs <seconds> <box width> <box height>
 import fs from "node:fs";
@@ -140,61 +134,6 @@ const wash = async (points) => {
   }, { b64: shot.toString("base64"), spots: points });
 };
 
-// The bars against the picture's own edge, read the way the script builds them: a strip
-// of the picture's edge drawn small into the same number of stops, dimmed the same. Both
-// reads happen in one turn of the page's own JavaScript, so the frames behind them are as
-// close as two reads can be -- and the bars are the picture's own frames by construction,
-// so anything that differs is a bar that is not the picture's edge.
-const stops = (side) => frameOf().evaluate((side) => {
-  const count = 6, strip = 12;
-  const video = [...document.querySelectorAll("video")].find((v) => !v.closest("#open77-fit"));
-  const element = document.getElementById("open77-fit");
-  const bar = [...element.querySelectorAll("canvas")].find((c) => c.getAttribute("data-open77-fit") === side);
-  if (!bar) return null;
-  const column = side === "left" || side === "right";
-  const near_ = side === "left" || side === "top";
-  const width = video.videoWidth, height = video.videoHeight;
-  const scratch = document.createElement("canvas");
-  scratch.width = column ? 1 : count;
-  scratch.height = column ? count : 1;
-  const context = scratch.getContext("2d", { willReadFrequently: true });
-  context.imageSmoothingEnabled = true;
-  if (column) {
-    const x = near_ ? 0 : Math.max(0, width - strip);
-    context.drawImage(video, x, 0, Math.min(strip, width), height, 0, 0, 1, count);
-  } else {
-    const y = near_ ? 0 : Math.max(0, height - strip);
-    context.drawImage(video, 0, y, width, Math.min(strip, height), 0, 0, count, 1);
-  }
-  const data = context.getImageData(0, 0, scratch.width, scratch.height).data;
-  const want = [];
-  for (let i = 0; i < count; i++) {
-    want.push([Math.round(data[i * 4] * 0.6), Math.round(data[i * 4 + 1] * 0.6), Math.round(data[i * 4 + 2] * 0.6)]);
-  }
-  const style = getComputedStyle(video);
-  const box = bar.getBoundingClientRect();
-  const picture = video.getBoundingClientRect();
-  const scale = style.objectFit === "cover"
-    ? Math.max(picture.width / width, picture.height / height)
-    : Math.min(picture.width / width, picture.height / height);
-  const shown = [width * scale, height * scale];
-  const inner = [picture.left + (picture.width - shown[0]) / 2, picture.top + (picture.height - shown[1]) / 2];
-  const ratio = box.width > 0 ? bar.width / box.width : 1;
-  const span = column ? box.height : box.width;
-  const start = Math.max(0, Math.round(column ? inner[1] - box.top : inner[0] - box.left));
-  const end = Math.min(span, Math.round(column ? inner[1] + shown[1] - box.top : inner[0] + shown[0] - box.left));
-  const canvas = bar.getContext("2d");
-  const read = [];
-  for (let i = 0; i < count; i++) {
-    const point = Math.round((start + (i / 5) * (end - start)) * ratio);
-    const x = column ? Math.round(bar.width / 2) : Math.min(bar.width - 1, Math.max(0, point));
-    const y = column ? Math.min(bar.height - 1, Math.max(0, point)) : Math.round(bar.height / 2);
-    const d = canvas.getImageData(x, y, 1, 1).data;
-    read.push([d[0], d[1], d[2]]);
-  }
-  return { side: side, read: read, want: want };
-}, side);
-
 // The picture over WebRTC: wait for it the way a player waits, then let the room's own
 // desktop paint (a fresh stream shows a dark frame while it decodes).
 const settle = async () => {
@@ -216,7 +155,9 @@ const ok = (condition, what) => { if (!condition) failures.push(what); };
 // The control first: the page as an image with no open77-fit.js leaves it. Its gaps are
 // the client page's own black -- the stripe a player reported -- and its picture's rect
 // is the picture's own shape, which is what says whether this box needs an answer at all.
-await page.route("**/open77-fit.js", (route) => route.abort());
+// The image's own tag is versioned (`open77-fit.js?v=3`, the cache-buster), so the
+// pattern has to match the query too, or the "control" run is a run WITH the script.
+await page.route("**/open77-fit.js*", (route) => route.abort());
 await enter();
 const bare = await settle();
 ok(!!bare && !!bare.stream[0], "no picture: the stream never arrived in " + seconds + "s (control)");
@@ -235,10 +176,10 @@ ok(!needsFill || withoutScript.every(black),
 const pictureShape = bare ? bare.stream[0] / bare.stream[1] : 0;
 const screenShape = bare ? bare.box[0] / bare.box[1] : 0;
 const loss = screenShape > pictureShape ? 1 - pictureShape / screenShape : 1 - screenShape / pictureShape;
-const answer = !needsFill ? "none" : loss <= 1 / 3 ? "cover" : "glow";
+const answer = !needsFill ? "none" : "cover";
 
 // Then the same box with the script, at the same points.
-await page.unroute("**/open77-fit.js");
+await page.unroute("**/open77-fit.js*");
 await enter();
 const withScript = await settle();
 ok(!!withScript && !!withScript.stream[0], "no picture: the stream never arrived in " + seconds + "s (with the script)");
@@ -249,7 +190,7 @@ ok(agreed, "the script's own reading of the box is not the box: " +
   JSON.stringify({ fit: fit, loss: Math.round(loss * 1000) / 1000, answer: answer }));
 
 let covered = null;
-if (needsFill && answer === "cover") {
+if (needsFill) {
   covered = {
     element: withScript.element[0] === withScript.box[0] && withScript.element[1] === withScript.box[1] &&
       withScript.element[2] <= 1 && withScript.element[3] <= 1,
@@ -264,44 +205,14 @@ if (needsFill && answer === "cover") {
     "cover: a point that was black without the script is still black with it: " + JSON.stringify(stillBlack));
   ok(fit && /scaled up until it covers the screen/.test(fit.line || ""),
     "cover: and the television is told so: " + JSON.stringify(fit && fit.line));
-}
-
-let glowing = null;
-if (needsFill && answer === "glow") {
-  glowing = {
-    rect: withScript.element.join("x") === bare.element.join("x"),
-    fit: withScript.pictureFit === bare.pictureFit && withScript.pictureFit === "contain",
-    attribute: withScript.pictureAttribute === bare.pictureAttribute,
-    coverClass: withScript.coverClass,
-    layer: withScript.layer && withScript.layer.covers && withScript.layer.under &&
-      withScript.layer.fixed === "fixed" && withScript.layer.pointer === "none" &&
-      withScript.layer.filter === "none" && withScript.layer.streams === 0 &&
-      withScript.layer.bars === withScript.sides.length,
-  };
-  ok(glowing.rect && glowing.fit && !glowing.coverClass && glowing.attribute,
-    "glow: the picture was not left exactly as the client laid it out: " + JSON.stringify(glowing));
-  ok(glowing.layer,
-    "glow: the layer is not a layer of the whole box under the picture, sharp, one canvas per bar, with no " +
-    "second stream: " + JSON.stringify(withScript.layer));
-  ok(pixels.length > 0 && pixels.every((spot) => !black(spot)),
-    "glow: a bar is still black: " + JSON.stringify(withoutScript.map((spot, i) => [spot, pixels[i]])));
-  // And the bars are the picture's OWN edge, stop for stop, against the picture itself.
-  const read = (await Promise.all(withScript.sides.map((side) => stops(side)))).filter(Boolean);
-  const wrong = [];
-  for (const bar of read) {
-    bar.read.forEach((colour, i) => {
-      const want = bar.want[i];
-      if (!colour.every((n, c) => Math.abs(n - want[c]) <= 48)) wrong.push({ side: bar.side, stop: i, washed: colour, picture: want });
-    });
-  }
-  ok(read.length === withScript.sides.length && wrong.length <= 2,
-    "glow: the bars are not the picture's own edge colours, stop for stop: " + JSON.stringify(wrong));
-  ok(fit && /the picture whole/.test(fit.line || ""),
-    "glow: and the television is told so: " + JSON.stringify(fit && fit.line));
+  // And nothing at all beside the picture: no layer, no bars, no second stream.
+  ok(withScript.layer === null && fit.bars === 0 && fit.streams === 0,
+    "cover: something is still in the page beside the picture: " +
+    JSON.stringify({ layer: withScript.layer, bars: fit.bars, streams: fit.streams }));
 }
 
 console.log(JSON.stringify({ box: [width, height], answer: answer, loss: Math.round(loss * 1000) / 1000,
-  picture: bare && bare.picture, cover: covered, glow: glowing,
+  picture: bare && bare.picture, cover: covered,
   edgeWithoutScript: withoutScript, withScript: pixels,
   fit: fit && { mode: fit.mode, bars: fit.bars, streams: fit.streams, line: fit.line },
   failures: failures }, null, 1));

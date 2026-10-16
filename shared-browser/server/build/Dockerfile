@@ -26,14 +26,12 @@ COPY policies.json /etc/chromium/policies/managed/policies.json
 #                    element's volume is applied)
 #   open77-fit.js    what the 16:9 picture does with a screen box that is not its
 #                    shape, since the television frames the page in the box exactly
-#                    and does not fit the picture to it: within a third of the
-#                    picture's shape the picture is scaled up until it covers the
-#                    box and cropped to it (a stripe down the side, 8 px on the
-#                    cinema panel, is what a player reported); past that -- a 32:9
-#                    client surface, a portrait box -- the picture is left whole and
-#                    the gap carries its own edge colours, dimmed, in a soft wash.
-#                    Never the picture a second time and never a blur: both were
-#                    measured on a television and both were wrong (README.md)
+#                    and does not fit the picture to it: the picture is scaled up
+#                    until it covers the box, keeping its shape, and what hangs over
+#                    is cut off. Nothing is drawn beside it -- no bars, no wash, no
+#                    second stream. Five fills that left something beside the picture
+#                    were measured on a television on 2026-10-16 and all five were
+#                    rejected as bars (README.md)
 COPY open77-ice.js /var/www/open77-ice.js
 COPY open77-paste.js /var/www/open77-paste.js
 COPY open77-volume.js /var/www/open77-volume.js
@@ -43,9 +41,14 @@ COPY open77-fit.js /var/www/open77-fit.js
 # answers 403 for the scripts and Chromium never reads its policies.
 RUN chmod 644 /etc/chromium/policies/managed/policies.json \
       /var/www/open77-ice.js /var/www/open77-paste.js /var/www/open77-volume.js /var/www/open77-fit.js
+# `?v=3` on the fit script is deliberate: the file is served with no Cache-Control at
+# all, and a page that already has a copy is not guaranteed to fetch a changed one --
+# which is how a fixed script can leave a player still looking at the old bars. The tag
+# is bumped whenever that script's behaviour changes, and it is part of the check below
+# so an image that lost it fails the build rather than shipping quietly.
 RUN grep -q '<head>' /var/www/index.html \
- && sed -i 's#<head>#<head><script src="open77-ice.js"></script><script src="open77-paste.js"></script><script src="open77-volume.js"></script><script src="open77-fit.js"></script>#' /var/www/index.html \
- && grep -c 'src="open77-ice.js"></script><script src="open77-paste.js"></script><script src="open77-volume.js"></script><script src="open77-fit.js"' /var/www/index.html | grep -qx 1
+ && sed -i 's#<head>#<head><script src="open77-ice.js"></script><script src="open77-paste.js"></script><script src="open77-volume.js"></script><script src="open77-fit.js?v=3"></script>#' /var/www/index.html \
+ && grep -c 'src="open77-ice.js"></script><script src="open77-paste.js"></script><script src="open77-volume.js"></script><script src="open77-fit.js?v=3"' /var/www/index.html | grep -qx 1
 
 # neko's own check asks /health, which a server with a path prefix answers
 # under the prefix: it reported this healthy container as unhealthy.

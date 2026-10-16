@@ -1364,15 +1364,14 @@
   ///
   /// This page therefore does not fit the picture to the box itself. The frame is the
   /// box, exactly, and what happens inside it is the framed page's: the shared
-  /// browser's own client page measures its stream against the box and answers for
-  /// it (`open77-fit.js` in the image). Within a third of the picture's own shape it
-  /// is scaled up until it covers the box, and cropped to it -- the cinema panel's
-  /// 8 px stripe, and the whole of a 2.39 screen -- because a stripe down the side is
-  /// what a player reported; past that -- a 32:9 client surface, where covering would
-  /// cost half the picture, or a portrait box -- the picture is left whole and the
-  /// gap carries its own edge colours, dimmed, rather than the black the page would
-  /// otherwise paint there. It is never the picture a second time and never a blur:
-  /// both of those were measured on a television and both were wrong.
+  /// browser's own client page measures its stream against the box and answers for it
+  /// (`open77-fit.js` in the image) by scaling the picture up until it covers the box
+  /// and cropping what hangs over -- the cinema panel's 8 px stripe, a 2.39 screen's
+  /// 26 % of height, a 32:9 client surface's half of it. Nothing is drawn beside the
+  /// picture, ever: five fills that left something beside it were measured on a
+  /// television on 2026-10-16 -- black stripes, a blur, the video again, the picture's
+  /// edge column stretched, and the same edge colours dimmed as a wash -- and every one
+  /// of them was reported as bars by the player looking at the screen.
   ///
   /// Said once per box shape, because these numbers are what tells "this set's box
   /// is not 16:9" apart from "this page is broken" -- and the framed page reports

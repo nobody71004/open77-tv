@@ -303,27 +303,24 @@ said so the same day: on a 32:9 client the picture lost 44 % of its height — "
 video is now cut off at edge", the top of the browser's own window gone. So *the game's
 page* does not touch the picture: **the frame is the screen box, exactly**, on every shape.
 What happens *inside* the frame is the shared browser's own client page's business, and the
-image's `open77-fit.js` answers there, with one of two answers
-(`shared-browser/README.md`, "A box the picture does not fill"):
+image's `open77-fit.js` answers there, with one answer on every shape
+(`shared-browser/README.md`, "A box the picture does not fill"): **the picture fills the
+box**. It is scaled up, keeping its shape, until it reaches every edge of the screen box,
+and the overhang is cut off (`object-fit: cover`, the browser's own uniform scale, so it is
+cropped and never stretched), applied as a class so the page's own inline style is never
+written to. Nothing is drawn beside the picture: no canvas, no layer, no second stream.
 
-- **cover** where the box is within a third of the picture's shape — the 150 ft panel's own
-  1280x728 (1 %), that panel with the control strip up (6 %), a 21:9 set (25 %). The picture
-  is scaled up until it reaches every edge of the screen box and the overhang is cut off
-  (`object-fit: cover`, the browser's own uniform scale, so it is cropped and never
-  stretched), applied as a class so the page's own inline style is never written to.
-- **its own edge colours, dimmed, as a wash** past that third — a 32:9 client surface, where
-  covering costs half the picture, and a portrait box (68 %). The picture is left exactly as
-  the client laid it out, and each gap carries the picture's edge averaged into six stops and
-  drawn as a soft wash that follows the picture's own rows. A wash has no structure, so it
-  cannot look like a stretched picture, and it is not the video, so it cannot show it twice.
-
-Four answers were measured on a television on 2026-10-16 and four were rejected: the black
-bars; a blurred copy ("the two side bars are blurs"); the same stream scaled to cover the box
-and clipped to the bar ("showing another part of the video... double letters"); and the
-picture's own edge column stretched across the bar ("it is like stretching the video" — a
-one-pixel column stretched sideways draws a horizontal smear per row). `open77-fit.js` is in
-the image, so a television that has the image has this; there is nothing for the game's page
-or the resource to configure.
+Five answers were measured on a television on 2026-10-16 and all five were rejected as bars:
+leaving the rest black; a blurred copy ("the two side bars are blurs"); the same stream
+scaled to cover the box and clipped to the bar ("showing another part of the video... double
+letters"); the picture's own edge column stretched across the bar ("it is like stretching the
+video" — a one-pixel column stretched sideways draws a horizontal smear per row); and the
+picture's own edge colours dimmed as a wash ("the blur side bars are back"). The cost of the
+answer that is left is real and stated: 26 % of a 16:9 picture's height on a 2.39 screen, and
+half of it on a 32:9 client surface, which was reported too ("the top of the browser's own
+window gone") — a screen with no bars is a screen with something cut off it. `open77-fit.js`
+is in the image, so a television that has the image has this; there is nothing for the game's
+page or the resource to configure.
 
 `tests/tv-page/run.mjs` reads the page's half of it (sections 32–33): on every shape the
 frame is the box to the pixel — measured against the record's own quad — and the game's own
