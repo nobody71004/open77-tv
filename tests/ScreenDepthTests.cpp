@@ -25,6 +25,12 @@
 //     as necessary, not decorative);
 //   * all three depth conventions, an upscaler's half-resolution depth, and depth
 //     drawn into a corner of a larger texture (dynamic resolution) work;
+//   * an upscaler's depth (half and a third of the picture each way, DLSS/FSR's
+//     performance and ultra performance modes) with the game's sub-texel jitter, on
+//     a set seen nearly edge-on: nothing in front hides none of the picture, and a
+//     hand and a pillar still do. Reported in game as blocks of the picture missing
+//     on a television seen at an angle; the depth was then compared at the pixel,
+//     not where each texel was sampled, and the set's own glass hid its picture;
 //   * bad input is refused, not drawn.
 
 #include "webui/ScreenDepth.hpp"
@@ -205,6 +211,9 @@ struct Scene
                                     // (2: drawn into its top-left quarter, dynamic resolution)
     SD::Tuning tuning{};
     bool useDepth = true;
+    // Where in each depth texel the game took its sample, in texels from the centre:
+    // TAA and the upscalers move it within the texel from frame to frame.
+    double jitterX = 0.0, jitterY = 0.0;
 };
 
 struct Outcome
@@ -235,9 +244,9 @@ std::vector<float> RenderDepth(const Scene& aScene, const Camera& aCamera, int& 
     {
         for (int i = 0; i < aWidth; ++i)
         {
-            // The texel's centre, in overlay pixels.
-            const double x = (i + 0.5) / aScene.depthScale;
-            const double y = (j + 0.5) / aScene.depthScale;
+            // Where the game sampled the texel (its centre, moved by the jitter), in overlay pixels.
+            const double x = (i + 0.5 + aScene.jitterX) / aScene.depthScale;
+            const double y = (j + 0.5 + aScene.jitterY) / aScene.depthScale;
             const Vec3 dir = aCamera.Ray(x, y);
             double nearest = 1.0e30;
             for (const Box& box : aScene.occluders)
@@ -392,7 +401,7 @@ Outcome Run(const Scene& aScene)
             {
                 const SD::Hlsl::float2 texel = SD::Shared::SdDepthTexel(c, pixel);
                 const SD::Hlsl::float4 devices = Gather(texture, textureWidth, textureHeight, texel);
-                visibility = SD::Shared::SdVisibility4(c, planeInverse, devices, texel);
+                visibility = SD::Shared::SdVisibility4(c, devices, texel);
             }
             const bool shaderShown = visibility > 0.5F;
             out.shownShader += shaderShown ? 1 : 0;
@@ -627,6 +636,78 @@ int main()
         CHECK(o.mismatchesAwayFromEdges == 0);
         CHECK(o.worstUvTexels < 0.1);
         CHECK(o.worstInverseDepth < 5.0e-4);
+    }
+    // ------------------------------------------ an upscaler, a set nearly edge-on, nothing in front
+    {
+        // What the report was: no hand, no wall, and blocks of the picture missing on
+        // a set seen at an angle, with the depth at a third of the picture (the game
+        // at 2560x1600 drew its depth at 853x533). Its own glass, 0.4 mm proud of the
+        // picture, is all the depth buffer has in front of it. Every jitter the game
+        // can sample a texel at, every angle up to nearly edge-on: none of it hidden.
+        for (const double scale : {0.5, 1.0 / 3.0})
+        {
+            for (const double yaw : {65.0, 75.0, 82.0})
+            {
+                for (const double jitter : {0.0, 0.25, 0.5})
+                {
+                    Scene s;
+                    s.name = "nothing in front, set at " + std::to_string(static_cast<int>(yaw)) +
+                             " degrees, depth at 1/" + std::to_string(static_cast<int>(std::lround(1.0 / scale))) +
+                             ", jitter " + std::to_string(jitter).substr(0, 4);
+                    s.fov = 70.0;
+                    s.tv = Television(1.16, 0.66, 4.0, yaw);
+                    s.propOffset = 0.0004;
+                    s.model = SD::DepthModel::ReversedInfinite(0.02);
+                    s.depthScale = scale;
+                    s.jitterX = jitter;
+                    s.jitterY = -jitter;
+                    const Outcome o = Run(s);
+                    if (jitter == 0.5)
+                    {
+                        Report(s, o);
+                    }
+                    CHECK(o.inside > 1000);
+                    CHECK(o.shownTruth == o.inside);
+                    CHECK(o.shownShader == o.inside);
+                    CHECK(o.fadedAwayFromEdges == 0);
+                }
+            }
+        }
+    }
+    // ------------------------------------------ ...the 100 ft cinema the same way
+    {
+        Scene s;
+        s.name = "100 ft cinema at 40 m seen at 75 degrees, depth at 1/3, jitter, nothing in front";
+        s.fov = 70.0;
+        s.tv = Television(30.48, 17.34, 40.0, 75.0);
+        s.propOffset = 0.0105; // the screen mesh at the cinema's scale: its front 1 cm proud
+        s.model = SD::DepthModel::ReversedInfinite(0.02);
+        s.depthScale = 1.0 / 3.0;
+        s.jitterX = 0.5;
+        s.jitterY = 0.5;
+        const Outcome o = Run(s);
+        Report(s, o);
+        CHECK(o.shownShader == o.inside);
+        CHECK(o.fadedAwayFromEdges == 0);
+    }
+    // ------------------------------------------ ...and what is in front still hides it
+    {
+        Scene s;
+        s.name = "set at 65 degrees, hand and pillar, depth at 1/3, jitter";
+        s.fov = 70.0;
+        s.tv = Television(1.16, 0.66, 1.5, 65.0);
+        s.occluders = {Hand(), Pillar()};
+        s.propOffset = 0.0004;
+        s.model = SD::DepthModel::ReversedInfinite(0.02);
+        s.depthScale = 1.0 / 3.0;
+        s.jitterX = 0.5;
+        s.jitterY = 0.5;
+        const Outcome o = Run(s);
+        Report(s, o);
+        CHECK(o.shownTruth < o.inside);
+        CHECK(o.fadedAwayFromEdges == 0);
+        CHECK(o.mismatchesAwayFromEdges == 0);
+        CHECK(o.mismatches < o.inside / 30);
     }
     // ------------------------------------------ nothing in front: all of it shows
     {

@@ -59,6 +59,7 @@ inline float dot(const float3 aA, const float3 aB) { return (aA.x * aB.x) + (aA.
 inline float saturate(const float aV) { return std::min(1.0F, std::max(0.0F, aV)); }
 inline float lerp(const float aA, const float aB, const float aT) { return aA + ((aB - aA) * aT); }
 inline float2 floor(const float2 aV) { return float2(std::floor(aV.x), std::floor(aV.y)); }
+inline float abs(const float aV) { return std::fabs(aV); }
 using std::max;
 using std::min;
 } // namespace Hlsl

@@ -6,8 +6,9 @@
 // as a fan of up to four triangles -- a whole screen's four corners, or the three to
 // five of a screen cut at the camera's near plane. The pixel shader works out the
 // exact texture coordinate of every pixel from the screen's own map (so the triangle
-// interpolation does not matter), and compares the screen's depth there with the
-// game's depth buffer. The arithmetic is ScreenDepth.hlsli, which the C++ tests
+// interpolation does not matter), and compares the screen's depth with the game's
+// depth buffer at each of the four depth texels around the pixel, where the game
+// sampled them. The arithmetic is ScreenDepth.hlsli, which the C++ tests
 // run too.
 //
 // Bindings (root signature in ScreenDepthPass.cpp):
@@ -96,7 +97,7 @@ float4 PSMain(VsOut input) : SV_Target
     {
         float2 texel = SdDepthTexel(g_screen, pixel);
         float4 devices = g_depth.GatherRed(g_point, SdGatherUv(g_screen, texel));
-        visibility = SdVisibility4(g_screen, SdPlaneInverseDepth(g_screen, pixel), devices, texel);
+        visibility = SdVisibility4(g_screen, devices, texel);
     }
     if (visibility <= 0.0f)
     {

@@ -1,6 +1,6 @@
 # The television picture fixes, as a patch series for open77-base
 
-Eight patches, in order, for `git am` on open77-base `main` (36772b3b). They are the
+Nine patches, in order. `0001` to `0008` are for `git am` on open77-base `main` (36772b3b); `0009`, open77-base #101, applies on `main` 71cf598, where they have landed. They are the
 pull request `fix/tv-picture-in-perspective` (#66) on open77-base -- `0005` to
 `0008` join it once they have been tested in game -- and what
 `docs/depth-and-occlusion.md` describes.
@@ -15,6 +15,7 @@ pull request `fix/tv-picture-in-perspective` (#66) on open77-base -- `0005` to
 | `0006-tv-clip-test-without-minmax-macros` | `0005`'s test target built without Windows' `min`/`max` macros |
 | `0007-tv-probe-answer-is-valid-json` | the web host's "no decoder here" answer to the television's probe is valid JSON |
 | `0008-tv-depth-not-from-the-players-body` | the depth test's scale measured only from screens that agree across distances, from the game's near plane |
+| `0009-tv-depth-at-the-texel-under-an-upscaler` | each depth texel compared with the screen's depth where the game sampled it, so the set's own glass never hides its picture under DLSS/FSR (#101, on `main` 71cf598) |
 
     git -C <open77-base> checkout -b fix/tv-picture-in-perspective origin/main
     git -C <open77-base> am patches/open77-base/000*.patch
@@ -22,4 +23,6 @@ pull request `fix/tv-picture-in-perspective` (#66) on open77-base -- `0005` to
 The files they add are mirrored in `native/` and `tests/` here, as the series
 leaves them (`0007` changes `TranscodePlan.hpp` and `TranscodePlanTests.cpp`,
 mirrored the same way; its `SurfaceClient.cpp` change is in the patch; `0008` changes
-`SceneDepth.cpp`, `SceneDepthPolicy.hpp` and `SceneDepthPolicyTests.cpp`).
+`SceneDepth.cpp`, `SceneDepthPolicy.hpp` and `SceneDepthPolicyTests.cpp`; `0009` changes
+`ScreenDepth.hlsli`, `ScreenDepth.hpp`, `ScreenDepthComposite.hlsl`,
+`ScreenDepthShaderSource.hpp` and `ScreenDepthTests.cpp`).

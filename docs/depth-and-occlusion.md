@@ -18,8 +18,10 @@ were wrong with the picture that path drew, and the patch series in
 | `0006` | `0005`'s test target built without Windows' `min`/`max` macros |
 | `0007` | the web host's "no decoder here" answer to the probe is valid JSON |
 | `0008` | the depth test's scale measured only from screens that agree across distances |
+| `0009` | the depth compared where each texel was sampled, so a set's own glass never hides its picture under an upscaler |
 
-They apply with `git am` on open77-base `main` (36772b3b).
+They apply with `git am` on open77-base `main` (36772b3b). `0009` is open77-base pull request #101,
+on `main` (71cf598).
 
 ## In perspective (`0001`)
 
@@ -106,6 +108,35 @@ front of a panel-less screen, standing for four windows and walking from 40 m to
 10 m, leaves the near plane where it is.
 
 Why that cinema's panel was missing from the depth that session is not known yet.
+
+## Not hidden by its own glass under an upscaler (`0009`)
+
+Reported from XyberRP on 2026-10-15: blocks of a television's picture missing,
+worse the more the set is seen from the side, with nothing in front of it. The
+test compared the screen's depth at the pixel being drawn with the game's depth
+in the four texels around it, and an upscaler draws that depth smaller than the
+picture -- a third of it each way under DLSS/FSR ultra performance (the reporting
+client: `853x533` for 2560x1600) -- so those texels were sampled up to one and a
+half texels, four and a half pixels, from the pixel. On a set seen at an angle the
+glass there is nearer than the picture at the pixel by the screen's slope times
+that distance: more than the 3 cm tolerance from about 65 degrees, and the picture
+was hidden in texel-sized blocks. At full-resolution depth the distance is under a
+pixel, which is why the suite (50 degrees at most, half resolution) never saw it.
+
+Each texel is now tested against the screen's depth where the game sampled it, at
+its own centre (the plane's inverse depth is affine in the pixel: one dot product),
+and the tolerance takes half a texel of the screen's slope for TAA's jitter, which
+moves the sample within its texel from frame to frame. Swept with the suite's
+scenes over depth at 1, 2/3, 1/2 and 1/3, jitter 0 to 0.5 texel, 30 to 82 degrees,
+a television, a panel and the cinema: up to 75 % of a screen hidden before, none
+after; with a hand, a pillar and a person in front, the picture shown through them
+is the same pixels as before. In game, Ctrl+Shift+F11 (the test off) makes the
+blocks go away on a client without the fix, which is how to tell a report is this.
+
+Not covered: with frame generation the generated presents reuse the last rendered
+frame's depth, which a fast camera turn makes up to a frame stale; half a texel of
+slack does not cover that. Testing against the screen as it was in the depth's own
+frame (through the screen's uv) is the follow-up if it is reported.
 
 ## Cut at the camera (`0005`)
 

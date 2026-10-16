@@ -1,0 +1,517 @@
+From a6dd3db4406d3b8ae73eb28cb948f4ebd3a6dbc2 Mon Sep 17 00:00:00 2001
+From: XEROX710 <151706170+nobody71004@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 03:22:32 +0000
+Subject: [PATCH] Keep a television's own glass from hiding its picture under
+ an upscaler
+
+Reported from XyberRP: blocks of a television's picture go missing, worse
+the more the set is seen from the side. Nothing is in front of it; the
+depth test hides the picture behind the set's own glass.
+
+The test compared the screen's depth at the pixel being drawn with the
+game's depth in the four texels around it. An upscaler draws that depth
+smaller than the picture -- a third of it each way under DLSS/FSR ultra
+performance (the reporting client: 853x533 for 2560x1600) -- so those
+texels were sampled up to one and a half texels, four and a half pixels,
+from the pixel. On a set seen at an angle the glass there is nearer than
+the picture at the pixel by the screen's slope times that distance, which
+passes the 3 cm tolerance from about 65 degrees, and the picture was hidden
+in texel-sized blocks. At full-resolution depth the distance is under a
+pixel, which is why the suite, which went to 50 degrees at half
+resolution, never saw it.
+
+Each texel is now tested against the screen's depth where the game
+sampled it, at the texel's centre: the plane's inverse depth is affine in
+the pixel, so that is one dot product per texel. The game samples a texel
+where TAA's jitter put it that frame, anywhere in it, so the tolerance also
+takes half a texel of the screen's slope -- nothing on a set seen square,
+centimetres on one seen nearly edge-on, where a texel's worth of depth is
+all the buffer can resolve anyway.
+
+Measured with the suite's ray-traced scenes (the shader's own arithmetic as
+C++), with nothing in front of the set, over depth at 1, 2/3, 1/2 and 1/3
+of the picture, TAA jitter of 0 to half a texel, 30 to 82 degrees, a 1.16 m
+television (glass 0.4 mm proud), a zero-thickness panel and the 100 ft
+cinema (glass 1 cm proud) at their distances: up to 75 % of a screen's
+pixels hidden or faded before, none after. With a hand, a pillar and a
+person in front of the set over the same sweep, the picture shown through
+them away from their edges is exactly what it was before (the tolerance
+band where something crosses the screen's plane).
+
+Pinned in Open77.ScreenDepth.Tests: the scene's depth can now be sampled
+with jitter; nothing in front of a set at 65, 75 and 82 degrees with depth
+at a half and a third and jitter 0 to 0.5 shows all of the picture (fails
+on main at 75 degrees, half resolution); the cinema the same at 40 m; a
+hand and a pillar still hide it at 65 degrees and a third. The shader
+compiles with dxc (ps_6_0, vs_6_0, warnings as errors);
+ScreenDepthShaderSource.hpp is regenerated from the two files.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_018pk9hktezx1wpdp98cblfp
+---
+ client/src/webui/ScreenDepth.hlsli           | 88 ++++++++++++++----
+ client/src/webui/ScreenDepth.hpp             |  1 +
+ client/src/webui/ScreenDepthComposite.hlsl   |  7 +-
+ client/src/webui/ScreenDepthShaderSource.hpp | 95 ++++++++++++++++----
+ client/tests/ScreenDepthTests.cpp            | 89 +++++++++++++++++-
+ 5 files changed, 240 insertions(+), 40 deletions(-)
+
+diff --git a/client/src/webui/ScreenDepth.hlsli b/client/src/webui/ScreenDepth.hlsli
+index 14ec704..2dfc6dc 100644
+--- a/client/src/webui/ScreenDepth.hlsli
++++ b/client/src/webui/ScreenDepth.hlsli
+@@ -8,7 +8,7 @@
+ // shader computes, not a transcription of them.
+ //
+ // Keep it to that shared subset: float2/float3/float4 (no swizzles: C++ has none),
+-// dot, saturate, min, max, floor, lerp, float literals with an f, and plain
++// dot, saturate, min, max, abs, floor, lerp, float literals with an f, and plain
+ // functions over the constants struct.
+ //
+ // Everything is in the overlay's own pixels (the presented image's, the space the
+@@ -27,6 +27,21 @@
+ //     more than a tolerance (the prop's own screen mesh sits in the depth buffer a
+ //     few millimetres from the picture's plane, and must not hide it), faded over a
+ //     softness band so an edge does not crawl.
++//   * Where it is made: at each depth texel, against the screen's depth THERE. An
++//     upscaler draws the game's depth smaller than the picture (a third of it each
++//     way under the strongest DLSS/FSR modes), so one texel covers several pixels,
++//     and the four around a pixel were sampled up to one and a half texels from it.
++//     Compared with the screen's depth at the pixel, the set's own glass in those
++//     texels reads as nearer by the screen's slope times that distance: on a set
++//     seen at 75 degrees that is more than the tolerance, and the picture was hidden
++//     in blocks with nothing in front of it. Measured against the depth at the
++//     texel, the glass is level with the picture at any angle and any resolution.
++//   * And how much of a texel's own width is allowed: the game samples each texel
++//     where its jitter put it that frame (TAA and the upscalers move it within the
++//     texel), so the screen's depth is known there only to half a texel either way.
++//     That much of the screen's slope is added to the tolerance -- nothing on a set
++//     seen square, centimetres on one seen nearly edge-on, where a texel's worth of
++//     depth is all the game's buffer can say anyway.
+ 
+ #ifndef OP77_SCREEN_DEPTH_HLSLI
+ #define OP77_SCREEN_DEPTH_HLSLI
+@@ -80,10 +95,11 @@ SD_FN float SdSceneInverseDepth(SdConstants c, float device)
+     return (device - c.depth.x) * c.depth.y;
+ }
+ 
+-// How much of the screen shows at a pixel, given the scene's inverse depth there:
+-// 1 where nothing is in front of it, 0 where something is, a ramp across the
+-// softness band between.
+-SD_FN float SdVisibility(SdConstants c, float planeInverse, float sceneInverse)
++// How much of the screen shows where the scene's inverse depth is `sceneInverse` and
++// the screen's is `planeInverse`: 1 where nothing is in front of it, 0 where
++// something is, a ramp across the softness band between. `slack` (metres) widens
++// the tolerance (SdJitterSlack).
++SD_FN float SdVisibilityWithin(SdConstants c, float planeInverse, float sceneInverse, float slack)
+ {
+     if (planeInverse <= 0.0f || sceneInverse <= 0.0f)
+     {
+@@ -91,13 +107,41 @@ SD_FN float SdVisibility(SdConstants c, float planeInverse, float sceneInverse)
+     }
+     float planeDepth = 1.0f / planeInverse;
+     float sceneDepth = 1.0f / sceneInverse;
+-    float tolerance = max(c.depth.z, c.depth.w * planeDepth);
++    float tolerance = max(c.depth.z, c.depth.w * planeDepth) + slack;
+     float softness = max(c.look.x, 1.0e-4f);
+     // Visible when the scene is at least (plane - tolerance) away; hidden from
+     // (plane - tolerance - softness) nearer.
+     return saturate((sceneDepth - (planeDepth - tolerance - softness)) / softness);
+ }
+ 
++// The same with no slack: one comparison at one point.
++SD_FN float SdVisibility(SdConstants c, float planeInverse, float sceneInverse)
++{
++    return SdVisibilityWithin(c, planeInverse, sceneInverse, 0.0f);
++}
++
++// 1 / (the screen's view depth) where the game sampled a depth texel: at its centre,
++// `texel` in depth texels (a centre is n + 0.5), taken back to overlay pixels.
++SD_FN float SdPlaneInverseDepthAtTexel(SdConstants c, float2 texel)
++{
++    return SdPlaneInverseDepth(c, float2(texel.x / c.sampling.x, texel.y / c.sampling.y));
++}
++
++// How far the screen's depth moves across half a depth texel each way, at a point
++// where its inverse depth is `planeInverse`: the most the game's sub-texel jitter can
++// put between the depth it stored and the screen's depth at the texel's centre.
++// Depth is 1 / inverse, so a change in inverse depth over a step is that change over
++// the inverse squared.
++SD_FN float SdJitterSlack(SdConstants c, float planeInverse)
++{
++    if (planeInverse <= 0.0f)
++    {
++        return 0.0f;
++    }
++    float perTexel = abs(c.plane.x) / c.sampling.x + abs(c.plane.y) / c.sampling.y;
++    return 0.5f * perTexel / (planeInverse * planeInverse);
++}
++
+ // Where, in depth-texture texels, a pixel of the overlay falls. Kept half a texel
+ // inside the drawn part, so the four texels weighted around it never include one
+ // beyond it with any weight: past the drawn part is whatever an earlier frame, at
+@@ -118,17 +162,31 @@ SD_FN float2 SdGatherUv(SdConstants c, float2 texel)
+     return float2((base.x + 1.0f) / c.sampling.z, (base.y + 1.0f) / c.sampling.w);
+ }
+ 
+-// Visibility from the four depth texels around a point, weighted as a bilinear
+-// filter would weight them. `devices` is in HLSL's Gather order: (0,1), (1,1),
+-// (1,0), (0,0) relative to the top-left texel of the 2x2 block.
+-SD_FN float SdVisibility4(SdConstants c, float planeInverse, float4 devices, float2 texel)
++// Visibility of one depth texel: the scene's depth stored there against the
++// screen's depth at the texel's own centre, with the jitter slack.
++SD_FN float SdTexelVisibility(SdConstants c, float device, float2 centre)
++{
++    float planeInverse = SdPlaneInverseDepthAtTexel(c, centre);
++    return SdVisibilityWithin(c, planeInverse, SdSceneInverseDepth(c, device), SdJitterSlack(c, planeInverse));
++}
++
++// Visibility from the four depth texels around a point, each tested where the game
++// sampled it, weighted as a bilinear filter would weight them. `devices` is in
++// HLSL's Gather order: (0,1), (1,1), (1,0), (0,0) relative to the top-left texel of
++// the 2x2 block; `texel` is the point, in depth texels.
++SD_FN float SdVisibility4(SdConstants c, float4 devices, float2 texel)
+ {
+     float2 f = texel - float2(0.5f, 0.5f);
+-    f = f - floor(f);
+-    float v00 = SdVisibility(c, planeInverse, SdSceneInverseDepth(c, devices.w));
+-    float v10 = SdVisibility(c, planeInverse, SdSceneInverseDepth(c, devices.z));
+-    float v01 = SdVisibility(c, planeInverse, SdSceneInverseDepth(c, devices.x));
+-    float v11 = SdVisibility(c, planeInverse, SdSceneInverseDepth(c, devices.y));
++    float2 base = floor(f);
++    f = f - base;
++    float left = base.x + 0.5f;
++    float right = base.x + 1.5f;
++    float upper = base.y + 0.5f;
++    float lower = base.y + 1.5f;
++    float v00 = SdTexelVisibility(c, devices.w, float2(left, upper));
++    float v10 = SdTexelVisibility(c, devices.z, float2(right, upper));
++    float v01 = SdTexelVisibility(c, devices.x, float2(left, lower));
++    float v11 = SdTexelVisibility(c, devices.y, float2(right, lower));
+     float top = lerp(v00, v10, f.x);
+     float bottom = lerp(v01, v11, f.x);
+     return lerp(top, bottom, f.y);
+diff --git a/client/src/webui/ScreenDepth.hpp b/client/src/webui/ScreenDepth.hpp
+index 390d8a1..5f7474a 100644
+--- a/client/src/webui/ScreenDepth.hpp
++++ b/client/src/webui/ScreenDepth.hpp
+@@ -59,6 +59,7 @@ inline float dot(const float3 aA, const float3 aB) { return (aA.x * aB.x) + (aA.
+ inline float saturate(const float aV) { return std::min(1.0F, std::max(0.0F, aV)); }
+ inline float lerp(const float aA, const float aB, const float aT) { return aA + ((aB - aA) * aT); }
+ inline float2 floor(const float2 aV) { return float2(std::floor(aV.x), std::floor(aV.y)); }
++inline float abs(const float aV) { return std::fabs(aV); }
+ using std::max;
+ using std::min;
+ } // namespace Hlsl
+diff --git a/client/src/webui/ScreenDepthComposite.hlsl b/client/src/webui/ScreenDepthComposite.hlsl
+index e911684..d28bdbe 100644
+--- a/client/src/webui/ScreenDepthComposite.hlsl
++++ b/client/src/webui/ScreenDepthComposite.hlsl
+@@ -6,8 +6,9 @@
+ // as a fan of up to four triangles -- a whole screen's four corners, or the three to
+ // five of a screen cut at the camera's near plane. The pixel shader works out the
+ // exact texture coordinate of every pixel from the screen's own map (so the triangle
+-// interpolation does not matter), and compares the screen's depth there with the
+-// game's depth buffer. The arithmetic is ScreenDepth.hlsli, which the C++ tests
++// interpolation does not matter), and compares the screen's depth with the game's
++// depth buffer at each of the four depth texels around the pixel, where the game
++// sampled them. The arithmetic is ScreenDepth.hlsli, which the C++ tests
+ // run too.
+ //
+ // Bindings (root signature in ScreenDepthPass.cpp):
+@@ -96,7 +97,7 @@ float4 PSMain(VsOut input) : SV_Target
+     {
+         float2 texel = SdDepthTexel(g_screen, pixel);
+         float4 devices = g_depth.GatherRed(g_point, SdGatherUv(g_screen, texel));
+-        visibility = SdVisibility4(g_screen, SdPlaneInverseDepth(g_screen, pixel), devices, texel);
++        visibility = SdVisibility4(g_screen, devices, texel);
+     }
+     if (visibility <= 0.0f)
+     {
+diff --git a/client/src/webui/ScreenDepthShaderSource.hpp b/client/src/webui/ScreenDepthShaderSource.hpp
+index d69bd71..f1bcffa 100644
+--- a/client/src/webui/ScreenDepthShaderSource.hpp
++++ b/client/src/webui/ScreenDepthShaderSource.hpp
+@@ -15,8 +15,9 @@ inline constexpr const char kComposite[] = R"rbhlsl(// Draws one television's pi
+ // as a fan of up to four triangles -- a whole screen's four corners, or the three to
+ // five of a screen cut at the camera's near plane. The pixel shader works out the
+ // exact texture coordinate of every pixel from the screen's own map (so the triangle
+-// interpolation does not matter), and compares the screen's depth there with the
+-// game's depth buffer. The arithmetic is ScreenDepth.hlsli, which the C++ tests
++// interpolation does not matter), and compares the screen's depth with the game's
++// depth buffer at each of the four depth texels around the pixel, where the game
++// sampled them. The arithmetic is ScreenDepth.hlsli, which the C++ tests
+ // run too.
+ //
+ // Bindings (root signature in ScreenDepthPass.cpp):
+@@ -105,7 +106,7 @@ float4 PSMain(VsOut input) : SV_Target
+     {
+         float2 texel = SdDepthTexel(g_screen, pixel);
+         float4 devices = g_depth.GatherRed(g_point, SdGatherUv(g_screen, texel));
+-        visibility = SdVisibility4(g_screen, SdPlaneInverseDepth(g_screen, pixel), devices, texel);
++        visibility = SdVisibility4(g_screen, devices, texel);
+     }
+     if (visibility <= 0.0f)
+     {
+@@ -129,7 +130,7 @@ inline constexpr const char kInclude[] = R"rbhlsl(// A television's picture, pla
+ // shader computes, not a transcription of them.
+ //
+ // Keep it to that shared subset: float2/float3/float4 (no swizzles: C++ has none),
+-// dot, saturate, min, max, floor, lerp, float literals with an f, and plain
++// dot, saturate, min, max, abs, floor, lerp, float literals with an f, and plain
+ // functions over the constants struct.
+ //
+ // Everything is in the overlay's own pixels (the presented image's, the space the
+@@ -148,6 +149,21 @@ inline constexpr const char kInclude[] = R"rbhlsl(// A television's picture, pla
+ //     more than a tolerance (the prop's own screen mesh sits in the depth buffer a
+ //     few millimetres from the picture's plane, and must not hide it), faded over a
+ //     softness band so an edge does not crawl.
++//   * Where it is made: at each depth texel, against the screen's depth THERE. An
++//     upscaler draws the game's depth smaller than the picture (a third of it each
++//     way under the strongest DLSS/FSR modes), so one texel covers several pixels,
++//     and the four around a pixel were sampled up to one and a half texels from it.
++//     Compared with the screen's depth at the pixel, the set's own glass in those
++//     texels reads as nearer by the screen's slope times that distance: on a set
++//     seen at 75 degrees that is more than the tolerance, and the picture was hidden
++//     in blocks with nothing in front of it. Measured against the depth at the
++//     texel, the glass is level with the picture at any angle and any resolution.
++//   * And how much of a texel's own width is allowed: the game samples each texel
++//     where its jitter put it that frame (TAA and the upscalers move it within the
++//     texel), so the screen's depth is known there only to half a texel either way.
++//     That much of the screen's slope is added to the tolerance -- nothing on a set
++//     seen square, centimetres on one seen nearly edge-on, where a texel's worth of
++//     depth is all the game's buffer can say anyway.
+ 
+ #ifndef OP77_SCREEN_DEPTH_HLSLI
+ #define OP77_SCREEN_DEPTH_HLSLI
+@@ -201,10 +217,11 @@ SD_FN float SdSceneInverseDepth(SdConstants c, float device)
+     return (device - c.depth.x) * c.depth.y;
+ }
+ 
+-// How much of the screen shows at a pixel, given the scene's inverse depth there:
+-// 1 where nothing is in front of it, 0 where something is, a ramp across the
+-// softness band between.
+-SD_FN float SdVisibility(SdConstants c, float planeInverse, float sceneInverse)
++// How much of the screen shows where the scene's inverse depth is `sceneInverse` and
++// the screen's is `planeInverse`: 1 where nothing is in front of it, 0 where
++// something is, a ramp across the softness band between. `slack` (metres) widens
++// the tolerance (SdJitterSlack).
++SD_FN float SdVisibilityWithin(SdConstants c, float planeInverse, float sceneInverse, float slack)
+ {
+     if (planeInverse <= 0.0f || sceneInverse <= 0.0f)
+     {
+@@ -212,13 +229,41 @@ SD_FN float SdVisibility(SdConstants c, float planeInverse, float sceneInverse)
+     }
+     float planeDepth = 1.0f / planeInverse;
+     float sceneDepth = 1.0f / sceneInverse;
+-    float tolerance = max(c.depth.z, c.depth.w * planeDepth);
++    float tolerance = max(c.depth.z, c.depth.w * planeDepth) + slack;
+     float softness = max(c.look.x, 1.0e-4f);
+     // Visible when the scene is at least (plane - tolerance) away; hidden from
+     // (plane - tolerance - softness) nearer.
+     return saturate((sceneDepth - (planeDepth - tolerance - softness)) / softness);
+ }
+ 
++// The same with no slack: one comparison at one point.
++SD_FN float SdVisibility(SdConstants c, float planeInverse, float sceneInverse)
++{
++    return SdVisibilityWithin(c, planeInverse, sceneInverse, 0.0f);
++}
++
++// 1 / (the screen's view depth) where the game sampled a depth texel: at its centre,
++// `texel` in depth texels (a centre is n + 0.5), taken back to overlay pixels.
++SD_FN float SdPlaneInverseDepthAtTexel(SdConstants c, float2 texel)
++{
++    return SdPlaneInverseDepth(c, float2(texel.x / c.sampling.x, texel.y / c.sampling.y));
++}
++
++// How far the screen's depth moves across half a depth texel each way, at a point
++// where its inverse depth is `planeInverse`: the most the game's sub-texel jitter can
++// put between the depth it stored and the screen's depth at the texel's centre.
++// Depth is 1 / inverse, so a change in inverse depth over a step is that change over
++// the inverse squared.
++SD_FN float SdJitterSlack(SdConstants c, float planeInverse)
++{
++    if (planeInverse <= 0.0f)
++    {
++        return 0.0f;
++    }
++    float perTexel = abs(c.plane.x) / c.sampling.x + abs(c.plane.y) / c.sampling.y;
++    return 0.5f * perTexel / (planeInverse * planeInverse);
++}
++
+ // Where, in depth-texture texels, a pixel of the overlay falls. Kept half a texel
+ // inside the drawn part, so the four texels weighted around it never include one
+ // beyond it with any weight: past the drawn part is whatever an earlier frame, at
+@@ -239,17 +284,31 @@ SD_FN float2 SdGatherUv(SdConstants c, float2 texel)
+     return float2((base.x + 1.0f) / c.sampling.z, (base.y + 1.0f) / c.sampling.w);
+ }
+ 
+-// Visibility from the four depth texels around a point, weighted as a bilinear
+-// filter would weight them. `devices` is in HLSL's Gather order: (0,1), (1,1),
+-// (1,0), (0,0) relative to the top-left texel of the 2x2 block.
+-SD_FN float SdVisibility4(SdConstants c, float planeInverse, float4 devices, float2 texel)
++// Visibility of one depth texel: the scene's depth stored there against the
++// screen's depth at the texel's own centre, with the jitter slack.
++SD_FN float SdTexelVisibility(SdConstants c, float device, float2 centre)
++{
++    float planeInverse = SdPlaneInverseDepthAtTexel(c, centre);
++    return SdVisibilityWithin(c, planeInverse, SdSceneInverseDepth(c, device), SdJitterSlack(c, planeInverse));
++}
++
++// Visibility from the four depth texels around a point, each tested where the game
++// sampled it, weighted as a bilinear filter would weight them. `devices` is in
++// HLSL's Gather order: (0,1), (1,1), (1,0), (0,0) relative to the top-left texel of
++// the 2x2 block; `texel` is the point, in depth texels.
++SD_FN float SdVisibility4(SdConstants c, float4 devices, float2 texel)
+ {
+     float2 f = texel - float2(0.5f, 0.5f);
+-    f = f - floor(f);
+-    float v00 = SdVisibility(c, planeInverse, SdSceneInverseDepth(c, devices.w));
+-    float v10 = SdVisibility(c, planeInverse, SdSceneInverseDepth(c, devices.z));
+-    float v01 = SdVisibility(c, planeInverse, SdSceneInverseDepth(c, devices.x));
+-    float v11 = SdVisibility(c, planeInverse, SdSceneInverseDepth(c, devices.y));
++    float2 base = floor(f);
++    f = f - base;
++    float left = base.x + 0.5f;
++    float right = base.x + 1.5f;
++    float upper = base.y + 0.5f;
++    float lower = base.y + 1.5f;
++    float v00 = SdTexelVisibility(c, devices.w, float2(left, upper));
++    float v10 = SdTexelVisibility(c, devices.z, float2(right, upper));
++    float v01 = SdTexelVisibility(c, devices.x, float2(left, lower));
++    float v11 = SdTexelVisibility(c, devices.y, float2(right, lower));
+     float top = lerp(v00, v10, f.x);
+     float bottom = lerp(v01, v11, f.x);
+     return lerp(top, bottom, f.y);
+diff --git a/client/tests/ScreenDepthTests.cpp b/client/tests/ScreenDepthTests.cpp
+index e688c3b..cff3423 100644
+--- a/client/tests/ScreenDepthTests.cpp
++++ b/client/tests/ScreenDepthTests.cpp
+@@ -25,6 +25,12 @@
+ //     as necessary, not decorative);
+ //   * all three depth conventions, an upscaler's half-resolution depth, and depth
+ //     drawn into a corner of a larger texture (dynamic resolution) work;
++//   * an upscaler's depth (half and a third of the picture each way, DLSS/FSR's
++//     performance and ultra performance modes) with the game's sub-texel jitter, on
++//     a set seen nearly edge-on: nothing in front hides none of the picture, and a
++//     hand and a pillar still do. Reported in game as blocks of the picture missing
++//     on a television seen at an angle; the depth was then compared at the pixel,
++//     not where each texel was sampled, and the set's own glass hid its picture;
+ //   * bad input is refused, not drawn.
+ 
+ #include "webui/ScreenDepth.hpp"
+@@ -205,6 +211,9 @@ struct Scene
+                                     // (2: drawn into its top-left quarter, dynamic resolution)
+     SD::Tuning tuning{};
+     bool useDepth = true;
++    // Where in each depth texel the game took its sample, in texels from the centre:
++    // TAA and the upscalers move it within the texel from frame to frame.
++    double jitterX = 0.0, jitterY = 0.0;
+ };
+ 
+ struct Outcome
+@@ -235,9 +244,9 @@ std::vector<float> RenderDepth(const Scene& aScene, const Camera& aCamera, int&
+     {
+         for (int i = 0; i < aWidth; ++i)
+         {
+-            // The texel's centre, in overlay pixels.
+-            const double x = (i + 0.5) / aScene.depthScale;
+-            const double y = (j + 0.5) / aScene.depthScale;
++            // Where the game sampled the texel (its centre, moved by the jitter), in overlay pixels.
++            const double x = (i + 0.5 + aScene.jitterX) / aScene.depthScale;
++            const double y = (j + 0.5 + aScene.jitterY) / aScene.depthScale;
+             const Vec3 dir = aCamera.Ray(x, y);
+             double nearest = 1.0e30;
+             for (const Box& box : aScene.occluders)
+@@ -392,7 +401,7 @@ Outcome Run(const Scene& aScene)
+             {
+                 const SD::Hlsl::float2 texel = SD::Shared::SdDepthTexel(c, pixel);
+                 const SD::Hlsl::float4 devices = Gather(texture, textureWidth, textureHeight, texel);
+-                visibility = SD::Shared::SdVisibility4(c, planeInverse, devices, texel);
++                visibility = SD::Shared::SdVisibility4(c, devices, texel);
+             }
+             const bool shaderShown = visibility > 0.5F;
+             out.shownShader += shaderShown ? 1 : 0;
+@@ -628,6 +637,78 @@ int main()
+         CHECK(o.worstUvTexels < 0.1);
+         CHECK(o.worstInverseDepth < 5.0e-4);
+     }
++    // ------------------------------------------ an upscaler, a set nearly edge-on, nothing in front
++    {
++        // What the report was: no hand, no wall, and blocks of the picture missing on
++        // a set seen at an angle, with the depth at a third of the picture (the game
++        // at 2560x1600 drew its depth at 853x533). Its own glass, 0.4 mm proud of the
++        // picture, is all the depth buffer has in front of it. Every jitter the game
++        // can sample a texel at, every angle up to nearly edge-on: none of it hidden.
++        for (const double scale : {0.5, 1.0 / 3.0})
++        {
++            for (const double yaw : {65.0, 75.0, 82.0})
++            {
++                for (const double jitter : {0.0, 0.25, 0.5})
++                {
++                    Scene s;
++                    s.name = "nothing in front, set at " + std::to_string(static_cast<int>(yaw)) +
++                             " degrees, depth at 1/" + std::to_string(static_cast<int>(std::lround(1.0 / scale))) +
++                             ", jitter " + std::to_string(jitter).substr(0, 4);
++                    s.fov = 70.0;
++                    s.tv = Television(1.16, 0.66, 4.0, yaw);
++                    s.propOffset = 0.0004;
++                    s.model = SD::DepthModel::ReversedInfinite(0.02);
++                    s.depthScale = scale;
++                    s.jitterX = jitter;
++                    s.jitterY = -jitter;
++                    const Outcome o = Run(s);
++                    if (jitter == 0.5)
++                    {
++                        Report(s, o);
++                    }
++                    CHECK(o.inside > 1000);
++                    CHECK(o.shownTruth == o.inside);
++                    CHECK(o.shownShader == o.inside);
++                    CHECK(o.fadedAwayFromEdges == 0);
++                }
++            }
++        }
++    }
++    // ------------------------------------------ ...the 100 ft cinema the same way
++    {
++        Scene s;
++        s.name = "100 ft cinema at 40 m seen at 75 degrees, depth at 1/3, jitter, nothing in front";
++        s.fov = 70.0;
++        s.tv = Television(30.48, 17.34, 40.0, 75.0);
++        s.propOffset = 0.0105; // the screen mesh at the cinema's scale: its front 1 cm proud
++        s.model = SD::DepthModel::ReversedInfinite(0.02);
++        s.depthScale = 1.0 / 3.0;
++        s.jitterX = 0.5;
++        s.jitterY = 0.5;
++        const Outcome o = Run(s);
++        Report(s, o);
++        CHECK(o.shownShader == o.inside);
++        CHECK(o.fadedAwayFromEdges == 0);
++    }
++    // ------------------------------------------ ...and what is in front still hides it
++    {
++        Scene s;
++        s.name = "set at 65 degrees, hand and pillar, depth at 1/3, jitter";
++        s.fov = 70.0;
++        s.tv = Television(1.16, 0.66, 1.5, 65.0);
++        s.occluders = {Hand(), Pillar()};
++        s.propOffset = 0.0004;
++        s.model = SD::DepthModel::ReversedInfinite(0.02);
++        s.depthScale = 1.0 / 3.0;
++        s.jitterX = 0.5;
++        s.jitterY = 0.5;
++        const Outcome o = Run(s);
++        Report(s, o);
++        CHECK(o.shownTruth < o.inside);
++        CHECK(o.fadedAwayFromEdges == 0);
++        CHECK(o.mismatchesAwayFromEdges == 0);
++        CHECK(o.mismatches < o.inside / 30);
++    }
+     // ------------------------------------------ nothing in front: all of it shows
+     {
+         Scene s;
+-- 
+2.34.1
+
