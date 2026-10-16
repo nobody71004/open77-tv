@@ -1,0 +1,12 @@
+# Caddy 2 gives this host automatic HTTPS (Let's Encrypt) and proxies both the
+# pages and the WebSocket to the Node relay. It handles the WebSocket upgrade
+# itself. Replace __DOMAIN__ with your VPS DNS record (or run deploy/up.sh,
+# which fills it in).
+#
+# HTTPS matters: the sender captures the screen with getDisplayMedia, and
+# browsers only allow that in a secure context (https:// or localhost). Without
+# TLS the sender page will not be able to share a screen.
+__DOMAIN__ {
+	encode
+	reverse_proxy 127.0.0.1:8787
+}

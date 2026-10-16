@@ -1,0 +1,6 @@
+-- opx_screenmirror -- client/main.lua
+--
+-- Nothing runs on the client. This resource only holds the screen-mirror's
+-- viewer link on the server and hands it to open77_media for a capture cinema;
+-- the television page draws the picture. The script is here so the manifest is a
+-- normal resource; it is intentionally empty.

@@ -1,0 +1,9 @@
+{
+  "channel": "WORK",
+  "token": "PASTE-YOUR-TOKEN-HERE",
+  "relay": "wss://xbuniverse.duckdns.org/screen-mirror/ws",
+  "iceUrl": "https://xbuniverse.duckdns.org/screen-mirror/ice",
+  "fps": 60,
+  "autoLaunch": true,
+  "displayName": ""
+}

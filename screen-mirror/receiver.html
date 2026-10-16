@@ -1,0 +1,251 @@
+<!doctype html>
+<!-- open77 screen-mirror receiver. This is the "client page" the game's
+     television frames (the same slot the shared browser uses): it joins a
+     channel over the signaling WebSocket and plays whatever the sender
+     publishes, over WebRTC -- H.264 picture and Opus sound. View-only.
+
+     /?channel=NAME          channel to watch (the sender publishes the same)
+
+     It reports its own state on window.__open77Mirror so a test (and the game)
+     can see whether a picture and sound are arriving without reading pixels. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>open77 screen mirror</title>
+<style>
+  html, body { margin:0; height:100%; background:#000; overflow:hidden; }
+  video { display:block; width:100vw; height:100vh; object-fit:contain; background:#000; }
+  #state {
+    position:fixed; left:0; right:0; top:0; padding:10px 14px;
+    font:14px system-ui, sans-serif; color:#cfe3cf; background:rgba(0,0,0,.55);
+    pointer-events:none;
+  }
+  #state.live { color:#9fe3a0; }
+  #state.wait { color:#e3c99f; }
+  #state.gone { color:#e39f9f; }
+</style>
+</head>
+<body>
+<video id="screen" autoplay playsinline></video>
+<div id="state">connecting &hellip;</div>
+
+<script>
+const q = new URLSearchParams(location.search);
+const CHANNEL = q.get("channel") || "default";
+const TOKEN   = q.get("token")   || "";
+
+const video = document.getElementById("screen");
+const stateEl = document.getElementById("state");
+
+// What a test / the game reads.
+window.__open77Mirror = {
+  frames: 0, senderOnline: false, channel: CHANNEL,
+  hasAudio: false, codec: "",
+};
+
+function setState(text, cls) {
+  stateEl.textContent = text;
+  stateEl.className = cls || "";
+}
+
+function base() { return location.pathname.replace(/[^/]*$/, ""); }
+function wsUrl() {
+  return (location.protocol === "https:" ? "wss://" : "ws://") + location.host + base() + "ws";
+}
+
+// ---- WebRTC ---------------------------------------------------------------
+// The sender offers each viewer its own peer connection; we answer it and play
+// the stream. ICE candidates that arrive before the remote description are
+// queued and flushed once it is set (trickle ICE sends them out of order).
+let pc = null;
+let iceServers = [];
+let remoteDescSet = false;
+const pendingIce = [];
+const remoteStream = new MediaStream();
+
+async function fetchIce() {
+  try {
+    const r = await fetch(base() + "ice");
+    iceServers = (await r.json()).iceServers || [];
+  } catch { iceServers = []; }
+}
+
+function signal(to, payload) {
+  if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: "signal", to, payload }));
+}
+
+function ensurePc(from) {
+  if (pc) return pc;
+  pc = new RTCPeerConnection({ iceServers });
+  pc.ontrack = (e) => {
+    // Play frames the instant they decode: no added jitter buffer, so the
+    // picture never "holds" mid-frame while the buffer refills.
+    try { if (e.receiver) e.receiver.playoutDelayHint = 0; } catch {}
+    remoteStream.addTrack(e.track);
+    video.srcObject = remoteStream;
+    if (e.track.kind === "audio") window.__open77Mirror.hasAudio = true;
+    setState("live - channel " + CHANNEL, "live");
+  };
+  pc.onicecandidate = (e) => {
+    if (e.candidate) signal(from, { kind: "ice", candidate: e.candidate.toJSON() });
+  };
+  pc.onconnectionstatechange = () => {
+    if (pc.connectionState === "failed" || pc.connectionState === "disconnected") {
+      setState("stream connection " + pc.connectionState + " - waiting for the sender", "gone");
+    }
+  };
+  return pc;
+}
+
+// Tear the peer down so the next offer starts clean (a signaling reconnect can
+// hand us a fresh sender/peer id; a live ICE-restart re-offer instead reuses the
+// existing pc and renegotiates, which is what we want for a mere route change).
+function resetPeer() {
+  if (pc) { try { pc.close(); } catch {} }
+  pc = null; remoteDescSet = false; pendingIce.length = 0;
+  remoteStream.getTracks().forEach((t) => { try { remoteStream.removeTrack(t); } catch {} });
+}
+
+async function handleOffer(from, sdp) {
+  // If the old pc died (failed/closed), start a fresh one for this offer.
+  if (pc && (pc.connectionState === "failed" || pc.connectionState === "closed")) resetPeer();
+  ensurePc(from);
+  await pc.setRemoteDescription(sdp);
+  remoteDescSet = true;
+  for (const c of pendingIce) { try { await pc.addIceCandidate(c); } catch {} }
+  pendingIce.length = 0;
+  const answer = await pc.createAnswer();
+  await pc.setLocalDescription(answer);
+  signal(from, { kind: "answer", sdp: { type: pc.localDescription.type, sdp: pc.localDescription.sdp } });
+  startFrameCounter();
+}
+
+// Count presented frames so a test can see the picture is live (advancing).
+function startFrameCounter() {
+  if (!("requestVideoFrameCallback" in video) || video.__counting) return;
+  video.__counting = true;
+  const onFrame = () => {
+    window.__open77Mirror.frames += 1;
+    if (window.__open77Mirror.codec === "") readCodec();
+    video.requestVideoFrameCallback(onFrame);
+  };
+  video.requestVideoFrameCallback(onFrame);
+}
+
+async function readCodec() {
+  if (!pc) return;
+  try {
+    const stats = await pc.getStats();
+    const codecs = new Map();
+    stats.forEach((r) => { if (r.type === "codec") codecs.set(r.id, r.mimeType); });
+    stats.forEach((r) => {
+      if (r.type === "inbound-rtp" && r.kind === "video") {
+        window.__open77Mirror.codec = codecs.get(r.codecId) || "";
+      }
+    });
+  } catch {}
+}
+
+// The end-to-end test / the game reads decoded-frame counts straight from the
+// peer connection's stats -- the most reliable "video is flowing" signal.
+window.__open77Mirror.getStats = async () => {
+  const out = { framesDecoded: 0, audioPackets: 0, codec: "" };
+  if (!pc) return out;
+  try {
+    const stats = await pc.getStats();
+    const codecs = new Map();
+    stats.forEach((r) => { if (r.type === "codec") codecs.set(r.id, r.mimeType); });
+    stats.forEach((r) => {
+      if (r.type === "inbound-rtp") {
+        if (r.kind === "video") { out.framesDecoded = r.framesDecoded || 0; out.codec = codecs.get(r.codecId) || ""; }
+        else if (r.kind === "audio") { out.audioPackets = r.packetsReceived || 0; }
+      }
+    });
+  } catch {}
+  return out;
+};
+
+// The television's volume/mute for this mirror, posted by the page that frames
+// this one. Applied to the video element that plays the stream's sound.
+window.addEventListener("message", (ev) => {
+  const d = ev.data;
+  if (!d || typeof d !== "object" || d.open77MirrorVolume !== 1) return;
+  if (ev.source !== window.parent) return;
+  if (typeof d.volume === "number") video.volume = Math.max(0, Math.min(1, d.volume));
+  if (typeof d.muted === "boolean") video.muted = d.muted;
+});
+
+// Let a test (or a user gesture) start playback under the browser's autoplay rules.
+window.__open77Mirror.resumeAudio = () => { video.play().catch(() => {}); };
+
+// ---- Signaling WebSocket lifecycle ---------------------------------------
+let ws = null;
+let reconnectTimer = null;
+let backoffMs = 1000;
+const BACKOFF_MAX = 30000;
+let stopped = false;
+
+function scheduleReconnect() {
+  if (stopped || reconnectTimer) return;
+  reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(); }, backoffMs);
+  backoffMs = Math.min(backoffMs * 2, BACKOFF_MAX);
+}
+
+function connect() {
+  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+  const old = ws; ws = null;
+  if (old) { try { old.close(); } catch {} }
+  let sock;
+  try { sock = new WebSocket(wsUrl()); }
+  catch { setState("cannot open the relay connection - retrying", "gone"); scheduleReconnect(); return; }
+  ws = sock;
+  sock.addEventListener("open", () => {
+    if (sock !== ws) return;
+    backoffMs = 1000;
+    sock.send(JSON.stringify({ type: "join", channel: CHANNEL, role: "receiver", token: TOKEN }));
+    setState("connected - waiting for the sender - channel " + CHANNEL, "wait");
+  });
+
+  sock.addEventListener("message", (e) => {
+    if (sock !== ws) return;
+    let m; try { m = JSON.parse(e.data); } catch { return; }
+    if (m.type === "auth_failed") {
+      stopped = true;
+      setState("bad token - this viewer link is not valid here (check the ?token= in the link)", "gone");
+    } else if (m.type === "sender") {
+      window.__open77Mirror.senderOnline = !!m.online;
+      setState(m.online
+        ? "sender is up - waiting for the picture - channel " + CHANNEL
+        : "no sender on channel " + CHANNEL + " - is the remote PC publishing?", "wait");
+    } else if (m.type === "signal") {
+      const p = m.payload || {};
+      if (p.kind === "offer") handleOffer(m.from, p.sdp).catch(() => {});
+      else if (p.kind === "ice") {
+        if (remoteDescSet && pc) pc.addIceCandidate(p.candidate).catch(() => {});
+        else pendingIce.push(p.candidate);
+      }
+    } else if (m.type === "peer_left") {
+      // The sender dropped: tear down so we reconnect cleanly and say so.
+      resetPeer();
+      setState("the sender stopped - waiting for it to return", "wait");
+    }
+  });
+
+  sock.addEventListener("close", () => {
+    if (sock !== ws) return;
+    ws = null;
+    if (stopped) return;
+    resetPeer();
+    setState("relay connection lost - retrying", "gone");
+    scheduleReconnect();
+  });
+  sock.addEventListener("error", () => {});
+}
+
+(async () => {
+  await fetchIce();
+  connect();
+})();
+</script>
+</body>
+</html>
