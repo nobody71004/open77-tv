@@ -336,9 +336,9 @@ check("/watch cinema 100 takes the 100 ft one",
     lastClient("opx:watch:cinema", 7).args[1].record == "cinema.100ft.watchparty")
 Host.clientEvents = {}
 Host.commands.watch.fn(7, { "cinema", "50" }, "watch cinema 50")
-local badsize = lastClient("opx:watch:result", 7)
+local badsize = lastClient("open77:command:result", 7)
 check("any other size is refused with the two that exist",
-    badsize ~= nil and badsize.args[1].ok == false and lastClient("opx:watch:cinema", 7) == nil)
+    badsize ~= nil and badsize.args[2] == false and lastClient("opx:watch:cinema", 7) == nil)
 Host.clientEvents = {}
 Host.commands.watch.fn(8, { "cinema" }, "watch cinema")
 check("a player with no party gets no cinema screen",
@@ -382,6 +382,30 @@ check("with two parties the menu is told it cannot choose",
     Host.exports.linkWhy() == "too_many_watch_parties")
 check("but each spawner still vouches their own page",
     Host.exports.claim(cbase .. "/v1/tv/" .. dcode) == cbase .. "/v1/tv/" .. dcode)
+_G.source = 8
+Host.events["opx:watch:stop"]()
+Host.clientEvents = {}
+Host.commands.watch.fn(8, { "cinema", "https://www.netflix.com/watch/81056740" },
+    "watch cinema https://www.netflix.com/watch/81056740")
+local csaid = lastClient("open77:command:result", 8)
+local cscreen = lastClient("opx:watch:cinema", 8)
+check("/watch cinema with a link starts the party and puts up its screen",
+    csaid ~= nil and csaid.args[2] == true and cscreen ~= nil
+        and cscreen.args[1].record == "cinema.150ft.watchparty"
+        and Host.exports.claim(cscreen.args[1].url) == cscreen.args[1].url
+        and cscreen.args[1].url ~= cbase .. "/v1/tv/" .. dcode)
+Host.clientEvents = {}
+Host.commands.watch.fn(8, { "cinema", "100", "https://www.netflix.com/watch/81056740" },
+    "watch cinema 100 https://www.netflix.com/watch/81056740")
+cscreen = lastClient("opx:watch:cinema", 8)
+check("size and link work in either order",
+    cscreen ~= nil and cscreen.args[1].record == "cinema.100ft.watchparty"
+        and Host.exports.claim(cscreen.args[1].url) == cscreen.args[1].url)
+Host.clientEvents = {}
+Host.commands.watch.fn(8, { "cinema", "popcorn" }, "watch cinema popcorn")
+csaid = lastClient("open77:command:result", 8)
+check("anything else is refused with the usage, and nothing goes up",
+    csaid ~= nil and csaid.args[2] == false and lastClient("opx:watch:cinema", 8) == nil)
 local seeded, realSeed = 0, math.randomseed
 math.randomseed = function(s) seeded = seeded + 1; return realSeed(s) end
 Host.events.onResourceStart("opx_watchparty")

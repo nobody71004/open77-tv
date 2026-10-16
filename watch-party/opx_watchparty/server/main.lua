@@ -267,16 +267,29 @@ end)
 
 ---Puts the player's party on its own cinema screen: a 150 ft watch-party panel
 ---(100 ft with "100") in front of them, showing the party's page. The client
----spawns it through open77_media, the same way /browser cinema does.
-local function cinemaFor(source, size)
-    local party = registry:partyOf(source)
-    if party == nil then
-        TriggerClientEvent("opx:watch:result", source, { ok = false, text = why("not_in_a_party") })
-        return
-    end
+---spawns it through open77_media, the same way /browser cinema does. With a
+---link (`/watch cinema <netflix-link> [100]`) it starts the party first, so one
+---command goes from a link to a screen -- no party needed beforehand.
+local function cinemaFor(source, raw, size, link)
     if size ~= "100" and size ~= "150" then
         TriggerClientEvent("opx:watch:result", source, { ok = false,
             text = "no " .. tostring(size) .. " cinema: /watch cinema (150 ft) or /watch cinema 100" })
+        return
+    end
+    local party = registry:partyOf(source)
+    if link ~= nil then
+        local started, how = startFor(source, { link = link })
+        if started == nil then
+            tell(source, raw, false, "watch party: " .. why(how))
+            return
+        end
+        party = started
+        tell(source, raw, true, string.format("watch party %s started: %s. Open /watch and press Copy browser link, " ..
+            "then open it in Edge or Chrome with the Open77 Watch Party extension.",
+            party.code, describe(registry:state(party))))
+    end
+    if party == nil then
+        TriggerClientEvent("opx:watch:result", source, { ok = false, text = why("not_in_a_party") })
         return
     end
     TriggerClientEvent("opx:watch:cinema", source,
@@ -288,7 +301,7 @@ RegisterNetEvent("opx:watch:cinema", function(payload)
     if source == nil then return end
     local size = type(payload) == "table" and tostring(payload.size or "") or ""
     if size == "" then size = "150" end
-    cinemaFor(source, size)
+    cinemaFor(source, nil, size, nil)
 end)
 
 -- The watch-party cinemas in the TV menu (open77_media's
@@ -354,6 +367,7 @@ AddEventHandler("onPlayerDisconnected", function(playerId) forget(playerId) end)
 AddEventHandler("playerDropped", function() forget(source) end)
 
 local HELP = "/watch -- the panel. /watch netflix <link> [title] -- start a party at the TV in front of you. " ..
+    "/watch cinema <link> [100] -- start a party and put it on a cinema screen. " ..
     "/watch play | pause | seek 1:02:03 | +30 | -10 | join <code> | leave | stop | link | status | cinema [100]"
 
 RegisterCommand("watch", function(source, args, raw)
@@ -405,8 +419,19 @@ RegisterCommand("watch", function(source, args, raw)
         return tell(source, raw, true, "ended watch party " .. party.code)
     end
     if verb == "cinema" then
-        local size = args[2] or "150"
-        cinemaFor(source, size)
+        local size, link = "150", nil
+        for i = 2, #args do
+            local a = tostring(args[i] or "")
+            if a == "100" or a == "150" then
+                size = a
+            elseif link == nil and WatchNetflix.parse(a) ~= nil then
+                link = a
+            else
+                return tell(source, raw, false,
+                    "give a screen size or a Netflix link: /watch cinema [100] or /watch cinema <link> [100]")
+            end
+        end
+        cinemaFor(source, raw, size, link)
         return
     end
     if verb == "link" then

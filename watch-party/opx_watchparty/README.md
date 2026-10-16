@@ -24,8 +24,10 @@ the title number and where the film is.
    bar, a typed time), from chat, or from their own browser's player: everyone
    follows within about two seconds.
 
-Chat: `/watch netflix <link> [title]`, `/watch play | pause | seek 1:02:03 | +30 |
--10 | join <code> | leave | stop | link | status | help`, `/watch cinema [100]`.
+Chat: `/watch netflix <link> [title]`, `/watch cinema <link> [100]` (starts the
+party AND puts it on a screen -- one command from a link to a cinema), `/watch
+play | pause | seek 1:02:03 | +30 | -10 | join <code> | leave | stop | link |
+status | help`, `/watch cinema [100]` (screen for the party you are in).
 
 ## Its own cinema screen
 
