@@ -9,7 +9,9 @@ the screen drives it with the mouse and keyboard.
 
 ## The link is a credential (read this before a server has accounts signed in)
 
-The television's link (`/opt/open77-tvbrowser/tv-url.secret`, root-only) carries
+The television's link (`tv-url.secret`, root-only, one per instance --
+`/opt/open77-tvbrowser/tv-url.secret` for staging,
+`/opt/open77-tvbrowser-xb/tv-url.secret` for production) carries
 `?usr=open77&pwd=<the viewer password>`. That password is a whole session on the
 room's desktop: **anyone who has the link can open that desktop from their own PC,
 watch it and drive it** -- the mouse, the keyboard, and whatever is signed into
@@ -45,10 +47,12 @@ opx_tvbrowser/   the resource: /browser (admin-only) puts it on the TV in front 
                  you, /browser cinema puts up a 150 ft cinema showing it (/browser
                  cinema 100: a 100 ft one), /browser off; and the link the TV
                  menu's two browser cinemas are put up with
-server/          the container beside the game server: neko's Chromium image
-                 without Widevine, its browser policies, the four scripts the
-                 image puts in the client page, and the scripts that build it,
-                 publish it and check it
+server/          the container beside the game server -- one instance per role,
+                 staging and production (see "On the server"): neko's Chromium
+                 image without Widevine, its browser policies, the four scripts
+                 the image puts in the client page, and the scripts that build it
+                 (up.sh), publish it (nginx.sh), point a game server at it
+                 (install-tv-config.sh) and check it (test/)
 ```
 
 ## On a television
@@ -276,9 +280,9 @@ element (`on: "stream"`): the cover adds no media element at all.
 
 ## When the picture does not come
 
-The stream is WebRTC: UDP to the server's port 59100 first, and TCP to the same
-port when UDP answers do not come back (Chromium tries that by itself). The page
-says what happened, in the client log:
+The stream is WebRTC: UDP to that role's public port first -- 59100 staging, 59101
+production -- and TCP to the same port when UDP answers do not come back (Chromium
+tries that by itself). The page says what happened, in the client log:
 
 - `browser_net`: whether a public STUN server's answer reaches this PC over UDP
   (candidate kinds and counts, never an address).
@@ -321,8 +325,9 @@ honest fallback stays the watch party (`watch-party/`).
 - Anything signed in to on it is seen by everyone at that television.
 - A link pasted into it is the shared browser's clipboard afterwards: the next
   person to right-click → Paste gets it.
-- `server/up.sh` recreates the container, which wipes the browser's own state
-  (sessions, history). Passwords stay in `neko.env`.
+- `up.sh [staging|production]` recreates that role's container, which wipes that
+  browser's own state (sessions, history); the other role's is not touched.
+  Passwords stay in each instance's own `neko.env`.
 - Downloads, file dialogs, developer tools, the password manager and browser
   sign-in are off (`server/build/policies.json`), as are notifications, pop-ups,
   camera and microphone. The one extension is uBlock Origin Lite.
@@ -333,27 +338,45 @@ honest fallback stays the watch party (`watch-party/`).
 
 ## On the server
 
-Done on XBUNIVERSE staging (2026-10-02); the production servers on the same
-machine are not touched.
+Two instances, one per role, on the same machine. They are the same image and the
+same `build/`; they differ in where they live, what they are called, and which
+three numbers they take:
 
-1. Copy `server/` to `/opt/open77-tvbrowser` (root, 700) and run `up.sh`. The
-   first run generates `neko.env` (viewer and admin passwords, API token) and the
-   television link `tv-url.secret`, both root-only; later runs reuse them, so the
-   link does not change. It builds `open77/tvbrowser-chromium:7`, checks the
-   image (the four scripts in the client page, the policy, no Widevine baked
-   in) and the host CDM, and runs the container capped at 4 cores, 4 GB and
-   2 GB of shared memory, with the client on `127.0.0.1:18080` and WebRTC on
-   `59100` (UDP and TCP, published by Docker, so the host's INPUT rules are not
-   changed), plus the host CDM mounted read-only for Widevine.
-2. `nginx.sh` adds `/tv-browser-xb-staging/` (websocket) to the site, after
-   backing it up and `nginx -t`.
-3. Install `opx_tvbrowser` in `resources/`, write `server/config.lua` from
-   `tv-url.secret` (`url`, `cinemaRecord`, `cinema100Record`; root, 600), and add
-   `opx_tvbrowser` to `resources.load` in `server.jsonc` (staging loads an
-   explicit list).
+| role | install dir | container | prefix | client | WebRTC |
+| --- | --- | --- | --- | --- | --- |
+| staging | `/opt/open77-tvbrowser` | `open77-tvbrowser-xbs` | `/tv-browser-xb-staging` | `127.0.0.1:18080` | `59100` |
+| production | `/opt/open77-tvbrowser-xb` | `open77-tvbrowser-xb` | `/tv-browser-xb` | `127.0.0.1:18081` | `59101` |
+
+Each instance generates its OWN `neko.env` (viewer and admin passwords, API token)
+and its own television link `tv-url.secret`, both root-only, so the two links --
+and the two rooms behind them -- are separate. Recreating one role's container
+wipes that browser's own state (sessions, history) and does not touch the other's.
+
+1. Copy `server/` to that role's install dir (root, 700) and run
+   `./up.sh [staging|production]` (default staging). The first run generates
+   `neko.env` and `tv-url.secret`; later runs reuse them, so the link does not
+   change. It builds `open77/tvbrowser-chromium:7`, checks the image (the four
+   scripts in the client page, the policy, no Widevine baked in) and the host CDM,
+   and runs the container capped at 4 cores, 4 GB and 2 GB of shared memory, with
+   the client on that role's loopback port and WebRTC on that role's port (UDP and
+   TCP, published by Docker, so the host's INPUT rules are not changed), plus the
+   host CDM mounted read-only for Widevine.
+2. `./nginx.sh [staging|production]` adds that role's path (websocket) to the site,
+   after backing it up and `nginx -t`, and leaves the enabled and available copies
+   of the site in step. It then asks the new route through nginx, retrying for up to
+   15 s: a graceful reload can still answer a first request from a worker holding
+   the old configuration, and that one 404 is not a failure.
+3. Install `opx_tvbrowser` in that game server's `resources/`, run
+   `./install-tv-config.sh [staging|production]` -- it writes
+   `opx_tvbrowser/server/config.lua` from THAT role's `tv-url.secret` (`url`,
+   `cinemaRecord`, `cinema100Record`, `adminAce`; root, 0600), keeping the previous
+   file -- and add `opx_tvbrowser` to `resources.load` in its `server.jsonc`
+   (staging loads an explicit list). The copy of that config in this repository is
+   a placeholder with `url = nil` on purpose: the link carries the viewer password.
 4. `test/e2e.sh`, `test/e2e-page.sh`, `test/e2e-paste.sh`, `test/e2e-volume.sh`
-   and `test/e2e-fit.sh`
-   run a Playwright Chromium on the server, so it reaches the browser the way a
+   and `test/e2e-fit.sh` take the same role argument (default staging), and run
+   against that role's container, `neko.env`, link and WebRTC port. They run a
+   Playwright Chromium on the server, so it reaches the browser the way a
    player does: logged in from the television link, the picture over the public
    IP (in the four networks above), a link pasted into the address bar and
    opened, and the television's level measured in the sound it puts out (2026-10-02,
@@ -361,6 +384,20 @@ machine are not touched.
    100, 0.50 at 35, silence muted, 1.58 at 75 -- the gain curve and the limiter's
    make-up gain, as computed). Those readings are the curve *before* 2026-10-16;
    the level went up that day (below), so a fresh run reads higher.
+
+What is on the machine now (2026-10-16/17):
+
+- staging went in first, on 2026-10-02, with the production servers untouched.
+- production's instance was created on 2026-10-17: `./up.sh production` built image
+  `open77/tvbrowser-chromium:7` from the same `build/`, started
+  `open77-tvbrowser-xb` (healthy), and its client page answered HTTP 200 on the
+  loopback at 00:55Z; `./nginx.sh production` published `/tv-browser-xb/` (HTTP 200
+  through nginx at 00:56Z); and `test/e2e.sh production` passed at 00:59Z -- logged
+  in from production's own link, the WebRTC picture connected and advancing,
+  1280x720.
+- both game servers on the machine run `opx_tvbrowser` 1.0.2 with `/browser`
+  admin-only: each one's `server/config.lua` carries
+  `adminAce = "command.media.lock"`, written from that role's own link.
 
 Staging went through seven builds of `server/build/`, each a recreate with the
 same `neko.env`, ports and link, the one before kept for rollback: 1, Widevine
@@ -370,10 +407,10 @@ answers under the prefix, so a healthy container reported unhealthy); 3,
 `open77-paste.js`; 4, the paste notes and reports, and new tabs opening Google; 5,
 `open77-volume.js` on the element; 6, the level through Web Audio; 7,
 `open77-fit.js` -- the picture fills the bar, after the day the television's own
-page filled it by cropping. Build 7 is in the running container by `docker cp`
-and built as the image tag from `build/`; the recreate onto image 7 is the one
-step left, and it wipes the browser's own state, so it waits for a moment nobody
-is watching. Build 5 also
+page filled it by cropping. Build 7 is in staging's running container by `docker cp`
+and built as the image tag from `build/` -- the container's page files are the
+image's, checked file by file -- and production's container was created straight
+onto image 7 on 2026-10-17, so no recreate is left owing. Build 5 also
 makes the policy and the scripts readable whatever modes the build context had: its
 first rollout was built from files copied from Windows, which arrive root-only, so
 for three minutes (nobody connected) neko answered 403 for the scripts and Chromium
@@ -415,8 +452,9 @@ node server/test/fit-local.mjs              # open77-fit.js: the box's edges are
 node tests/tv-page/run.mjs                  # from the repository root: the page's half, volume included (85)
 ```
 
-`server/test/e2e*.sh` run on the server against the real container; `e2e-fit.sh`
-reads the bars in pixels on the real page, with the script and without it.
+`server/test/e2e*.sh` run on the server against one role's real container
+(`[staging|production]`, default staging); `e2e-fit.sh` reads the bars in pixels on
+the real page, with the script and without it.
 
 Seen in game, 2026-10-02: the browser cinema from the TV menu, the picture over
 UDP, F8 driving the browser. A Ctrl+V paste is verified end to end on the server;

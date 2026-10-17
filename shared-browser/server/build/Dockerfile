@@ -1,6 +1,7 @@
 # The shared browser a television in Open77 shows: neko's Chromium, streamed to
-# the screen over WebRTC. XBUNIVERSE STAGING only. Staging runs it as
-# open77/tvbrowser-chromium:7 (the history is in shared-browser/README.md): no DRM
+# the screen over WebRTC. One instance per server role (`up.sh staging`, `up.sh
+# production`), and both run this as open77/tvbrowser-chromium:7 (the history is
+# in shared-browser/README.md): no DRM
 # module, the managed policies, four scripts in the client page, and a health
 # check at the path the server answers on. No port, capability or setting changes.
 FROM ghcr.io/m1k1o/neko/chromium:3@sha256:2471119c7b4010067f76f3421a78a8bcf35e3c223b2d1f4db084914ec915fb30

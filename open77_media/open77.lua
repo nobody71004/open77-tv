@@ -1,5 +1,5 @@
 resource "open77_media"
-version "0.1.0"
+version "0.1.3"
 open77_version ">=0.0.1"
 auto_start true
 reload_policy "local"
@@ -92,6 +92,12 @@ shared_script "shared/keys.lua"
 -- that freezes zero, a new link that opens in the middle of the old one.
 shared_script "shared/clock.lua"
 
+-- "May this player do it?" -- asked of Open77's own ACL instead of FiveM's
+-- `IsPlayerAceAllowed`, which does not exist here and quietly answered "no" to
+-- every admin. Shared because the panel's gate is asked on the server and the
+-- rule is worth its own suite.
+shared_script "shared/acl.lua"
+
 -- Listed explicitly, one per line, never globbed. Manifest order IS load order
 -- within each group, so these land exactly as written:
 --
@@ -103,6 +109,10 @@ shared_script "shared/clock.lua"
 --      banner, and owns the live list.
 server_script "server/config.lua"
 server_script "server/adblock.lua"
+-- The pure half of the venue-placement store, before the half that reads it. A
+-- venue screen's saved spot is what makes "line it up from the panel, then SAVE
+-- THIS SPOT" survive the restart; this file is its grammar and its file shape.
+server_script "server/venuesets.lua"
 server_script "server/main.lua"
 client_script "client/main.lua"
 
@@ -167,4 +177,18 @@ permissions {
     -- but the change is lost when the resource restarts.
     "filesystem.read",
     "filesystem.write",
+
+    -- `Open77.acl.isAllowed` -- the question `shared/acl.lua` asks for the
+    -- admin-only panel switch and the screen-lock.
+    --
+    -- THE GRANT IS WHAT INSTALLS THE TABLE, and this line was missing. A
+    -- resource without `acl.read` is handed no `Open77.acl` at all, so the
+    -- wrapped read in `shared/acl.lua` raises, the FiveM fallback is absent
+    -- (`IsPlayerAceAllowed` is not a function here either), and the answer is
+    -- `false` for EVERY player -- the owner holding `command.media.lock`
+    -- included, who opened the panel and was told it was admin-only. The name
+    -- of the function was the first half of that bug and it was fixed; this is
+    -- the second half, and it is a manifest line rather than a Lua one, which
+    -- is why no suite saw it. `tools/run-suite.py` checks the manifests now.
+    "acl.read",
 }

@@ -32,6 +32,19 @@ local media = {}      -- mediaId (number) -> entry
 local nextMediaId = 1
 local byProp = {}     -- prop id (string) -> mediaId
 
+-- The SAVED placements of the world's venue screens, and the writer the panel's
+-- SAVE THIS SPOT action calls. Both are filled in the VENUE SETS section at the
+-- bottom of this file, and declared here because the control handler above it
+-- reads them: a player pressing the button is answered long after this file has
+-- finished loading, so the upvalue is the store, not the empty table below.
+local venuePlacements = {}
+local persistVenuePlacement = function() return false, "venue_store_not_loaded" end
+
+-- The pure half of the store (`server/venuesets.lua`), loaded before this file by
+-- the manifest. Nil rather than an error on a build that lost the line: the venue
+-- screens then simply come up at their surveyed coordinates.
+local VenueStore = type(MediaVenueSetsStore) == "table" and MediaVenueSetsStore or nil
+
 local function output(source, raw, success, text)
     print(text)
     if source ~= nil and source > 0 then
@@ -63,6 +76,25 @@ local function callerPosition(source)
         error(string.format("player %d has no fresh position snapshot", source), 0)
     end
     return position
+end
+
+---Which way a player's body faces, or nil when the host cannot say.
+---
+---`Open77.players.position` answers `{ x, y, z, bucket }` and carries no yaw at
+---all; `Open77.players.get` is the rich read and answers `heading` (or its alias
+---`yaw`) once the slot has reported a snapshot. Nil rather than zero, because
+---zero is a legal facing and a screen saved facing north by accident is exactly
+---the bug the survey had -- a caller that gets nil says so instead.
+---@param source Source
+---@return number|nil degrees, 0..360
+local function callerHeading(source)
+    local api = Open77.players
+    if type(api) ~= "table" or type(api.get) ~= "function" then return nil end
+    local ok, snapshot = pcall(api.get, source)
+    if not ok or type(snapshot) ~= "table" then return nil end
+    local yaw = tonumber(snapshot.heading) or tonumber(snapshot.yaw)
+    if yaw == nil or yaw ~= yaw or yaw == math.huge or yaw == -math.huge then return nil end
+    return yaw % 360.0
 end
 
 -- =============================================================================
@@ -136,10 +168,15 @@ end
 -- `media.lock` command is granted to holders of `command.media.lock`), so giving
 -- an admin that one ACE is the whole story. The server console is always admin.
 local LOCK_ACE = "command.media.lock"
+
+--- Whether this player holds `command.media.lock`.
+-- THE QUESTION LIVES IN `shared/acl.lua`, and this wrapper is only the ACE this
+-- resource asks about. It used to ask `IsPlayerAceAllowed` directly -- FiveM's
+-- name, absent here -- so every player, admins included, was refused and the
+-- panel's one line read "you have to be an admin". See that file for the whole of
+-- the ordering, the fallback and the console rule; its own suite pins them.
 local function isLockAdmin(source)
-    if source == nil or source <= 0 then return true end
-    if type(IsPlayerAceAllowed) ~= "function" then return false end
-    return IsPlayerAceAllowed(source, LOCK_ACE) == true
+    return Open77MediaAcl.Allowed(source, LOCK_ACE)
 end
 
 -- Is the panel a thing this player may drive at all?
@@ -181,6 +218,11 @@ local function payload(entry)
         id = entry.id,
         prop = entry.prop,
         record = entry.record,
+        -- The venue screen this set IS, or nil. A set spawned from the panel or
+        -- the console is a session; one from `MediaVenueSets` is part of the
+        -- world, and the panel offers SAVE THIS SPOT only for that kind -- the
+        -- one whose position is meant to outlive the restart.
+        venue = entry.venue,
         label = entry.label,
         url = entry.url,
         volume = entry.volume,
@@ -435,6 +477,24 @@ end
 print(string.format("[open77_media] panel controls: %s", adminOnlyControl and
     ("admin-only (the ACE " .. LOCK_ACE .. ")") or
     "every player may drive any set that is not locked"))
+
+-- THE ACL'S RECEIPT, AND WHY IT IS SAID OUT LOUD.
+--
+-- `Open77.acl` is installed PER RESOURCE, and only for a manifest that declares
+-- `acl.read`. A resource without the grant is handed no such table at all -- so
+-- `shared/acl.lua`'s wrapped read raises, the FiveM fallback is absent, and the
+-- gate answers `false` for EVERY player, the owner holding `command.media.lock`
+-- included, who is then told the panel is admin-only. That failure is invented
+-- entirely by a line in `open77.lua`, and from inside the Lua it looks exactly
+-- like a player who simply has no ACE: the same answer, no error, nothing in
+-- the log. This is the sentence that tells the two apart, printed at start.
+local function aclInstalled()
+    return type(Open77) == "table" and type(Open77.acl) == "table"
+        and type(Open77.acl.isAllowed) == "function"
+end
+print(string.format("[open77_media] acl: %s", aclInstalled() and
+    "installed (acl.read declared)" or
+    "NOT INSTALLED -- open77.lua does not declare \"acl.read\", so every player is refused"))
 
 -- The live list, and where it came from. `blockSource` is reported on every push
 -- and in every banner, because "which list is in force" is the first question
@@ -853,7 +913,7 @@ local function isSharedBrowserLink(url)
         and url:sub(-#SHARED_BROWSER_MARK) == SHARED_BROWSER_MARK
 end
 
-local function spawn(recordId, position, yaw, url, source)
+local function spawn(recordId, position, yaw, url, source, venue)
     local record = Open77MediaRecord(recordId)
     if record == nil then return nil, "unknown_record" end
     if nextMediaId > MAX_MEDIA then return nil, "too_many_televisions" end
@@ -928,6 +988,10 @@ local function spawn(recordId, position, yaw, url, source)
         -- answer that does not need a screenshot.
         yaw = facing,
         source = source,
+        -- The record key this set stands in for, when it is a venue screen. The
+        -- store and the panel both address a venue by its record, so nothing has
+        -- to trust an index a client sent back.
+        venue = venue,
     }
     -- The programme starts now. Every set is born playing, so its clock starts
     -- with it -- and this is the origin every later position is measured from.
@@ -1552,6 +1616,92 @@ RegisterNetEvent("open77:media:control", function(action, payload)
                 "rotate_refused:" .. tostring(turnReason))
             return
         end
+    elseif action == "pinHere" then
+        -- SAVE THIS SPOT, for a venue screen only: the set STAYS where it is.
+        -- The lining-up is the panel's nudge pad (or `pinFront` below), and this
+        -- is the one action that makes that work survive a restart. The numbers
+        -- are the entry's own -- the transform every client already sees -- so a
+        -- payload cannot name a spot, and nothing moves as a side effect of
+        -- saving.
+        if entry.venue == nil then
+            TriggerClientEvent("open77:media:result", source, false,
+                "not_a_venue_screen")
+            return
+        end
+        local saved, saveError = persistVenuePlacement(entry.venue, {
+            x = entry.position.x, y = entry.position.y, z = entry.position.z,
+            yaw = entry.yaw, bucket = entry.position.bucket,
+        })
+        if not saved then
+            TriggerClientEvent("open77:media:result", source, false,
+                "not_saved:" .. tostring(saveError))
+            return
+        end
+        TriggerClientEvent("open77:media:result", source, true, string.format(
+            "venue %s saved at %.2f,%.2f,%.2f yaw=%.1f -- it comes back here after a restart",
+            tostring(entry.venue), entry.position.x, entry.position.y, entry.position.z,
+            tonumber(entry.yaw) or 0.0))
+        return
+    elseif action == "pinFront" then
+        -- PUT IT IN FRONT OF ME: the one-press version, for the common case. A
+        -- 45.7 m cinema screen is not something a 0.25 m nudge pad lines up
+        -- quickly, so the operator stands where the audience sits, faces the
+        -- wall, and this puts the hang point the record's own distance ahead --
+        -- the same `facingPlacement` a panel spawn uses -- then saves it. The
+        -- facing comes from the SERVER's read of the player, never the payload.
+        if entry.venue == nil then
+            TriggerClientEvent("open77:media:result", source, false,
+                "not_a_venue_screen")
+            return
+        end
+        local position = Open77.players.position(source)
+        if position == nil then
+            TriggerClientEvent("open77:media:result", source, false, "no_position_snapshot")
+            return
+        end
+        -- The facing: the server's own read when it has one, and otherwise the
+        -- client's offer -- the same rule `media.spawn` follows, because the
+        -- engine publishes a character's yaw to the client on every build and to
+        -- the server on some. A non-finite or missing one is still refused rather
+        -- than placed facing north: the whole reason this action exists is that a
+        -- screen pointing the wrong way is invisible from the audience's side.
+        local heading = callerHeading(source)
+        if heading == nil then
+            local offered = tonumber(payload.yaw)
+            if offered ~= nil and offered == offered and offered ~= math.huge
+                and offered ~= -math.huge then
+                heading = offered % 360.0
+            end
+        end
+        if heading == nil then
+            TriggerClientEvent("open77:media:result", source, false, "no_heading_snapshot")
+            return
+        end
+        local target, yaw = facingPlacement(Open77MediaRecord(entry.record), position, heading)
+        local moved, moveReason = applyPlacement(entry, target, yaw)
+        if not moved then
+            TriggerClientEvent("open77:media:result", source, false,
+                "pin_refused:" .. tostring(moveReason))
+            return
+        end
+        local saved, saveError = persistVenuePlacement(entry.venue, {
+            x = entry.position.x, y = entry.position.y, z = entry.position.z,
+            yaw = entry.yaw, bucket = entry.position.bucket,
+        })
+        if not saved then
+            -- The set MOVED -- that is done and every client sees it -- but the
+            -- file did not take it, so the answer must not promise a restart.
+            TriggerClientEvent("open77:media:result", source, false,
+                "moved_but_not_saved:" .. tostring(saveError))
+            broadcast(nil)
+            return
+        end
+        TriggerClientEvent("open77:media:result", source, true, string.format(
+            "venue %s placed in front of you at %.2f,%.2f,%.2f yaw=%.1f and saved -- it comes back here after a restart",
+            tostring(entry.venue), entry.position.x, entry.position.y, entry.position.z,
+            tonumber(entry.yaw) or 0.0))
+        broadcast(nil)
+        return
     elseif action == "lock" then
         -- Admin-only: the enforcement above let a `lock` action through to here
         -- so an admin can toggle it, and this is where a non-admin is turned
@@ -1649,5 +1799,153 @@ RegisterNetEvent("open77:media:catalogue", function()
     end
     TriggerClientEvent("open77:media:catalogue", source, out)
 end)
+
+-- =============================================================================
+-- VENUE SETS: the screens that are part of the world
+-- =============================================================================
+-- `MediaVenueSets` in server/config.lua. A set a player places is a SESSION -- it
+-- is gone at the next restart, which is right for a television rolled into a
+-- garage and wrong for a venue's screen: scenery that has to be re-placed every
+-- morning is scenery nobody keeps.
+--
+-- These are ordinary sets. They go through the SAME `spawn` a panel request goes
+-- through, so they are numbered by `media.list`, driven by the panel, movable by
+-- `media.place` and claimable by a watch party exactly like a hand-placed screen.
+-- The only difference is who asked: nobody, at start.
+--
+-- ON A THREAD AND AFTER A BEAT, because `Open77.props.create` is a host call and
+-- the props layer is not up at the instant this file runs -- the resource host
+-- loads the Lua before the world it creates props in.
+--
+-- A BAD ENTRY IS REFUSED BY NAME AND THE REST STILL START. A typo in one screen
+-- must not cost the venue its other screens, and it must not be silent either:
+-- a screen that simply is not there is indistinguishable from a record that does
+-- not exist.
+
+local function finite(value)
+    local n = tonumber(value)
+    return n ~= nil and n == n and n ~= math.huge and n ~= -math.huge
+end
+
+---The saved placement store, read once at load. `data/venue-sets.json` is what
+---an operator last said; the config rows are the survey. A store that exists but
+---cannot be read is reported and the survey is used -- a venue screen at its
+---surveyed spot is recoverable, a venue with no screen is not.
+---The store's file name, or the shipped one. The host confines the write to the
+---resource's own `data/` directory, so a path here is a mistake that would only
+---be reported later; it is answered with the default and said out loud.
+local function venueFile()
+    local file = type(blockConfig.venueDataFile) == "string" and blockConfig.venueDataFile or ""
+    if file == "" or file:find("[/\\]") or file:find("..", 1, true) then
+        if file ~= "" then
+            print(string.format("[open77_media] venue sets: venueDataFile %q must be a plain file name; " ..
+                "using %s", file, tostring(VenueStore ~= nil and VenueStore.FILE or "venue-sets.json")))
+        end
+        return VenueStore ~= nil and VenueStore.FILE or "venue-sets.json"
+    end
+    return file
+end
+
+local function loadVenuePlacements()
+    venuePlacements = {}
+    if VenueStore == nil then return end
+    local file = venueFile()
+    if not (ioAvailable() and type(Open77.io.exists) == "function") then return end
+
+    local exists, existenceError = Open77.io.exists(file)
+    if not exists then
+        if existenceError ~= nil and existenceError ~= "not_found" then
+            print(string.format("[open77_media] venue sets: %s unreadable (%s); using the survey",
+                file, tostring(existenceError)))
+        end
+        return
+    end
+    local value, readError = Open77.io.readJson(file)
+    if value == nil then
+        print(string.format("[open77_media] venue sets: %s unreadable (%s); using the survey",
+            file, tostring(readError)))
+        return
+    end
+    local placements, problems = VenueStore.Load(value, function(record)
+        return Open77MediaRecord(record) ~= nil
+    end)
+    for _, problem in ipairs(problems) do
+        print("[open77_media] venue sets: " .. tostring(problem))
+    end
+    venuePlacements = placements
+end
+
+---Writes one placement, and only that one: the file is re-serialised from the
+---whole store so a second venue's saved spot survives this one being moved.
+---@param record string the venue's record key
+---@param placement table { x, y, z, yaw, bucket }
+---@return boolean ok
+---@return string|nil reason
+persistVenuePlacement = function(record, placement)
+    if VenueStore == nil then return false, "venue_store_missing" end
+    local clean, why = VenueStore.Placement(placement)
+    if clean == nil then return false, tostring(why) end
+    local file = venueFile()
+    if not ioAvailable() then return false, "filesystem_unavailable" end
+
+    local nextPlacements = {}
+    for key, value in pairs(venuePlacements) do nextPlacements[key] = value end
+    nextPlacements[record] = clean
+
+    local ok, reason = Open77.io.writeJson(file, VenueStore.Snapshot(nextPlacements))
+    if not ok then return false, tostring(reason or "write_failed") end
+    venuePlacements = nextPlacements
+    print(string.format("[open77_media] venue set %s saved at %.2f,%.2f,%.2f yaw=%.1f (data/%s)",
+        record, clean.x, clean.y, clean.z, clean.yaw, file))
+    return true
+end
+
+local function startVenueSets()
+    local specs = type(MediaVenueSets) == "table" and MediaVenueSets or {}
+    if #specs == 0 then return end
+    Wait(2000)
+
+    local started = 0
+    for index, spec in ipairs(specs) do
+        local where = "venue set " .. tostring(index)
+        if type(spec) ~= "table" then
+            print("[open77_media] " .. where .. " is not a table; skipped")
+        else
+            local record = spec.record
+            if type(record) ~= "string" or Open77MediaRecord(record) == nil then
+                print("[open77_media] " .. where .. ": record " .. tostring(record) ..
+                    " is not in the catalogue; skipped")
+            elseif not (finite(spec.x) and finite(spec.y) and finite(spec.z)) then
+                print("[open77_media] " .. where .. ": needs finite x, y and z; skipped")
+            else
+                -- THE SAVED PLACEMENT WINS OVER THE SURVEY. `Store.For` answers
+                -- the row's own numbers when nothing was saved, so a fresh
+                -- install and one whose store was deleted behave the same, and
+                -- the line says which of the two is in force.
+                local placement, origin = VenueStore.For(venuePlacements, record, spec)
+                local position = { x = placement.x, y = placement.y, z = placement.z,
+                    bucket = placement.bucket }
+                local entry, reason = spawn(record, position, placement.yaw, spec.url, nil, record)
+                if entry == nil then
+                    print("[open77_media] " .. where .. " refused: " .. tostring(reason))
+                else
+                    started = started + 1
+                    print(string.format("[open77_media] %s placed: television %d (%s) at %.2f,%.2f,%.2f yaw=%.1f (%s spot)",
+                        where, entry.id, entry.record, entry.position.x, entry.position.y,
+                        entry.position.z, entry.yaw, origin))
+                end
+            end
+        end
+    end
+
+    if started > 0 then broadcast(nil) end
+    print(string.format("[open77_media] %d of %d venue set(s) placed", started, #specs))
+end
+
+loadVenuePlacements()
+
+if type(CreateThread) == "function" then
+    CreateThread(startVenueSets)
+end
 
 print("open77_media ready -- " .. tostring(#Open77MediaCatalogue()) .. " television records")

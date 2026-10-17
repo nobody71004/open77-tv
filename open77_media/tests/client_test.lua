@@ -926,6 +926,24 @@ panel.events["remote:action"]({ action = "rotate", direction = "right", degrees 
 check(forwarded() ~= nil and forwarded()[2] == "rotate" and forwarded()[3].degrees == 15,
     "a turn does too")
 
+-- THE VENUE PIN carries the set and NOTHING else. SAVE THIS SPOT keeps the spot
+-- the screen already stands on and IN FRONT OF ME has the server read where this
+-- player stands and faces, so a page cannot name a spot to keep -- the numbers a
+-- payload might carry are dropped on purpose.
+sent = {}
+panel.events["remote:action"]({ action = "pinHere", x = 5.0, y = 5.0, z = 5.0, yaw = 10.0 })
+check(forwarded() ~= nil and forwarded()[2] == "pinHere" and forwarded()[3].id == 20
+    and forwarded()[3].x == nil and forwarded()[3].yaw == nil,
+    "SAVE THIS SPOT names the set and no coordinates")
+
+sent = {}
+panel.events["remote:action"]({ action = "pinFront", x = 5.0, y = 5.0, z = 5.0, yaw = 10.0 })
+check(forwarded() ~= nil and forwarded()[2] == "pinFront" and forwarded()[3].id == 20
+    and forwarded()[3].x == nil and forwarded()[3].z == nil,
+    "and IN FRONT OF ME does not let the page place the screen either")
+check(forwarded() ~= nil and forwarded()[3].yaw == 45.0,
+    "the facing it offers is the character's own, not the page's guess")
+
 -- The id is the client's, even when the page claims another: the page cannot see
 -- distances, and a panel free to name a set could drive one across the map.
 sent = {}
@@ -983,6 +1001,25 @@ handlers["open77:media:catalogue"]({ { id = "tv.16x9", label = "Television" } })
 local catalogue = panel ~= nil and lastSent(panel, "remote:catalogue") or nil
 check(catalogue ~= nil and catalogue.catalogue[1].id == "tv.16x9",
     "the record list reaches the panel")
+
+-- A venue screen reaches the panel WITH its record key. That is what makes the
+-- page offer SAVE THIS SPOT for the screens a restart brings back and hide it on
+-- a set somebody rolled in -- the difference between scenery and a session.
+local venueSpec = spawn(21, "prop-21", 4.0)
+venueSpec.quad = { offset = { 0.0, 0.0, 16.553793 }, right = { 1.0, 0.0, 0.0 },
+    up = { 0.0, 0.0, 1.0 }, width = 45.72, height = 26.0131 }
+venueSpec.reach = 30.5612
+venueSpec.venue = "cinema.150ft.watchparty"
+handlers["open77:media:snapshot"]({ venueSpec })
+pcall(threads[1])
+local venueState = panel ~= nil and lastSent(panel, "remote:state") or nil
+check(venueState ~= nil and venueState.target ~= nil
+    and venueState.target.venue == "cinema.150ft.watchparty",
+    "a venue screen is named to the panel, so the page can offer the pin")
+sent = {}
+panel.events["remote:action"]({ action = "pinHere" })
+check(forwarded() ~= nil and forwarded()[2] == "pinHere" and forwarded()[3].id == 21,
+    "and the pin is addressed to that set")
 
 -- Walking away from every set leaves the panel OPEN and pointed at nothing: that
 -- is the spawn view, and a panel that closed itself would be a panel a player has

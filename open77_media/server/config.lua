@@ -84,6 +84,17 @@ MediaServerConfig = {
     -- Relative to the resource's own `data/` directory.
     dataFile = "adblock.json",
 
+    -- Where a venue screen's SAVED placement is kept, relative to `data/`.
+    --
+    -- `MediaVenueSets` below is the survey; this file is what an operator last
+    -- said about where one of those screens actually belongs. The panel's SAVE
+    -- THIS SPOT writes it; the next start reads it and spawns the venue there
+    -- instead of at the coordinates below. Deleting the file is how an operator
+    -- goes back to the survey -- there is no second copy of the saved numbers in
+    -- this file, on purpose (see the ad-blocklist note above: two owners is how
+    -- removing a rule appears to do nothing).
+    venueDataFile = "venue-sets.json",
+
     -- The seed. One entry per line, quoted, exactly as an operator would type it
     -- at `media.adblock.add`. Empty by default: a server that has not been told
     -- anything should not be blocking anything, and every entry here is one an
@@ -98,5 +109,61 @@ MediaServerConfig = {
     -- happens to be using this month.
     tokens = {
         -- "popads",
+    },
+}
+
+-- =============================================================================
+-- SCREENS THAT ARE PART OF THE WORLD
+-- =============================================================================
+-- Every other television in this resource is a SESSION: a player opens the panel
+-- and puts one down, and it is gone at the next restart. That is right for a TV
+-- somebody rolls into a garage and wrong for a place -- a venue's screen is
+-- scenery, not an action, and a venue whose screen has to be re-placed after
+-- every restart is a venue with a daily chore.
+--
+-- VENUE_SETS are spawned once, at start, at the coordinates written here. They
+-- are ordinary sets afterwards: `media.list` numbers them, the panel drives them,
+-- `media.place` nudges them, and a watch party claims one exactly as it claims a
+-- hand-placed screen. Nothing else changes, which is why this is a config list and
+-- not a second kind of television.
+--
+-- HOW TO CAPTURE ONE. Stand where the screen should go, FACE THE WAY THE PICTURE
+-- SHOULD LOOK, and copy the position and heading the panel shows (or run
+-- `/opx.admin.self.pos`); a set faces along its own +Y, so a screen meant to be
+-- looked at from the south takes a yaw pointing north. The menu spot of a venue's
+-- garage in `config/garages.lua` is the audience's side, so the panel's yaw is
+-- that heading PLUS 180 -- a screen at the arrival point faced the wrong way is a
+-- black rectangle the audience has to walk behind.
+--
+-- A set whose record is `cinema.*.watchparty` shows the watch party's page: leave
+-- `url` out, and the party that is started on it supplies the picture.
+--
+-- Any argument that is not a finite number, or a record the catalogue does not
+-- carry, is refused with a line at start -- the same rule every other config here
+-- follows: a typo costs a boot line, never a screen that silently is not there.
+MediaVenueSets = {
+    -- THE WATCH-PARTY VENUE, on the hill south-east of the arrival point.
+    --
+    -- The captured spot is the AUDIENCE's: -55.30, 2008.49, 101.02, facing
+    -- 141.3 (the same point `config/spawn.lua` and `config/garages.lua` hold).
+    -- A 45.7 m panel centred on it would swallow the players standing there, so
+    -- the hang point is derived the way the panel path derives one: the record's
+    -- own hanging distance (30.56 m -- `Open77MediaPlacement.FacingDistance` for
+    -- this quad) along the arrival facing, and `yaw` = that facing + 180, which
+    -- is `FacingYaw` for a +Y panel. The ground at the hang point was read from
+    -- the world editor (101.22 m, against 101.02 at the audience).
+    --
+    -- LINE IT UP FROM THE F5 PANEL, THEN SAVE IT: the panel's SAVE THIS SPOT
+    -- action takes where the screen stands now (and which way it faces) and
+    -- writes it to `data/venue-sets.json`, which is read at the next start in
+    -- place of the numbers below. `media.move`/`media.rotate` line it up without
+    -- saving; the panel is the one step that makes it permanent.
+    --
+    -- The numbers below are still the SURVEY: what a fresh install -- or one
+    -- whose `data/venue-sets.json` was deleted -- starts from.
+    {
+        record = "cinema.150ft.watchparty",
+        x = -74.41, y = 1984.64, z = 101.22,
+        yaw = 321.3,
     },
 }

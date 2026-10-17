@@ -21,7 +21,7 @@
 -- as a file -- though a client whose television shows it holds the link, which is
 -- what the viewer password is for.
 resource "opx_tvbrowser"
-version "1.0.2"
+version "1.0.3"
 open77_version ">=0.0.1"
 auto_start true
 
@@ -38,4 +38,11 @@ files { "tests/run.lua" }
 permissions {
     -- The commands' answers and the requests to open77_media.
     "network.events",
+
+    -- `Open77.acl.isAllowed`, asked by `/browser`'s admin gate (server/main.lua).
+    -- Without this grant the host installs no `Open77.acl` table, the wrapped
+    -- read raises, and the gate refuses every player -- admins included -- with
+    -- "the shared browser is admin-only on this server". The function name was
+    -- corrected once already; the missing grant is why it still refused.
+    "acl.read",
 }

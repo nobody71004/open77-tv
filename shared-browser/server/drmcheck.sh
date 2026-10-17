@@ -14,7 +14,7 @@ navigator.requestMediaKeySystemAccess("com.widevine.alpha",[{initDataTypes:["cen
 </script></body></html>
 HTML
 echo "{}" > "$T/empty-policy.json"
-for IMG in ghcr.io/m1k1o/neko/chromium:3 open77/tvbrowser-chromium:1; do
+for IMG in ghcr.io/m1k1o/neko/chromium:3 open77/tvbrowser-chromium:7; do
   out=$(timeout 90 docker run --rm --shm-size 512m -v "$T:/srv/eme:ro" \
     -v "$T/empty-policy.json:/etc/chromium/policies/managed/policies.json:ro" --entrypoint sh "$IMG" -c \
     "cd /srv/eme && (python3 -m http.server 8000 >/dev/null 2>&1 &) && sleep 1 && chromium --headless=new --no-sandbox --disable-gpu --virtual-time-budget=10000 --dump-dom http://127.0.0.1:8000/eme.html 2>/dev/null" \

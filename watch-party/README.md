@@ -36,8 +36,10 @@ cd extension && node tests/e2e.mjs                # a real Chromium with the ext
 
 ## Where it runs
 
-The resource is on XBUNIVERSE staging, behind the web server at
-`https://xbuniverse.duckdns.org/opx-watch-xb-staging/`, which is the address the
-extension talks to by default (its popup can be pointed at another path on the
-same host). The extension is ready for the stores (1.0.1); until it is listed,
+The resource is on both XyberRP servers on the machine (2026-10-16/17), behind the
+web server: staging at `https://xbuniverse.duckdns.org/opx-watch-xb-staging/` and
+production at `https://xbuniverse.duckdns.org/opx-watch-xb/` (each server's own
+`opx_watchparty_public_base` convar names its path). The staging address is the
+one the extension talks to by default (its popup can be pointed at another path
+on the same host). The extension is ready for the stores (1.0.1); until it is listed,
 it is installed by hand (extension/README.md).

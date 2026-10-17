@@ -297,6 +297,21 @@ each one is in the suites as well as in the code:
   `tests/MediaPlacementIntegrationTests.cs` drives the path end to end through
   the real resource host and the real prop registry — the fourth seam, where a
   command can report success while the registry still holds the old transform.
+* **A venue's screen keeps the spot an operator gave it.** The screens in
+  `MediaVenueSets` are scenery: they come back after every restart, at the
+  coordinates in `server/config.lua` — which are a one-off survey, and a survey is
+  wrong in the one place that matters (the drive-in shipped a few metres off).
+  Lining one up used to last until the next restart unless somebody copied the
+  numbers back into a Lua file by hand. The F5 panel now has two controls on
+  those sets: **SAVE THIS SPOT** writes the place the nudge pad left the screen
+  in, and **IN FRONT OF ME** takes the coarse step — stand where the audience
+  sits, face the wall, and the screen is put the record's own hanging distance
+  ahead, facing back — then saves that. The spot is `data/venue-sets.json`
+  (`server/venuesets.lua`, one record key per venue), read at start in place of
+  the survey; deleting the file is how an operator goes back to it. Both actions
+  take the position from the server's own read of the player, so a page cannot
+  name a spot to keep, and both are refused on a session set, which has no next
+  start (`tests/venuesets_test.lua`).
 * **A page no longer outlives its world.** The native half releases every screen
   when the world goes away; this resource is *not* stopped by a world change. That
   mismatch composited a television over the next loading screen. The client now

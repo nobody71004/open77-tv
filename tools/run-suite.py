@@ -45,18 +45,22 @@ RECORDS = "open77_media/shared/records.lua"
 PLACEMENT = "open77_media/shared/placement.lua"
 KEYS = "open77_media/shared/keys.lua"
 CLOCK = "open77_media/shared/clock.lua"
+ACL = "open77_media/shared/acl.lua"
 SUITE = "open77_media/tests/records_test.lua"
 PLACEMENT_SUITE = "open77_media/tests/placement_test.lua"
 KEYS_SUITE = "open77_media/tests/keys_test.lua"
 CLOCK_SUITE = "open77_media/tests/clock_test.lua"
+ACL_SUITE = "open77_media/tests/acl_test.lua"
 ADBLOCK_SUITE = "open77_media/tests/adblock_test.lua"
 CLIENT_SUITE = "open77_media/tests/client_test.lua"
 LINKED_SUITE = "open77_media/tests/linked_test.lua"
+VENUESETS_SUITE = "open77_media/tests/venuesets_test.lua"
 SERVER_CONFIG = "open77_media/server/config.lua"
 SERVER_ADBLOCK = "open77_media/server/adblock.lua"
+SERVER_VENUESETS = "open77_media/server/venuesets.lua"
 RESOURCE = "open77_media"
 
-# The seven pure suites, in the order they have to run.
+# The pure suites, in the order they have to run.
 #
 # The catalogue suite comes first because it is the only one that needs the
 # admin alias list. The ad-block suite is the server's half of a policy the
@@ -68,12 +72,17 @@ RESOURCE = "open77_media"
 # the game -- a suite that ran after it would see those instead of nothing.
 # `tools/lua-test/run.lua` in the monorepo makes the same point.
 SUITES = [
+    ("open77_media / acl", [ACL], ACL_SUITE),
     ("open77_media / records", [RECORDS], SUITE),
     ("open77_media / placement", [PLACEMENT], PLACEMENT_SUITE),
     ("open77_media / clock", [CLOCK], CLOCK_SUITE),
     ("open77_media / adblock", [SERVER_CONFIG, SERVER_ADBLOCK], ADBLOCK_SUITE),
-    ("open77_media / keys", [RECORDS, PLACEMENT, KEYS, CLOCK, SERVER_CONFIG, SERVER_ADBLOCK], KEYS_SUITE),
-    ("open77_media / linked", [RECORDS, PLACEMENT, KEYS, CLOCK, SERVER_CONFIG, SERVER_ADBLOCK], LINKED_SUITE),
+    ("open77_media / keys", [RECORDS, PLACEMENT, KEYS, CLOCK, SERVER_CONFIG, SERVER_ADBLOCK,
+                             SERVER_VENUESETS], KEYS_SUITE),
+    ("open77_media / linked", [RECORDS, PLACEMENT, KEYS, CLOCK, SERVER_CONFIG, SERVER_ADBLOCK,
+                               SERVER_VENUESETS], LINKED_SUITE),
+    ("open77_media / venuesets", [RECORDS, PLACEMENT, KEYS, CLOCK, SERVER_CONFIG, SERVER_ADBLOCK,
+                                  SERVER_VENUESETS], VENUESETS_SUITE),
     ("open77_media / client", [RECORDS], CLIENT_SUITE),
 ]
 
@@ -152,6 +161,75 @@ def refresh_fixture(lua, checkout):
     return 0
 
 
+# ── the manifests ──────────────────────────────────────────────────────────────
+# `Open77.acl` IS INSTALLED PER RESOURCE, and only for a resource whose manifest
+# declares `acl.read`. open77_media asks it for the admin-only panel switch and
+# the screen-lock (`shared/acl.lua`); opx_tvbrowser asks it for `/browser`'s gate
+# (`server/main.lua`). Both shipped without the line, so the host handed them no
+# `acl` table, the wrapped read raised, and every player -- the owner holding
+# `command.media.lock` included -- was told the panel was admin-only. The failure
+# was invisible from Lua because the question and the refusal both look correct
+# from inside; only the manifest was wrong. A Lua suite cannot read a manifest,
+# so the check lives here, where the suite is run.
+ACL_READ = "acl.read"
+ACL_ASKERS = [
+    ("open77_media", HERE / "open77_media" / "open77.lua", "shared/acl.lua"),
+    ("opx_tvbrowser", HERE / "shared-browser" / "opx_tvbrowser" / "open77.lua",
+     "server/main.lua"),
+]
+
+
+def permissions_block(manifest):
+    """The body of the manifest's `permissions { ... }` block, or None.
+
+    Counted rather than matched, and with the `--` comments stripped before the
+    count: the block is full of comment prose that may itself contain braces (the
+    `acl.read` note in open77_media mentions `Open77.acl` and a `}`), and a count
+    that reads those would close the block early and report a grant that is
+    written below one as missing.
+    """
+    lines = manifest.read_text(encoding="utf-8").splitlines()
+    depth = 0
+    body = []
+    inside = False
+    for line in lines:
+        code = line.split("--", 1)[0]
+        if not inside:
+            if code.strip().startswith("permissions") and "{" in code:
+                inside = True
+                depth = code.count("{") - code.count("}")
+            continue
+        depth += code.count("{") - code.count("}")
+        body.append(code)
+        if depth <= 0:
+            break
+    return "\n".join(body) if inside else None
+
+
+def check_manifests():
+    """Every manifest that asks the ACL declares the grant that installs it."""
+    failures = []
+    for name, manifest, asker in ACL_ASKERS:
+        if not manifest.exists():
+            failures.append(f"{name}: {manifest} is missing")
+            continue
+        block = permissions_block(manifest)
+        if block is None:
+            failures.append(f"{name}: open77.lua has no permissions block")
+        elif f'"{ACL_READ}"' not in block:
+            failures.append(
+                f"{name}: asks the ACL in {asker} but does not declare "
+                f"\"{ACL_READ}\" -- the host installs no Open77.acl, and every "
+                f"player is refused")
+    for line in failures:
+        print(f"  FAIL: {line}", file=sys.stderr)
+    if failures:
+        print("manifests: FAIL", file=sys.stderr)
+    else:
+        print(f"manifests: {len(ACL_ASKERS)} checked, {ACL_READ} declared by every ACL asker")
+    return not failures
+
+
 def main():
     parser = argparse.ArgumentParser(description="Run the open77_media suite.")
     parser.add_argument("--lua", help="Lua 5.4 interpreter to use")
@@ -160,6 +238,11 @@ def main():
     parser.add_argument("--refresh-fixture", action="store_true",
                         help="rewrite the vendored snapshot and exit")
     args = parser.parse_args()
+
+    manifests_ok = check_manifests()
+    if not manifests_ok:
+        print("open77_media: FAIL", file=sys.stderr)
+        return 1
 
     lua = find_lua(args.lua)
 
@@ -197,7 +280,7 @@ def main():
         chunk = []
         # The client, key and linked suites are the ones that need to know where the
         # resource lives, and they read that from a global rather than from the CWD.
-        if suite in (CLIENT_SUITE, LINKED_SUITE, KEYS_SUITE):
+        if suite in (CLIENT_SUITE, LINKED_SUITE, KEYS_SUITE, VENUESETS_SUITE):
             chunk.append(f"OPEN77_REPO_ROOT = {lua_literal(staged)}\n")
         for path in preload:
             chunk.append(f"assert(loadfile({lua_literal(HERE / path)}))()\n")

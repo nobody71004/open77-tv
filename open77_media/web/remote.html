@@ -121,6 +121,33 @@
         <button class="btn" data-turn="left" type="button" title="Turn 15 degrees left">&#8634;</button>
         <button class="btn" data-turn="right" type="button" title="Turn 15 degrees right">&#8635;</button>
       </div>
+      <!-- THE VENUE PIN, on the sets that are part of the world.
+
+           A venue screen (`MediaVenueSets` in server/config.lua) comes back after
+           every restart, at the coordinates in that file -- so lining one up with
+           the nudge pad used to be work that lasted until the next restart unless
+           somebody copied the numbers into a Lua file by hand. These are the
+           controls that outlive the session:
+
+             SAVE THIS SPOT  -- writes where the screen stands NOW (after the
+                                nudge pad, or wherever a capture left it) to
+                                `data/venue-sets.json`.
+             IN FRONT OF ME  -- the coarse step first: stand where the audience
+                                sits, face the wall, and the screen is put the
+                                record's own hanging distance ahead, facing back,
+                                then saved. A 45.7 m panel is not lined up 0.25 m
+                                at a time.
+
+           Both take their numbers from the server's own state; the page sends
+           neither a position nor a facing. Hidden for a session set, which has
+           no next start. -->
+      <div class="row" id="pin-row" hidden>
+        <button class="btn primary wide" id="pin" type="button"
+                title="Save this screen's current spot as its permanent place: it comes back here after a restart">SAVE THIS SPOT</button>
+        <button class="btn wide" id="pin-front" type="button"
+                title="Stand where the audience sits, face the wall: the screen is placed the record's own distance ahead, facing back, and saved">IN FRONT OF ME</button>
+      </div>
+
       <div class="row">
         <button class="btn danger wide" id="remove" type="button">REMOVE THIS SET</button>
       </div>

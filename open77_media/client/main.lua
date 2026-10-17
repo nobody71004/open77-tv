@@ -1233,6 +1233,10 @@ local function remoteState()
             distance = entry.distance,
             reach = entryReach(entry),
             materialised = entry.materialised == true,
+            -- The venue record this set stands for, or nil. Only a venue screen
+            -- can be pinned: the panel offers SAVE THIS SPOT for the sets that
+            -- come back after a restart, not for one somebody rolled in.
+            venue = entry.spec.venue,
         }
     elseif remoteNearest ~= nil and remoteNearest.distance ~= nil then
         -- Nothing is drivable, so the panel is told what IS near and why it is
@@ -1677,6 +1681,21 @@ local function createRemote()
         elseif action == "rotate" then
             TriggerServerEvent("open77:media:control", "rotate", { id = id,
                 direction = tostring(payload.direction or ""), degrees = tonumber(payload.degrees) })
+        elseif action == "pinHere" then
+            -- The page sends NO numbers: the set stays where it is and the server
+            -- writes the spot it already holds. A placement a client could name
+            -- would be a screen any client could put anywhere and keep there.
+            TriggerServerEvent("open77:media:control", "pinHere", { id = id })
+        elseif action == "pinFront" then
+            -- The POSITION is the server's own read of this player; the facing is
+            -- offered the way `spawn` offers one, because the engine publishes a
+            -- character's yaw here and not, on every build, to the server. The
+            -- server prefers its own read and clamps whatever arrives.
+            local character = Open77.character.state()
+            TriggerServerEvent("open77:media:control", "pinFront", {
+                id = id,
+                yaw = type(character) == "table" and character.yaw or nil,
+            })
         elseif action == "remove" then
             TriggerServerEvent("open77:media:control", "remove", { id = id })
         else
