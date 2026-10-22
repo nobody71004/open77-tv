@@ -82,6 +82,71 @@ front. It prints the sender and receiver URLs with the token. Files:
 - `deploy/relay.service` — systemd unit (hardened, unprivileged).
 - `deploy/Caddyfile` — Caddy 2 HTTPS + WebSocket proxy.
 
+For the game box, which already has nginx on `xbuniverse.duckdns.org` instead of
+Caddy, the installers are `deploy/install-live-nginx.sh` (the shared relay) and
+`deploy/install-f2077.sh` (f2077's own — see the next section).
+
+## The two relays on the game box
+
+The xbuniverse box runs **two** of these relays, one per game server, so that a
+link handed to one server's players cannot join the other server's channel. They
+are separate processes with their own port, path, token and channel — nothing is
+shared between them but the `mirror` user and the TURN/STUN settings:
+
+| | shared (XyberRP) | f2077 |
+|---|---|---|
+| service | `open77-mirror.service` | `open77-mirror-f2077.service` |
+| code | `/opt/open77-screen-mirror` | `/opt/open77-screen-mirror-f2077` |
+| listens on | `127.0.0.1:8787` | `127.0.0.1:8788` |
+| public path | `https://xbuniverse.duckdns.org/screen-mirror/` | `https://xbuniverse.duckdns.org/screen-mirror-f2077/` |
+| channel | `WORK` | `F2077` |
+| token file (root-only) | `/root/.open77-mirror-token` | `/root/.open77-mirror-f2077-token` |
+| feeds the cinemas of | `open77-xbuniverse` (`/opt/open77-xbuniverse/.../opx_screenmirror/server/config.lua`) | `open77-f2077` (`/opt/open77-f2077/.../opx_screenmirror/server/config.lua`) |
+| installed by | `deploy/install-live-nginx.sh` | `deploy/install-f2077.sh` |
+
+**Why the token has to be per server.** The token is the only thing that makes a
+channel unwatchable by everyone who merely knows its name. With one token for two
+servers on the same box, a player handed f2077's capture link could join XyberRP's
+channel by guessing `WORK` — and the reverse. Each token lives in a root-only file
+in `/root` and never lands in this repository. `install-f2077.sh` prints its links
+with a placeholder for the token; `install-live-nginx.sh` prints the full sender
+and viewer URLs once, at install — treat that scrollback as a secret.
+
+Both relays run as the unprivileged `mirror` user and read their TURN/STUN
+settings from `/etc/open77-mirror.env`; both are mounted in front of the same
+nginx site, additively, by inserting their `location` before its final 404. They
+differ in how far they go: `install-f2077.sh` backs the site up to
+`/opt/open77-backups`, puts it back if `nginx -t` refuses the new block, and then
+proves the new path answers through nginx; `install-live-nginx.sh` backs the site
+up beside itself, runs `nginx -t` and reloads, and proves only the relay's own
+loopback `/health` — so check `https://xbuniverse.duckdns.org/screen-mirror/health`
+after running it.
+
+Writing the game's side is the one thing the two installers do differently:
+`install-f2077.sh` writes f2077's `opx_screenmirror` config from its token itself
+(0600 root:root, previous file kept under `/opt/open77-backups`), while
+`install-live-nginx.sh` only installs the relay and prints the sender and viewer
+links — XyberRP's config was written from that token when the relay was first set
+up. Restarting the game server is what picks either up.
+
+A difference worth knowing before re-running either: `install-f2077.sh` **reuses**
+its token file when one exists, while `install-live-nginx.sh` takes
+`MIRROR_TOKEN=` or generates a new one — re-running it as-is rotates the shared
+token, so XyberRP's config has to be written again from the new one (the f2077
+relay and its token are not touched either way).
+
+Health, one line each, from the box (both measured 200 on 2026-10-22, and
+`/healthz` still answering):
+
+```bash
+curl --resolve xbuniverse.duckdns.org:443:127.0.0.1 https://xbuniverse.duckdns.org/screen-mirror/health
+curl --resolve xbuniverse.duckdns.org:443:127.0.0.1 https://xbuniverse.duckdns.org/screen-mirror-f2077/health
+```
+
+In game, the capture cinemas (`cinema.100ft.capture`, `cinema.150ft.capture`,
+`linkFrom = "opx_screenmirror"`) are put up with whichever server's config that
+server runs: `WORK` on XyberRP, `F2077` on f2077.
+
 ## Using it
 
 1. On the **work PC**, open the sender URL in a browser and pick the screen:
