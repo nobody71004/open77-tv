@@ -346,6 +346,7 @@ three numbers they take:
 | --- | --- | --- | --- | --- | --- |
 | staging | `/opt/open77-tvbrowser` | `open77-tvbrowser-xbs` | `/tv-browser-xb-staging` | `127.0.0.1:18080` | `59100` |
 | production | `/opt/open77-tvbrowser-xb` | `open77-tvbrowser-xb` | `/tv-browser-xb` | `127.0.0.1:18081` | `59101` |
+| f2077 | `/opt/open77-tvbrowser-f2077` | `open77-tvbrowser-f2077` | `/tv-browser-f2077` | `127.0.0.1:18082` | `59102` |
 
 Each instance generates its OWN `neko.env` (viewer and admin passwords, API token)
 and its own television link `tv-url.secret`, both root-only, so the two links --
@@ -355,8 +356,9 @@ wipes that browser's own state (sessions, history) and does not touch the other'
 1. Copy `server/` to that role's install dir (root, 700) and run
    `./up.sh [staging|production]` (default staging). The first run generates
    `neko.env` and `tv-url.secret`; later runs reuse them, so the link does not
-   change. It builds `open77/tvbrowser-chromium:7`, checks the image (the four
-   scripts in the client page, the policy, no Widevine baked in) and the host CDM,
+   change. It builds `open77/tvbrowser-chromium:9`, checks the image (the four
+   scripts in the client page, the policy, kiosk and the window manager, the
+   profile library and the DevTools forwarder, no Widevine baked in) and the host CDM,
    and runs the container capped at 4 cores, 4 GB and 2 GB of shared memory, with
    the client on that role's loopback port and WebRTC on that role's port (UDP and
    TCP, published by Docker, so the host's INPUT rules are not changed), plus the
@@ -441,6 +443,34 @@ rebuilt from `build/`; a recreate keeps it.
 The picture is 1280x720 at 30 fps (`NEKO_DESKTOP_SCREEN`); each viewer is one
 WebRTC stream from the server.
 
+## The room's page: sign-in splash, profiles, Android (image 9, 2026-10-22)
+
+Image 9 makes the room a *screen* and gives it a page of its own. It is documented
+where it lives, in `room/README.md`, and in short:
+
+- **Kiosk, full screen.** Chromium runs `--kiosk`, so a cinema shows the page and
+  nothing else -- no tab strip, no address bar. Full screen is the window manager's
+  answer, not Chromium's: the stock image has openbox but never ran it, so the kiosk
+  window opened at Chrome's default 1050x700 in the corner of a 1280x720 screen
+  (measured). `build/openbox.conf` runs it, and the window is 1280x720 at 0,0.
+- **The profile library**, from image 8: Chromium on `--user-data-dir=/profiles/active`,
+  a symlink the room service re-points; profiles are directories on the host, so
+  sign-ins survive a recreated container -- `room/test/e2e-profile-persistence.sh`
+  recreates one with `up.sh` and proves it. Managed at `<room>/profiles`.
+- **The room page** (`open77-room` on the game server, port 8002): the start page
+  every cinema lands on. Sign-in tiles for seven services (with whether the profile
+  has a session), the channels, the profile switcher, the room controls, and
+  **Android** -- the emulator's ws-scrcpy stream, started on demand.
+- **Android with a mouse and a keyboard.** The stream URL carries
+  `captureKeyboard=true`; without it ws-scrcpy leaves keyboard capture off and only
+  the pointer works (measured: Settings' search stayed empty however much was typed).
+  A host presses **Android screen** in the `/watch` panel or types `/watch android`,
+  and the room -- polling that game server's `GET /v1/pending` -- starts the
+  emulator if needed and puts its stream on the cinema screen.
+
+The room service is `room/` (server, pages, unit, install script, tests); it is
+installed per host, not per role, and serves all three rooms.
+
 ## Tests
 
 ```bash
@@ -455,6 +485,16 @@ node tests/tv-page/run.mjs                  # from the repository root: the page
 `server/test/e2e*.sh` run on the server against one role's real container
 (`[staging|production]`, default staging); `e2e-fit.sh` reads the bars in pixels on
 the real page, with the script and without it.
+
+The room service has its own four, run on the server where it runs (see
+`room/README.md`):
+
+```bash
+python3 /opt/open77-room/test/e2e-room.py staging             # 15 checks: state, pages, profiles, navigation, Android
+bash /opt/open77-room/test/e2e-game-request.sh staging        # 5 checks: the game asks, the room puts it up
+bash /opt/open77-room/test/e2e-android-input.sh staging       # 5 checks: a click and typing, asserted in the emulator
+bash /opt/open77-room/test/e2e-profile-persistence.sh staging # 14 checks: the container is recreated, the profile stays
+```
 
 Seen in game, 2026-10-02: the browser cinema from the TV menu, the picture over
 UDP, F8 driving the browser. A Ctrl+V paste is verified end to end on the server;

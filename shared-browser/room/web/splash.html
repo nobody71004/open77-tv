@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Open77 room</title>
+<!--
+  The page a shared browser opens on. It is the room's start page (policies.json
+  in the image), so every browser cinema lands here when it is put up, on the
+  profile that is active.
+
+  Two things live here, both of them controls rather than decoration:
+    - the sign-in board: every service the room knows, whether this profile has
+      a session for it, and the page that asks for one (one click, same tab);
+    - the profile chip: switching re-points the profile library's active link
+      and restarts the room's Chromium, so the sign-ins follow the profile and
+      the page comes back on the one that was chosen.
+
+  Android is a channel here and a request from the game: either way the emulator
+  is started if it is down, and its screen is put on this tab.
+-->
+<style>
+  :root { color-scheme: dark; --edge: #1b2430; --ink: #e8eef7; --dim: #8fa0b8; --hot: #e50914; --ice: #19dfeb; --good: #35d07f; }
+  * { box-sizing: border-box; }
+  html, body { min-height: 100%; margin: 0; }
+  body {
+    background: radial-gradient(1200px 700px at 15% -10%, #1b2a3d 0%, #0a0d13 55%, #05070a 100%);
+    color: var(--ink); font: 16px/1.35 system-ui, "Segoe UI", Roboto, sans-serif;
+    display: flex; flex-direction: column; padding: 16px 28px 10px;
+  }
+  header { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+  .mark { width: 44px; height: 44px; flex: none; }
+  .brand { font-size: 21px; font-weight: 700; letter-spacing: .02em; }
+  .brand span { color: var(--ice); }
+  .spacer { flex: 1; }
+  .clock { font-variant-numeric: tabular-nums; font-size: 15px; color: var(--dim); }
+  .chip { display: inline-flex; align-items: center; gap: 10px; padding: 6px 10px 6px 14px; border-radius: 999px;
+    background: #101a26; border: 1px solid var(--edge); font-size: 15px; }
+  .chip label { color: var(--dim); }
+  select, input { background: #0c141d; color: var(--ink); border: 1px solid var(--edge); border-radius: 8px;
+    padding: 7px 9px; font: inherit; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: #46586f; flex: none; }
+  .dot.on { background: var(--good); box-shadow: 0 0 10px #35d07f88; }
+  .dot.busy { background: #f0b429; box-shadow: 0 0 10px #f0b42988; }
+
+  h1 { font-size: 23px; margin: 14px 0 2px; font-weight: 650; letter-spacing: -.01em; }
+  p.lead { margin: 0 0 12px; color: var(--dim); font-size: 14px; max-width: 92ch; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .12em; color: var(--dim);
+    margin: 14px 0 7px; font-weight: 600; display: flex; align-items: center; gap: 10px; }
+  h2 .count { text-transform: none; letter-spacing: 0; font-weight: 500; color: #5f748c; }
+
+  .board { display: grid; grid-template-columns: repeat(auto-fit, minmax(196px, 1fr)); gap: 9px; }
+  /* Seven services on one row at 1280 wide (the room's screen); narrower, they
+     fall back to as many per row as fit. */
+  #signins { grid-template-columns: repeat(7, minmax(0, 1fr)); }
+  @media (max-width: 1100px) { #signins { grid-template-columns: repeat(auto-fit, minmax(168px, 1fr)); } }
+  button.tile { text-align: left; font: inherit; color: inherit; cursor: pointer; padding: 9px 13px 9px;
+    border-radius: 12px; border: 1px solid var(--edge); background: linear-gradient(160deg, #131d2a 0%, #0d141d 100%);
+    display: flex; flex-direction: column; gap: 2px; transition: border-color .08s ease, transform .08s ease; }
+  button.tile:hover, button.tile:focus-visible { border-color: #35506d; transform: translateY(-1px); outline: none; }
+  button.tile:disabled { opacity: .6; cursor: default; transform: none; }
+  .tile .row { display: flex; align-items: center; gap: 8px; }
+  .tile .name { font-size: 15.5px; font-weight: 650; }
+  .tile .state { font-size: 12px; color: var(--dim); }
+  .tile .state.on { color: #9ff0c2; }
+  .tile .hint { font-size: 12px; color: #62778f; }
+  .tile.primary { border-color: #23415a; background: linear-gradient(160deg, #0f2233 0%, #0b141d 100%); }
+  .tile.primary .name { color: #7fe3ff; }
+  .tile.play { min-height: 62px; justify-content: space-between; }
+  .tile.play .name { font-size: 18px; }
+
+  .bar { display: flex; gap: 9px; flex-wrap: wrap; margin-top: 12px; }
+  button.act { background: #111c27; color: var(--ink); border: 1px solid var(--edge); border-radius: 9px;
+    padding: 7px 13px; font: inherit; font-size: 13px; cursor: pointer; }
+  button.act:hover { border-color: #35506d; }
+  button.act.primary { background: #123243; border-color: #1f5a72; }
+
+  footer { margin-top: auto; padding-top: 12px; display: flex; gap: 16px; align-items: center;
+    flex-wrap: wrap; color: var(--dim); font-size: 13px; }
+  footer a { color: var(--ice); text-decoration: none; }
+  .notice { margin: 0 0 16px; padding: 11px 14px; border-radius: 11px; background: #2a1114;
+    border: 1px solid #5b1d24; color: #ffb9bf; display: none; }
+  .notice.show { display: block; }
+  .toast { position: fixed; right: 26px; bottom: 24px; max-width: 520px; padding: 12px 16px; border-radius: 10px;
+    background: #0f1f18; border: 1px solid #23553a; display: none; font-size: 14px; }
+  .toast.bad { background: #24100f; border-color: #5b1d24; color: #ffc4c8; }
+  .toast.show { display: block; }
+</style>
+</head>
+<body>
+  <header>
+    <svg class="mark" viewBox="0 0 128 128" aria-hidden="true">
+      <rect x="3" y="3" width="122" height="122" rx="20" fill="#0a0d13" stroke="#e50914" stroke-width="6" />
+      <path d="M106.57 79.49A45.3 45.3 0 0 1 42.04 103.62M21.43 48.51A45.3 45.3 0 0 1 85.96 24.38" fill="none" stroke="#19dfeb" stroke-width="6.5" />
+      <path d="M47 39 93 63.5 47 88Z" fill="#e50914" />
+    </svg>
+    <div class="brand">OPEN77<span>ROOM</span></div>
+    <div class="spacer"></div>
+    <div class="chip" title="The browser profile this room is using">
+      <span class="dot" id="profile-dot"></span>
+      <label for="profile">profile</label>
+      <select id="profile" aria-label="Profile this room is using"></select>
+    </div>
+    <div class="clock" id="clock"></div>
+  </header>
+
+  <h1 id="greeting">Sign in, then pick what's on.</h1>
+  <p class="lead">This is the room's own browser on <b id="profile-name">…</b>. Signing in here is signing in on the
+    television: the session stays in the profile, so it is still there when the screen is put up again.
+    Press <b>F8</b> at the screen to take the mouse and keyboard.</p>
+
+  <div class="notice" id="notice"></div>
+
+  <h2>Sign in <span class="count" id="signin-count"></span></h2>
+  <div class="board" id="signins"></div>
+
+  <h2>What's on</h2>
+  <div class="board" id="channels"></div>
+
+  <div class="bar">
+    <button class="act" id="profiles">Manage profiles</button>
+    <button class="act" id="reload">Reload the room</button>
+    <button class="act" id="android-start">Start Android</button>
+    <button class="act" id="back-home">Back to this page</button>
+  </div>
+
+  <footer>
+    <span id="room-line">room</span>
+    <span id="room-url" title="what the room is showing"></span>
+    <span class="spacer"></span>
+    <span id="android-line"></span>
+  </footer>
+
+  <div class="toast" id="toast"></div>
+
+<script>
+(function () {
+  "use strict";
+  var params = new URLSearchParams(location.search);
+  var role = params.get("room") || "production";
+  var state = null;
+  var toastTimer = null;
+
+  function el(id) { return document.getElementById(id); }
+  function toast(text, bad) {
+    var t = el("toast");
+    t.textContent = text;
+    t.className = "toast show" + (bad ? " bad" : "");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { t.className = "toast"; }, 6000);
+  }
+
+  function call(action, extra) {
+    var body = Object.assign({ room: role, action: action }, extra || {});
+    return fetch("/api/action", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (value) {
+        if (!value.ok) { toast(value.error || "refused", true); return value; }
+        toast(action === "open" ? "opening" : action + " done");
+        load();
+        return value;
+      })
+      .catch(function (e) { toast(String(e), true); });
+  }
+
+  function clock() {
+    el("clock").textContent = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  }
+
+  function tile(className, name, hint, stateText, stateOn) {
+    var b = document.createElement("button");
+    b.className = "tile" + (className ? " " + className : "");
+    var row = document.createElement("div");
+    row.className = "row";
+    var dot = document.createElement("span");
+    dot.className = "dot" + (stateOn ? " on" : "");
+    row.appendChild(dot);
+    var n = document.createElement("span");
+    n.className = "name";
+    n.textContent = name;
+    row.appendChild(n);
+    b.appendChild(row);
+    var s = document.createElement("div");
+    s.className = "state" + (stateOn ? " on" : "");
+    s.textContent = stateText;
+    b.appendChild(s);
+    if (hint) {
+      var h = document.createElement("div");
+      h.className = "hint";
+      h.textContent = hint;
+      b.appendChild(h);
+    }
+    return b;
+  }
+
+  function render() {
+    if (!state) return;
+    el("profile-name").textContent = state.profile || "none";
+    el("profile-dot").className = "dot" + (state.profile ? " on" : "");
+    el("room-line").textContent = state.label + " room" + (state.running ? "" : " (down)");
+    el("room-url").textContent = state.roomUrl ? "showing " + state.roomUrl : "";
+
+    var select = el("profile");
+    if (select.dataset.built !== (state.profiles || []).map(function (p) { return p.name; }).join(",")) {
+      select.innerHTML = "";
+      (state.profiles || []).forEach(function (p) {
+        var o = document.createElement("option");
+        o.value = p.name;
+        o.textContent = p.name + (p.services && p.services.length ? " · " + p.services.length + " signed in" : "");
+        select.appendChild(o);
+      });
+      select.dataset.built = (state.profiles || []).map(function (p) { return p.name; }).join(",");
+    }
+    select.value = state.profile || "";
+
+    var signins = el("signins");
+    signins.innerHTML = "";
+    var list = state.signin || [];
+    var on = list.filter(function (s) { return s.signedIn; }).length;
+    el("signin-count").textContent = on + " of " + list.length + " on this profile";
+    list.forEach(function (s) {
+      var b = tile("", s.name, s.signedIn ? "Open the account page" : "Sign in on this profile",
+        s.signedIn ? "signed in" : "not signed in", s.signedIn);
+      b.title = s.url;
+      b.onclick = function () { call("open", { url: s.url }); };
+      signins.appendChild(b);
+    });
+
+    var channels = el("channels");
+    channels.innerHTML = "";
+    (state.channels || []).forEach(function (channel) {
+      var android = channel.id === "android";
+      var text = android
+        ? (state.androidStarting ? "starting the emulator…" : (state.androidDevice ? "running · " + state.androidDevice : "stopped"))
+        : channel.hint;
+      var b = tile("play" + (android ? " primary" : ""), channel.label,
+        android ? "Games · mouse and keyboard" : "",
+        android ? text : (channel.hint || ""), android ? !!state.androidDevice : false);
+      b.onclick = function () {
+        if (android) {
+          b.disabled = true;
+          var s = b.querySelector(".state");
+          s.textContent = "starting the emulator…";
+          call("open", { url: "android" }).then(function (value) {
+            if (value && value.ok) location.href = "/android";
+            else { b.disabled = false; load(); }
+          });
+          return;
+        }
+        call("open", { url: channel.url });
+      };
+      channels.appendChild(b);
+    });
+
+    el("android-line").textContent = state.androidStarting
+      ? "Android emulator: starting"
+      : state.androidDevice ? "Android emulator: " + state.androidDevice : "Android emulator: stopped";
+  }
+
+  function load() {
+    fetch("/api/state?room=" + encodeURIComponent(role))
+      .then(function (r) { return r.json(); })
+      .then(function (value) { state = value; render(); })
+      .catch(function () {});
+  }
+
+  el("profile").addEventListener("change", function (e) {
+    var name = e.target.value;
+    if (!name || (state && name === state.profile)) return;
+    toast("switching to " + name + ": the screen comes back on it");
+    call("use", { profile: name });
+  });
+  el("profiles").addEventListener("click", function () { location.href = "/profiles?room=" + encodeURIComponent(role); });
+  el("reload").addEventListener("click", function () { call("restart"); });
+  el("android-start").addEventListener("click", function () { call("android-start"); });
+  el("back-home").addEventListener("click", function () { location.href = "/?room=" + encodeURIComponent(role); });
+
+  if (params.get("android") === "down") {
+    el("notice").className = "notice show";
+    el("notice").textContent = "The Android screen is not running: Start Android here brings the emulator up (about a minute on a cold boot).";
+  }
+
+  clock();
+  setInterval(clock, 10000);
+  load();
+  setInterval(load, 5000);
+})();
+</script>
+</body>
+</html>

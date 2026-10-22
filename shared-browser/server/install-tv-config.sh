@@ -6,18 +6,20 @@
 # written file is root-only (600) and never ships to clients as a file.
 # Backs up the config it replaces. Prints no secret.
 #
-#   role         link                     game server
-#   staging      /opt/open77-tvbrowser      /opt/open77-xbuniverse-staging
-#   production   /opt/open77-tvbrowser-xb   /opt/open77-xbuniverse
+#   role         link                           game server
+#   staging      /opt/open77-tvbrowser          /opt/open77-xbuniverse-staging
+#   production   /opt/open77-tvbrowser-xb       /opt/open77-xbuniverse
+#   f2077        /opt/open77-tvbrowser-f2077    /opt/open77-f2077
 #
-# USAGE  ./install-tv-config.sh [staging|production]       (default: staging)
+# USAGE  ./install-tv-config.sh [staging|production|f2077]       (default: staging)
 set -euo pipefail
 
 ROLE="${1:-staging}"
 case "$ROLE" in
-  staging)    D=/opt/open77-tvbrowser;    SRV=/opt/open77-xbuniverse-staging ;;
-  production) D=/opt/open77-tvbrowser-xb; SRV=/opt/open77-xbuniverse ;;
-  *) echo "usage: $(basename "$0") [staging|production]"; exit 2 ;;
+  staging)    D=/opt/open77-tvbrowser;        SRV=/opt/open77-xbuniverse-staging ;;
+  production) D=/opt/open77-tvbrowser-xb;     SRV=/opt/open77-xbuniverse ;;
+  f2077)      D=/opt/open77-tvbrowser-f2077;  SRV=/opt/open77-f2077 ;;
+  *) echo "usage: $(basename "$0") [staging|production|f2077]"; exit 2 ;;
 esac
 
 SEC="$D/tv-url.secret"

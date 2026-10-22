@@ -37,7 +37,11 @@ function check(label, ok, detail) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ---- the party server: the resource's own Lua, behind a pipe
-const bridge = spawn("lua5.4", ["tests/e2e_bridge.lua"], { cwd: resourceDir, stdio: ["pipe", "pipe", "inherit"] });
+// `lua5.4` is the name on a Linux server; a Windows checkout installs it as
+// `lua`, and spawn() there cannot run a POSIX script named lua5.4 (EFTYPE), so
+// the interpreter is overridable rather than assumed.
+const bridge = spawn(process.env.LUA || "lua5.4", ["tests/e2e_bridge.lua"],
+  { cwd: resourceDir, stdio: ["pipe", "pipe", "inherit"] });
 let buffered = "";
 const waiting = [];
 bridge.stdout.on("data", (chunk) => {

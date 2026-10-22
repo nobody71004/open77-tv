@@ -184,8 +184,10 @@ check("a self-test party ends after two minutes", t ~= nil and #reg:sweep() == 1
 
 -- ============================================================== http =======
 section("what a browser can ask")
+local handedOut = { id = 7, by = "Matt", at = 1792660000000 }
 local env = { version = "test", encode = Json.encode, decode = Json.decode,
     tvPage = function(code) return WatchTvPage.html(code) end,
+    pending = function() return handedOut end,
     selftest = function() return reg:start(-1, { netflixId = "80057281", title = "Self test", test = true }) end }
 local function call(method, path, body, extra)
     local req = { method = method, path = path, body = body and Json.encode(body) or "", remoteAddress = "203.0.113.9",
@@ -204,6 +206,13 @@ check("anyone with the code reads the party, with the server's clock and CORS op
 check("lower-case codes and the resource prefix are accepted",
     call("GET", "/opx_watchparty/v1/party/" .. hp.code:lower()) == 200)
 check("an unknown party is a 404", call("GET", "/v1/party/ZZZZZZ") == 404)
+local sp, sb = call("GET", "/v1/pending")
+check("the room service reads the newest Android request: its id, who asked and when",
+    sp == 200 and sb.ok == true and sb.id == 7 and sb.by == "Matt" and sb.at == handedOut.at)
+check("and nobody can ask for it over HTTP: only the game's own server event can",
+    call("POST", "/v1/pending") == 405)
+check("the self-test request is refused unless it comes from this machine",
+    call("POST", "/v1/android/selftest") == 403)
 check("a preflight is answered", call("OPTIONS", "/v1/party/" .. hp.code .. "/control") == 204)
 local s2, b2, _, c2 = call("POST", "/v1/party/" .. hp.code .. "/control", { key = hkey, action = "seek", positionMs = 120000 })
 check("a member's browser seeks the party by key (and the server re-broadcasts)",
@@ -347,6 +356,45 @@ Host.clientEvents = {}
 Host.events["opx:watch:cinema"]({})
 check("the panel's Cinema button reaches the same screen",
     lastClient("opx:watch:cinema", 7).args[1].record == "cinema.150ft.watchparty")
+
+-- Android on the room's screen. The room service on this host polls
+-- /v1/pending, so what the game records is exactly what goes on the screen, and
+-- the id is what keeps a restarted room from replaying an old request.
+local function pending()
+    local status, text = nil, nil
+    Host.http({ method = "GET", path = "/v1/pending", remoteAddress = "127.0.0.1", headers = {} },
+        { send = function(s, b) status, text = s, b end })
+    return status, Json.decode(text)
+end
+local ap, ab = pending()
+check("before anyone asks, the room is told there is nothing to put up",
+    ap == 200 and ab.ok == true and ab.id == 0)
+-- From the machine itself, the same request the panel makes (this is what the
+-- end-to-end test uses, and what an operator can use from the box).
+local spStatus, spText = nil, nil
+Host.http({ method = "POST", path = "/v1/android/selftest", remoteAddress = "127.0.0.1", headers = {} },
+    { send = function(s, b) spStatus, spText = s, b end })
+check("the self-test request asks for Android from this machine only",
+    spStatus == 200 and Json.decode(spText).by == "self-test" and Json.decode(spText).id == 1)
+Host.clientEvents = {}
+Host.commands.watch.fn(7, { "android" }, "watch android")
+local _, a1 = pending()
+check("/watch android asks the room for the emulator, and says who asked",
+    a1.id == 2 and type(a1.by) == "string" and a1.at > 0
+        and lastClient("opx:watch:result", 7).args[1].ok == true)
+Host.clientEvents = {}
+Host.commands.watch.fn(7, { "android" }, "watch android")
+local _, a2 = pending()
+check("asking again is a new request, not the same one twice", a2.id == 3)
+_G.source = 8
+Host.events["opx:watch:join"]({ code = ccode })
+Host.clientEvents = {}
+Host.commands.watch.fn(8, { "android" }, "watch android")
+local _, a3 = pending()
+check("a guest cannot take the room's screen from the host",
+    lastClient("open77:command:result", 8).args[2] == false and a3.id == 3)
+_G.source = 8
+Host.events["opx:watch:leave"]({})
 Host.invoker = "open77_media"
 check("the TV menu link answers open77_media while exactly one party runs",
     Host.exports.link() == cbase .. "/v1/tv/" .. ccode)
@@ -480,6 +528,9 @@ check("and neither is another record", lastServer("open77:media:spawn") == nil)
 C.pageEvents["watch:action"]({ action = "cinema" })
 check("the panel's Cinema screen button asks the server",
     lastServer("opx:watch:cinema") ~= nil)
+C.pageEvents["watch:action"]({ action = "android" })
+check("the panel's Android screen button asks the server too",
+    lastServer("opx:watch:android") ~= nil)
 C.server = savedServer
 C.events["opx:watch:panel"](true)
 local last = C.sent[#C.sent]

@@ -33,6 +33,15 @@ local httpRoute, httpReason = nil, nil
 local CINEMA = "cinema.150ft.watchparty"
 local CINEMA_100 = "cinema.100ft.watchparty"
 
+-- "Put the Android emulator on the room's screen": the newest request, and the
+-- only state the room service keeps an eye on (GET /v1/pending, below). A
+-- browser cinema is the one screen that can show it -- the emulator runs on
+-- this host, so only the room's own Chromium on this host can reach its
+-- stream, and the room is streamed to the television over WebRTC. The id only
+-- goes up, so a room that restarts adopts what it finds instead of replaying an
+-- old request, and two rooms never answer the same one twice.
+local android = { id = 0, by = nil, at = 0 }
+
 ---Seeds the generator behind party codes and browser keys. The sandbox
 ---withholds io/os/debug, so there is no wall clock or urandom to read: the
 ---millisecond timer (scheduling jitter lives in its low bits) is mixed with a
@@ -67,6 +76,15 @@ end
 
 local function tvUrl(code)
     return PUBLIC_BASE .. "/v1/tv/" .. code
+end
+
+---Whether this player may take the room's screen: the host of their party, or a
+---player with no party (there is nobody to take it from). A member of someone
+---else's party is told whose it is rather than quietly interrupting the film.
+local function mayTakeTheScreen(source)
+    local party = registry:partyOf(source)
+    if party == nil then return true end
+    return party.host == source
 end
 
 local function connectedPlayers()
@@ -304,6 +322,28 @@ RegisterNetEvent("opx:watch:cinema", function(payload)
     cinemaFor(source, nil, size, nil)
 end)
 
+---Puts Android on the room's screen: the emulator (started by the room if it is
+---stopped) and its stream on the browser cinema in front of the room. The room
+---service polls this server for the request; nothing here holds the room's link.
+local function androidFor(source, raw)
+    if not mayTakeTheScreen(source) then
+        return tell(source, raw, false,
+            "only the host can put Android on the room's screen (or start your own party)")
+    end
+    android.id = android.id + 1
+    android.by = nameOf(source)
+    android.at = nowMs()
+    TriggerClientEvent("opx:watch:result", source, { ok = true,
+        text = "Android on the room's screen: the room switches to the emulator (it starts it if it is stopped)" })
+    return tell(source, raw, true, "Android on the room's screen")
+end
+
+RegisterNetEvent("opx:watch:android", function()
+    local source = source
+    if source == nil then return end
+    androidFor(source, nil)
+end)
+
 -- The watch-party cinemas in the TV menu (open77_media's
 -- `cinema.100ft.watchparty` and `cinema.150ft.watchparty`,
 -- `linkFrom = "opx_watchparty"`) ask for the link when the set is put up. Only
@@ -368,7 +408,8 @@ AddEventHandler("playerDropped", function() forget(source) end)
 
 local HELP = "/watch -- the panel. /watch netflix <link> [title] -- start a party at the TV in front of you. " ..
     "/watch cinema <link> [100] -- start a party and put it on a cinema screen. " ..
-    "/watch play | pause | seek 1:02:03 | +30 | -10 | join <code> | leave | stop | link | status | cinema [100]"
+    "/watch android -- the Android emulator on the room's (browser cinema) screen. " ..
+    "/watch play | pause | seek 1:02:03 | +30 | -10 | join <code> | leave | stop | link | status | cinema [100] | android"
 
 RegisterCommand("watch", function(source, args, raw)
     source = tonumber(source) or 0
@@ -434,6 +475,10 @@ RegisterCommand("watch", function(source, args, raw)
         cinemaFor(source, raw, size, link)
         return
     end
+    if verb == "android" then
+        androidFor(source, raw)
+        return
+    end
     if verb == "link" then
         if registry:partyOf(source) == nil then return tell(source, raw, false, why("not_in_a_party")) end
         TriggerClientEvent("opx:watch:copylink", source, true)
@@ -468,6 +513,13 @@ local httpEnv = {
     encode = function(value) return json.encode(value) end,
     decode = function(text) return json.decode(text) end,
     tvPage = function(code) return WatchTvPage.html(code) end,
+    pending = function() return android end,
+    androidSelftest = function()
+        android.id = android.id + 1
+        android.by = "self-test"
+        android.at = nowMs()
+        return android
+    end,
     selftest = function()
         local party, key = registry:start(-1, { netflixId = "80057281", title = "Self test", test = true,
             name = "self-test" })

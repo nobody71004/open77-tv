@@ -12,7 +12,10 @@
 --                                      answer is the party (followers too)
 --   POST /v1/party/<CODE>/control      a member's browser moves the party
 --                                      (play, pause, seek), by its key
---   GET  /v1/tv/<CODE>                 the page a television shows
+--   GET  /v1/pending                   the newest "Android on the room's
+--                                      screen" request (the room service polls
+--                                      it; id only goes up)
+--   POST /v1/android/selftest           the same request, from this machine only
 --   POST /v1/selftest                  a two-minute test party; from this machine
 --                                      only (not through the web server)
 --
@@ -86,6 +89,35 @@ function WatchHttp.handle(registry, req, env)
         if method ~= "GET" then return json(405, { ok = false, error = "method_not_allowed" }) end
         return json(200, { ok = true, service = "opx_watchparty", version = env.version,
             parties = registry.count, serverMs = registry:now() })
+    end
+
+    -- What the room service on this host asks for: the newest "put Android on
+    -- the room's screen" request. Reading it is public because a television
+    -- showing the room must be able to ask through the web server; asking for
+    -- it is not (it is a server event, host-gated), and the answer is only an
+    -- id, a name and a time.
+    if path == "/v1/pending" then
+        if method ~= "GET" then return json(405, { ok = false, error = "method_not_allowed" }) end
+        local pending = type(env.pending) == "function" and env.pending() or nil
+        return json(200, {
+            ok = true,
+            id = type(pending) == "table" and tonumber(pending.id) or 0,
+            by = type(pending) == "table" and pending.by or nil,
+            at = type(pending) == "table" and tonumber(pending.at) or 0,
+        })
+    end
+
+    -- The same request a host makes from the panel, from this machine only:
+    -- it is how the end-to-end test drives "Android on the room's screen"
+    -- without a player at a keyboard, and how an operator puts the emulator on
+    -- the screen from the box itself. Never through the web server.
+    if path == "/v1/android/selftest" then
+        if method ~= "POST" then return json(405, { ok = false, error = "method_not_allowed" }) end
+        if not WatchHttp.isLocal(req) or env.androidSelftest == nil then
+            return json(403, { ok = false, error = "local_only" })
+        end
+        local pending = env.androidSelftest()
+        return json(200, { ok = true, id = pending.id, by = pending.by })
     end
 
     if path == "/v1/selftest" then

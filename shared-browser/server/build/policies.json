@@ -23,10 +23,10 @@
   "CommandLineFlagSecurityWarningsEnabled": false,
   "ComponentUpdatesEnabled": false,
   "MetricsReportingEnabled": false,
-  "HomepageLocation": "https://www.youtube.com/",
+  "HomepageLocation": "http://172.17.0.1:8002/?room=__ROOM__",
   "RestoreOnStartup": 4,
   "RestoreOnStartupURLs": [
-    "https://www.youtube.com/"
+    "http://172.17.0.1:8002/?room=__ROOM__"
   ],
   "URLAllowlist": [
     "file:///home/neko/Downloads"
@@ -39,8 +39,7 @@
     "127.0.0.1",
     "0.0.0.0",
     "[::1]",
-    "169.254.169.254",
-    "172.17.0.1"
+    "169.254.169.254"
   ],
   "ExtensionInstallForcelist": [
     "ddkjiahejlhfcafbddmgiahcphecmpfh;https://clients2.google.com/service/update2/crx"
@@ -51,5 +50,5 @@
   "ExtensionInstallBlocklist": [
     "*"
   ],
-  "NewTabPageLocation": "https://www.google.com/"
+  "NewTabPageLocation": "http://172.17.0.1:8002/?room=__ROOM__"
 }

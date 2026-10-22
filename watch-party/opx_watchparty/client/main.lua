@@ -310,6 +310,7 @@ local function onAction(payload)
     end
     if action == "leave" then return TriggerServerEvent("opx:watch:leave") end
     if action == "cinema" then return TriggerServerEvent("opx:watch:cinema", {}) end
+    if action == "android" then return TriggerServerEvent("opx:watch:android") end
     if action == "stop" then return TriggerServerEvent("opx:watch:stop") end
     if action == "start" then
         local id, reason = WatchNetflix.parse(tostring(payload.link or ""))

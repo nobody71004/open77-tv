@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Open77 room profiles</title>
+<!--
+  The profile library. A profile is a Chromium user-data directory on the host,
+  mounted into the room at /profiles and used as --user-data-dir=/profiles/active.
+  Switching re-points that symlink and restarts the room's Chromium, so the
+  sign-ins move with the profile instead of dying with a container.
+-->
+<style>
+  :root { color-scheme: dark; --edge: #1b2430; --ink: #e8eef7; --dim: #8fa0b8; --ice: #19dfeb; --bad: #ff8b93; }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 26px 30px 40px; background: #080b10; color: var(--ink);
+    font: 15px/1.45 system-ui, "Segoe UI", Roboto, sans-serif; }
+  header { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; }
+  h1 { font-size: 22px; margin: 0; }
+  .dim { color: var(--dim); }
+  .spacer { flex: 1; }
+  a { color: var(--ice); text-decoration: none; }
+  .rooms { display: flex; gap: 8px; margin: 18px 0 20px; }
+  .rooms button { background: #0e1620; color: var(--dim); border: 1px solid var(--edge); border-radius: 999px;
+    padding: 8px 14px; font: inherit; cursor: pointer; }
+  .rooms button.on { color: var(--ink); border-color: #35506d; background: #14202e; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 12px 10px; border-bottom: 1px solid #131c26; vertical-align: middle; }
+  th { font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: var(--dim); font-weight: 600; }
+  tr.active td { background: #0d1720; }
+  .name { font-weight: 650; }
+  .pill { display: inline-block; font-size: 11px; padding: 3px 8px; border-radius: 999px; border: 1px solid #2b3d52; color: #9fd8ff; margin-left: 8px; }
+  .services { display: flex; gap: 6px; flex-wrap: wrap; }
+  .service { font-size: 11px; padding: 3px 8px; border-radius: 999px; background: #101b26; border: 1px solid var(--edge); color: var(--dim); }
+  .service.on { color: #b8f5d2; border-color: #21543a; background: #0d1f16; }
+  td.actions { text-align: right; white-space: nowrap; }
+  button.act { background: #111c27; color: var(--ink); border: 1px solid var(--edge); border-radius: 8px;
+    padding: 7px 11px; font: inherit; font-size: 13px; cursor: pointer; margin-left: 6px; }
+  button.act:hover { border-color: #35506d; }
+  button.act.primary { background: #123243; border-color: #1f5a72; }
+  button.act.danger { color: var(--bad); }
+  .create { display: flex; gap: 8px; margin: 22px 0 6px; }
+  .create input { background: #0c141d; color: var(--ink); border: 1px solid var(--edge); border-radius: 8px;
+    padding: 9px 11px; font: inherit; min-width: 220px; }
+  .details { margin-top: 26px; padding: 18px 20px; border: 1px solid var(--edge); border-radius: 14px; background: #0b131c; }
+  .details h2 { font-size: 15px; margin: 0 0 10px; }
+  .details dl { display: grid; grid-template-columns: 140px 1fr; gap: 8px 14px; margin: 0; }
+  .details dt { color: var(--dim); }
+  .details dd { margin: 0; word-break: break-all; }
+  .toast { position: fixed; right: 24px; bottom: 24px; max-width: 520px; padding: 12px 16px; border-radius: 10px;
+    background: #0f1f18; border: 1px solid #23553a; display: none; }
+  .toast.bad { background: #24100f; border-color: #5b1d24; color: #ffc4c8; }
+  .toast.show { display: block; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>Room profiles</h1>
+    <span class="dim" id="room-line"></span>
+    <span class="spacer"></span>
+    <a href="/" id="back">Back to the room</a>
+  </header>
+
+  <div class="rooms" id="rooms"></div>
+
+  <table>
+    <thead>
+      <tr><th>Profile</th><th>Signed in</th><th>Cookies</th><th>Size</th><th>Last used</th><th></th></tr>
+    </thead>
+    <tbody id="rows"><tr><td colspan="6" class="dim">loading…</td></tr></tbody>
+  </table>
+
+  <div class="create">
+    <input id="new-name" placeholder="new profile name (house, guest, alice)" maxlength="32" />
+    <button class="act primary" id="create">Create profile</button>
+  </div>
+  <p class="dim" style="font-size:13px">Switching restarts the room's Chromium (the screen goes dark for a few seconds, then the room's
+    page comes back on the new profile). Rename changes the directory, and the active link follows it.
+    Reset clears the sign-ins and keeps the old directory as a hidden backup.</p>
+
+  <section class="details" id="details" hidden>
+    <h2 id="details-title">Profile</h2>
+    <dl id="details-body"></dl>
+  </section>
+
+  <div class="toast" id="toast"></div>
+
+<script>
+(function () {
+  "use strict";
+  var params = new URLSearchParams(location.search);
+  var role = params.get("room") || "production";
+  var state = null, selected = null, toastTimer = null;
+
+  function el(id) { return document.getElementById(id); }
+  function toast(text, bad) {
+    var t = el("toast");
+    t.textContent = text;
+    t.className = "toast show" + (bad ? " bad" : "");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { t.className = "toast"; }, 6000);
+  }
+
+  function call(action, extra) {
+    var body = Object.assign({ room: role, action: action }, extra || {});
+    fetch("/api/action", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
+      .then(function (r) { return r.json(); })
+      .then(function (value) {
+        if (!value.ok) return toast(value.error || "refused", true);
+        toast(action + " done");
+        load();
+      })
+      .catch(function (e) { toast(String(e), true); });
+  }
+
+  function render() {
+    if (!state) return;
+    el("room-line").textContent = state.label + " · " + state.container + " · " + state.chromium;
+
+    var rooms = el("rooms");
+    rooms.innerHTML = "";
+    ["production", "staging", "f2077"].forEach(function (r) {
+      var b = document.createElement("button");
+      b.textContent = r + (state.role === r ? "" : "");
+      if (r === role) b.className = "on";
+      b.onclick = function () { role = r; selected = null; history.replaceState(null, "", "?room=" + r); load(); };
+      rooms.appendChild(b);
+    });
+
+    var rows = el("rows");
+    rows.innerHTML = "";
+    if (!state.profiles.length) {
+      rows.innerHTML = '<tr><td colspan="6" class="dim">no profiles yet: create one below</td></tr>';
+    }
+    state.profiles.forEach(function (p) {
+      var tr = document.createElement("tr");
+      if (p.active) tr.className = "active";
+
+      var name = document.createElement("td");
+      name.innerHTML = '<span class="name"></span>';
+      name.querySelector(".name").textContent = p.name;
+      if (p.active) {
+        var pill = document.createElement("span");
+        pill.className = "pill";
+        pill.textContent = "in use";
+        name.appendChild(pill);
+      }
+      tr.appendChild(name);
+
+      var services = document.createElement("td");
+      var wrap = document.createElement("div");
+      wrap.className = "services";
+      ["Netflix", "YouTube", "Prime Video", "Disney+", "Spotify", "Twitch", "HBO Max"].forEach(function (s) {
+        var span = document.createElement("span");
+        var on = (p.services || []).indexOf(s) !== -1;
+        span.className = "service" + (on ? " on" : "");
+        span.textContent = s;
+        wrap.appendChild(span);
+      });
+      services.appendChild(wrap);
+      tr.appendChild(services);
+
+      var cookies = document.createElement("td");
+      cookies.className = "dim";
+      cookies.textContent = (p.cookies || 0) + "";
+      tr.appendChild(cookies);
+
+      var size = document.createElement("td");
+      size.textContent = p.size;
+      tr.appendChild(size);
+
+      var updated = document.createElement("td");
+      updated.textContent = p.updated;
+      tr.appendChild(updated);
+
+      var actions = document.createElement("td");
+      actions.className = "actions";
+      if (!p.active) {
+        var use = document.createElement("button");
+        use.className = "act primary";
+        use.textContent = "Use";
+        use.onclick = function () { call("use", { profile: p.name }); };
+        actions.appendChild(use);
+      }
+      var details = document.createElement("button");
+      details.className = "act";
+      details.textContent = "Details";
+      details.onclick = function () { selected = p.name; renderDetails(); };
+      actions.appendChild(details);
+      var rename = document.createElement("button");
+      rename.className = "act";
+      rename.textContent = "Rename";
+      rename.onclick = function () {
+        var to = (prompt("New name for " + p.name + " (lower-case letters, digits, - and _)", p.name) || "").trim().toLowerCase();
+        if (to && to !== p.name) call("rename", { profile: p.name, to: to });
+      };
+      actions.appendChild(rename);
+      var reset = document.createElement("button");
+      reset.className = "act";
+      reset.textContent = "Reset";
+      reset.disabled = p.active;
+      reset.onclick = function () { if (confirm("Reset " + p.name + "? Its sign-ins are cleared (the old directory is kept).")) call("reset", { profile: p.name }); };
+      actions.appendChild(reset);
+      var del = document.createElement("button");
+      del.className = "act danger";
+      del.textContent = "Delete";
+      del.disabled = p.active;
+      del.onclick = function () { if (confirm("Delete " + p.name + " for good?")) call("delete", { profile: p.name }); };
+      actions.appendChild(del);
+      tr.appendChild(actions);
+
+      rows.appendChild(tr);
+    });
+    renderDetails();
+  }
+
+  function renderDetails() {
+    var box = el("details");
+    var p = (state.profiles || []).filter(function (x) { return x.name === selected; })[0];
+    if (!p) { box.hidden = true; return; }
+    box.hidden = false;
+    el("details-title").textContent = p.name + (p.active ? " (in use)" : "");
+    var rows = [
+      ["Directory", p.dir || p.name],
+      ["Chromium", state.chromium],
+      ["Signed in", (p.services || []).join(", ") || "nothing detected"],
+      ["Cookies", (p.cookies || 0) + " in this profile's database"],
+      ["Size", p.size],
+      ["Last used", p.updated],
+      ["Showing now", state.roomUrl || "nothing yet"],
+      ["Android emulator", state.androidDevice ? "running · " + state.androidDevice : "stopped"],
+    ];
+    var dl = el("details-body");
+    dl.innerHTML = "";
+    rows.forEach(function (row) {
+      var dt = document.createElement("dt");
+      dt.textContent = row[0];
+      var dd = document.createElement("dd");
+      dd.textContent = row[1];
+      dl.appendChild(dt);
+      dl.appendChild(dd);
+    });
+  }
+
+  function load() {
+    fetch("/api/state?room=" + encodeURIComponent(role))
+      .then(function (r) { return r.json(); })
+      .then(function (value) { state = value; render(); })
+      .catch(function () {});
+  }
+
+  el("create").onclick = function () {
+    var name = el("new-name").value.trim().toLowerCase();
+    if (!name) return toast("give the profile a name", true);
+    call("create", { profile: name });
+    el("new-name").value = "";
+  };
+  el("new-name").addEventListener("keydown", function (e) { if (e.key === "Enter") el("create").click(); });
+  el("back").onclick = function (e) { e.preventDefault(); location.href = "/?room=" + encodeURIComponent(role); };
+
+  load();
+  setInterval(load, 10000);
+})();
+</script>
+</body>
+</html>

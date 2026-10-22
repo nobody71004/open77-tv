@@ -12,8 +12,9 @@ to the game or to another player; the party shares the title and the time.
 
 ```
 opx_watchparty/   the server resource: parties, the /watch panel, the page a
-                  television shows, and the small HTTP API browsers use
-                  (opx_watchparty/README.md)
+                  television shows, the small HTTP API browsers use, and the
+                  one request the host's shared browser answers (Android on the
+                  room's screen) -- opx_watchparty/README.md
 extension/        the Edge / Chrome extension that keeps a viewer's Netflix tab
                   in step (extension/README.md)
 store/            the Edge Add-ons and Chrome Web Store listing: package, text,
@@ -24,7 +25,7 @@ PRIVACY.md        the extension's privacy policy
 ## Tests
 
 ```bash
-cd opx_watchparty && lua5.4 tests/run.lua         # 89 checks: playhead, links, parties, HTTP, both main.lua files,
+cd opx_watchparty && lua5.4 tests/run.lua         # 108 checks: playhead, links, parties, HTTP, both main.lua files,
                                                   # the cinema screen, the TV-menu link and the dice seeding
 cd extension && node tests/sync-core.test.js      # the follower's decisions, against the server's own cases
 cd extension && node tests/e2e.mjs                # a real Chromium with the extension, a stand-in player
