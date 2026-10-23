@@ -1,0 +1,14 @@
+{
+  "name": "open77-mirror-agent",
+  "version": "1.0.0",
+  "description": "Headless screen-mirror sender: captures the screen and streams it over WebRTC with no visible browser.",
+  "main": "main.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "electron .",
+    "check": "node --check main.js && node --check preload.js && node --check renderer.js"
+  },
+  "devDependencies": {
+    "electron": "^31.0.0"
+  }
+}

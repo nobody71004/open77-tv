@@ -4,7 +4,7 @@
 -- client draws), the browser side (Open77.http.listen) and the clock that keeps
 -- parties tidy. The rules are in party.lua and http.lua.
 
-local VERSION = "1.0.1"
+local VERSION = "1.1.0"
 
 local function convar(name, fallback)
     if type(GetConvar) == "function" then
@@ -30,6 +30,46 @@ end
 local registry = WatchParty.new({ clock = nowMs, random = function(n) return math.random(n) end })
 local httpRoute, httpReason = nil, nil
 
+-- The room's own two panels (open77_media's `cinema.100ft` and `cinema.150ft`,
+-- which put up opx_tvbrowser's home screen). A party goes on the same panel by
+-- being vouched for: the record lists this resource in `linkClaimFrom`, so the
+-- party's page wins over the room's link for that one spawn.
+local CINEMA = "cinema.150ft"
+local CINEMA_100 = "cinema.100ft"
+
+-- "Put the Android emulator on the room's screen": the newest request, and the
+-- only state the room service keeps an eye on (GET /v1/pending, below). A
+-- browser cinema is the one screen that can show it -- the emulator runs on
+-- this host, so only the room's own Chromium on this host can reach its
+-- stream, and the room is streamed to the television over WebRTC. The id only
+-- goes up, so a room that restarts adopts what it finds instead of replaying an
+-- old request, and two rooms never answer the same one twice.
+local android = { id = 0, by = nil, at = 0 }
+
+---Seeds the generator behind party codes and browser keys. The sandbox
+---withholds io/os/debug, so there is no wall clock or urandom to read: the
+---millisecond timer (scheduling jitter lives in its low bits) is mixed with a
+---heap address (ASLR), and the first outputs are thrown away. This is
+---prediction resistance for 60-bit single-scope keys that die with their
+---membership -- documented as not-a-CSPRNG in the README -- not a substitute
+---for one, and the tests hand the registry its own dice so none of this
+---touches them.
+local function seedRandom()
+    if type(math.randomseed) ~= "function" then return end
+    local timer = 0
+    if type(GetGameTimer) == "function" then
+        local ok, t = pcall(GetGameTimer)
+        if ok and type(t) == "number" then timer = t end
+    end
+    local addr = tostring({}):match("0[xX](%x+)") or "0"
+    local hash = 0
+    for i = 1, #addr do hash = (hash * 33 + addr:byte(i)) % 4294967296 end
+    local seed = ((math.floor(timer) % 2147483648) * 33 + hash) % 2147483648
+    if seed == 0 then seed = 1 end
+    math.randomseed(seed)
+    for _ = 1, 64 do math.random() end
+end
+
 local function nameOf(player)
     if type(GetPlayerName) == "function" then
         local ok, name = pcall(GetPlayerName, player)
@@ -40,6 +80,15 @@ end
 
 local function tvUrl(code)
     return PUBLIC_BASE .. "/v1/tv/" .. code
+end
+
+---Whether this player may take the room's screen: the host of their party, or a
+---player with no party (there is nobody to take it from). A member of someone
+---else's party is told whose it is rather than quietly interrupting the film.
+local function mayTakeTheScreen(source)
+    local party = registry:partyOf(source)
+    if party == nil then return true end
+    return party.host == source
 end
 
 local function connectedPlayers()
@@ -238,6 +287,122 @@ RegisterNetEvent("opx:watch:stop", function()
         text = party and ("ended watch party " .. party.code) or why(reason) })
 end)
 
+---Puts the player's party on the room's screen: the 150 ft open77-TV-ROOM panel
+---(100 ft with "100") in front of them, showing the party's page instead of the
+---room's home screen. The client spawns it through open77_media, the same way
+---/browser cinema does. With a link (`/watch cinema <netflix-link> [100]`) it
+---starts the party first, so one command goes from a link to a screen -- no
+---party needed beforehand.
+local function cinemaFor(source, raw, size, link)
+    if size ~= "100" and size ~= "150" then
+        TriggerClientEvent("opx:watch:result", source, { ok = false,
+            text = "no " .. tostring(size) .. " cinema: /watch cinema (150 ft) or /watch cinema 100" })
+        return
+    end
+    local party = registry:partyOf(source)
+    if link ~= nil then
+        local started, how = startFor(source, { link = link })
+        if started == nil then
+            tell(source, raw, false, "watch party: " .. why(how))
+            return
+        end
+        party = started
+        tell(source, raw, true, string.format("watch party %s started: %s. Open /watch and press Copy browser link, " ..
+            "then open it in Edge or Chrome with the Open77 Watch Party extension.",
+            party.code, describe(registry:state(party))))
+    end
+    if party == nil then
+        TriggerClientEvent("opx:watch:result", source, { ok = false, text = why("not_in_a_party") })
+        return
+    end
+    TriggerClientEvent("opx:watch:cinema", source,
+        { url = tvUrl(party.code), record = size == "100" and CINEMA_100 or CINEMA })
+end
+
+RegisterNetEvent("opx:watch:cinema", function(payload)
+    local source = source
+    if source == nil then return end
+    local size = type(payload) == "table" and tostring(payload.size or "") or ""
+    if size == "" then size = "150" end
+    cinemaFor(source, nil, size, nil)
+end)
+
+---Puts Android on the room's screen: the emulator (started by the room if it is
+---stopped) and its stream on the browser cinema in front of the room. The room
+---service polls this server for the request; nothing here holds the room's link.
+local function androidFor(source, raw)
+    if not mayTakeTheScreen(source) then
+        return tell(source, raw, false,
+            "only the host can put Android on the room's screen (or start your own party)")
+    end
+    android.id = android.id + 1
+    android.by = nameOf(source)
+    android.at = nowMs()
+    TriggerClientEvent("opx:watch:result", source, { ok = true,
+        text = "Android on the room's screen: the room switches to the emulator (it starts it if it is stopped)" })
+    return tell(source, raw, true, "Android on the room's screen")
+end
+
+RegisterNetEvent("opx:watch:android", function()
+    local source = source
+    if source == nil then return end
+    androidFor(source, nil)
+end)
+
+-- A watch party reaches the room's panels (open77_media's `cinema.100ft` and
+-- `cinema.150ft`) through `claim`: the party's page is vouched for on the spawn
+-- that brings it. The `link` export below is the older way in -- a spawner with
+-- no page of its own, when exactly one real party runs -- and is still answered
+-- only when there is exactly one party, because with two or more the menu cannot
+-- know which is meant (the /watch cinema command names the player's own).
+local function publish(name, fn)
+    if exports == nil then return false end
+    return (pcall(exports, name, fn))
+end
+-- The real parties, in list order: test entries (the extension's end-to-end
+-- stand-ins) never count, here or anywhere a player looks.
+local function realParties()
+    local out = {}
+    for _, state in ipairs(registry:list()) do
+        if state.test == nil then out[#out + 1] = state end
+    end
+    return out
+end
+
+publish("link", function()
+    if GetInvokingResource() ~= "open77_media" then return nil end
+    local real = realParties()
+    if #real ~= 1 then return nil end
+    return tvUrl(real[1].code)
+end)
+
+-- The /watch cinema command names the player's OWN party, which the shared
+-- `link` export cannot choose when several run: open77_media asks `claim` with
+-- the link the spawner brought, and it is answered back only when it is one of
+-- this resource's live party pages. Anything else -- a typed address, another
+-- site, a finished party's page -- is not vouched for, so a watch-party record
+-- can never be pointed at an arbitrary screen.
+publish("claim", function(url)
+    if GetInvokingResource() ~= "open77_media" then return nil end
+    if type(url) ~= "string" then return nil end
+    for _, state in ipairs(realParties()) do
+        if url == tvUrl(state.code) then return url end
+    end
+    return nil
+end)
+
+-- Why `link` answered nil, in the player's words: open77_media forwards the
+-- code when a cinema cannot be put up, so "start a party first" arrives
+-- instead of "linked_resource_unavailable". nil when there is nothing to
+-- explain -- exactly one party running is `link`'s own answer.
+publish("linkWhy", function()
+    if GetInvokingResource() ~= "open77_media" then return nil end
+    local real = realParties()
+    if #real == 0 then return "no_watch_party_running" end
+    if #real > 1 then return "too_many_watch_parties" end
+    return nil
+end)
+
 local function forget(player)
     player = tonumber(player)
     if player == nil then return end
@@ -247,7 +412,9 @@ AddEventHandler("onPlayerDisconnected", function(playerId) forget(playerId) end)
 AddEventHandler("playerDropped", function() forget(source) end)
 
 local HELP = "/watch -- the panel. /watch netflix <link> [title] -- start a party at the TV in front of you. " ..
-    "/watch play | pause | seek 1:02:03 | +30 | -10 | join <code> | leave | stop | link | status"
+    "/watch cinema <link> [100] -- start a party and put it on a cinema screen. " ..
+    "/watch android -- the Android emulator on the room's (browser cinema) screen. " ..
+    "/watch play | pause | seek 1:02:03 | +30 | -10 | join <code> | leave | stop | link | status | cinema [100] | android"
 
 RegisterCommand("watch", function(source, args, raw)
     source = tonumber(source) or 0
@@ -297,6 +464,26 @@ RegisterCommand("watch", function(source, args, raw)
         if party == nil then return tell(source, raw, false, why(reason)) end
         return tell(source, raw, true, "ended watch party " .. party.code)
     end
+    if verb == "cinema" then
+        local size, link = "150", nil
+        for i = 2, #args do
+            local a = tostring(args[i] or "")
+            if a == "100" or a == "150" then
+                size = a
+            elseif link == nil and WatchNetflix.parse(a) ~= nil then
+                link = a
+            else
+                return tell(source, raw, false,
+                    "give a screen size or a Netflix link: /watch cinema [100] or /watch cinema <link> [100]")
+            end
+        end
+        cinemaFor(source, raw, size, link)
+        return
+    end
+    if verb == "android" then
+        androidFor(source, raw)
+        return
+    end
     if verb == "link" then
         if registry:partyOf(source) == nil then return tell(source, raw, false, why("not_in_a_party")) end
         TriggerClientEvent("opx:watch:copylink", source, true)
@@ -331,6 +518,13 @@ local httpEnv = {
     encode = function(value) return json.encode(value) end,
     decode = function(text) return json.decode(text) end,
     tvPage = function(code) return WatchTvPage.html(code) end,
+    pending = function() return android end,
+    androidSelftest = function()
+        android.id = android.id + 1
+        android.by = "self-test"
+        android.at = nowMs()
+        return android
+    end,
     selftest = function()
         local party, key = registry:start(-1, { netflixId = "80057281", title = "Self test", test = true,
             name = "self-test" })
@@ -363,6 +557,7 @@ end
 
 AddEventHandler("onResourceStart", function(name)
     if name ~= GetCurrentResourceName() then return end
+    seedRandom()
     listen()
     if httpRoute then
         print(string.format("[opx_watchparty] ready %s: browsers reach %s (served at %s); televisions show %s/v1/tv/<code>",

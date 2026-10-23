@@ -24,8 +24,58 @@ the title number and where the film is.
    bar, a typed time), from chat, or from their own browser's player: everyone
    follows within about two seconds.
 
-Chat: `/watch netflix <link> [title]`, `/watch play | pause | seek 1:02:03 | +30 |
--10 | join <code> | leave | stop | link | status | help`.
+Chat: `/watch netflix <link> [title]`, `/watch cinema <link> [100]` (starts the
+party AND puts it on a screen -- one command from a link to a cinema), `/watch
+play | pause | seek 1:02:03 | +30 | -10 | join <code> | leave | stop | link |
+status | android | help`, `/watch cinema [100]` (screen for the party you are in),
+`/watch android` (the emulator on the room's screen, below).
+
+## Its own cinema screen
+
+`/watch cinema` puts the player's party on the room's 150 ft panel in front of
+them (`cinema.150ft` in open77_media -- the open77-TV-ROOM record; `100` for the
+100 ft one, and a Cinema screen button in the panel). The same panel from the TV
+menu shows the room's home screen; a party page reaches it because the record
+names `linkClaimFrom = { "opx_watchparty" }`, which makes open77_media ask this
+resource to vouch for the page the spawn brought (`claim` export). /watch cinema
+names the player's own party, so it works even with several running. Either way
+the film never appears on the panel -- every viewer plays it in their own
+browser, on their own Netflix account.
+
+## Android on a cinema screen
+
+The panel has an **Android screen** button (and `/watch android` does the same):
+the Android emulator on the *room's* screen. That is the shared browser cinema on
+the game server -- the emulator runs on that host too, so the room's own Chromium
+is the one screen that can reach its stream, and the television already shows the
+room over WebRTC. Nothing of the room's link is involved, and no player is handed
+a URL.
+
+How it travels: the game records a request (`{ id, by, at }`, the id only goes up)
+and the room service on the host polls `GET /v1/pending` every two seconds. A new
+id and the room starts the emulator if it is stopped, then swaps its tab to
+ws-scrcpy's stream with `captureKeyboard=true` -- so a game played there takes the
+mouse **and** the keyboard. A room that restarts adopts whatever id it finds
+instead of replaying an old request.
+
+Controls: only a party's **host** (or a player with no party) may take the room's
+screen; a guest is told whose party it is rather than quietly interrupting the
+film, and the panel hides the button for them. From the machine itself,
+`POST /v1/android/selftest` makes the same request (that is what the end-to-end
+test drives), and it is refused from anywhere but loopback.
+
+## Where the secrets come from
+
+Nobody signs in anywhere shared: each viewer signs in to their own Netflix
+account in their own browser, and the extension only keeps that browser's player
+where the party is. A member's browser key travels in the link's fragment (never
+sent over the wire), is wiped from the address bar on arrival, dies when the
+membership ends, and moves the party at most 8 times in 10 s. Party codes and
+keys come from a generator seeded once at resource start from the millisecond
+timer mixed with a heap address -- the sandbox withholds io/os/debug, so there
+is no wall clock or urandom to read. That is prediction resistance for 60-bit
+short-lived single-scope secrets, documented here as not-a-CSPRNG, and the
+tests hand the registry its own dice so production seeding never touches them.
 
 ## How it is put together
 
@@ -39,7 +89,7 @@ Chat: `/watch netflix <link> [title]`, `/watch play | pause | seek 1:02:03 | +30
 | `server/main.lua` | wiring: chat commands, the panel's requests, `Open77.http.listen`, the state every client draws |
 | `client/main.lua` | the panel, which television a party goes on (open77_media's set list), "Copy browser link" |
 | `web/panel.*` | the /watch remote |
-| `tests/` | `lua tests/run.lua` (75 checks); `tests/e2e_bridge.lua` serves the extension's end-to-end test |
+| `tests/` | `lua tests/run.lua` (108 checks); `tests/e2e_bridge.lua` serves the extension's end-to-end test |
 
 The television: open77_media owns the sets. A party started at one points that set at
 `<public base>/v1/tv/<CODE>` through open77_media's own control message (the request its
@@ -58,6 +108,8 @@ published under HTTPS by the web server in front of it
 | `POST /v1/party/<CODE>/report` | a browser's own position; answered with the party |
 | `POST /v1/party/<CODE>/control` | `{ key, action: play/pause/toggle/seek/nudge, positionMs, deltaMs }` -- a member's browser, by its key (8 per 10 s) |
 | `GET /v1/tv/<CODE>` | the television page |
+| `GET /v1/pending` | the newest "Android on the room's screen" request: `{ id, by, at }`, id only goes up |
+| `POST /v1/android/selftest` | the same request, from the server machine only (never through the web server) |
 | `POST /v1/selftest` | a two-minute test party with a key; from the server machine only, never through the web server |
 
 Reading a party needs only its code (it is on the TV). Moving one needs a member's

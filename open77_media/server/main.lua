@@ -32,6 +32,19 @@ local media = {}      -- mediaId (number) -> entry
 local nextMediaId = 1
 local byProp = {}     -- prop id (string) -> mediaId
 
+-- The SAVED placements of the world's venue screens, and the writer the panel's
+-- SAVE THIS SPOT action calls. Both are filled in the VENUE SETS section at the
+-- bottom of this file, and declared here because the control handler above it
+-- reads them: a player pressing the button is answered long after this file has
+-- finished loading, so the upvalue is the store, not the empty table below.
+local venuePlacements = {}
+local persistVenuePlacement = function() return false, "venue_store_not_loaded" end
+
+-- The pure half of the store (`server/venuesets.lua`), loaded before this file by
+-- the manifest. Nil rather than an error on a build that lost the line: the venue
+-- screens then simply come up at their surveyed coordinates.
+local VenueStore = type(MediaVenueSetsStore) == "table" and MediaVenueSetsStore or nil
+
 local function output(source, raw, success, text)
     print(text)
     if source ~= nil and source > 0 then
@@ -63,6 +76,25 @@ local function callerPosition(source)
         error(string.format("player %d has no fresh position snapshot", source), 0)
     end
     return position
+end
+
+---Which way a player's body faces, or nil when the host cannot say.
+---
+---`Open77.players.position` answers `{ x, y, z, bucket }` and carries no yaw at
+---all; `Open77.players.get` is the rich read and answers `heading` (or its alias
+---`yaw`) once the slot has reported a snapshot. Nil rather than zero, because
+---zero is a legal facing and a screen saved facing north by accident is exactly
+---the bug the survey had -- a caller that gets nil says so instead.
+---@param source Source
+---@return number|nil degrees, 0..360
+local function callerHeading(source)
+    local api = Open77.players
+    if type(api) ~= "table" or type(api.get) ~= "function" then return nil end
+    local ok, snapshot = pcall(api.get, source)
+    if not ok or type(snapshot) ~= "table" then return nil end
+    local yaw = tonumber(snapshot.heading) or tonumber(snapshot.yaw)
+    if yaw == nil or yaw ~= yaw or yaw == math.huge or yaw == -math.huge then return nil end
+    return yaw % 360.0
 end
 
 -- =============================================================================
@@ -129,6 +161,53 @@ end
 ---id, the record id (for the quad) and the playback state, and nothing else.
 ---No owner, no proposer, no bucket -- a client that wants a bucket wants the
 ---prop registry.
+-- The admin screen-lock's gate. A set is locked by an admin so other players
+-- cannot change the screen somebody is using. Whoever holds this ACE may lock,
+-- unlock and bypass the lock; nobody else may change a locked set. It is the
+-- same ACE the restricted `media.lock` command is gated by (a restricted
+-- `media.lock` command is granted to holders of `command.media.lock`), so giving
+-- an admin that one ACE is the whole story. The server console is always admin.
+local LOCK_ACE = "command.media.lock"
+
+--- Whether this player holds `command.media.lock`.
+-- THE QUESTION LIVES IN `shared/acl.lua`, and this wrapper is only the ACE this
+-- resource asks about. It used to ask `IsPlayerAceAllowed` directly -- FiveM's
+-- name, absent here -- so every player, admins included, was refused and the
+-- panel's one line read "you have to be an admin". See that file for the whole of
+-- the ordering, the fallback and the console rule; its own suite pins them.
+local function isLockAdmin(source)
+    return Open77MediaAcl.Allowed(source, LOCK_ACE)
+end
+
+-- Is the panel a thing this player may drive at all?
+--
+-- The screen-lock above is about ONE set somebody is using. This is about the whole
+-- feature, and it exists because the lock alone is not the boundary an operator who
+-- says "only admins put things on the glass" is asking for: with `adminOnlyControl`
+-- off (the default), any player may spawn, link, move and remove any set that no
+-- admin has locked, and with it on only the holders of the same ACE as the lock may --
+-- `command.media.lock`, which is the ACE an admin is given anyway. A server that wants
+-- its televisions driven by one person sets it in `server/config.lua`.
+--
+-- Answered as { adminOnly, canControl, reason } and sent to each client with its
+-- snapshot, because only the SERVER can ask "may this player" -- a client cannot read
+-- its own ACEs -- and a player whose panel is refused everywhere deserves to be told
+-- why rather than left with controls that do nothing. The console (source <= 0) is
+-- always an admin, exactly as it is for the lock.
+local CONTROL_REFUSAL = "media_control_is_admin_only"
+
+-- The operator's own switch, read and validated further down where the rest of
+-- `server/config.lua` is read. True until that reader says otherwise, because that is
+-- the default the file documents: a television is driven by an admin unless an
+-- operator says otherwise.
+local adminOnlyControl = true
+
+local function controlPolicy(source)
+    if not adminOnlyControl then return { adminOnly = false, canControl = true, reason = "" } end
+    local admin = isLockAdmin(source)
+    return { adminOnly = true, canControl = admin, reason = admin and "" or CONTROL_REFUSAL }
+end
+
 local function payload(entry)
     -- `quad` is on the wire, not looked up from `records.lua` on the client, and
     -- that is what makes the quad tunable in game: the server holds the effective
@@ -139,6 +218,11 @@ local function payload(entry)
         id = entry.id,
         prop = entry.prop,
         record = entry.record,
+        -- The venue screen this set IS, or nil. A set spawned from the panel or
+        -- the console is a session; one from `MediaVenueSets` is part of the
+        -- world, and the panel offers SAVE THIS SPOT only for that kind -- the
+        -- one whose position is meant to outlive the restart.
+        venue = entry.venue,
         label = entry.label,
         url = entry.url,
         volume = entry.volume,
@@ -166,6 +250,10 @@ local function payload(entry)
         -- closed curtain, and a join in the middle of a reveal sees the reveal.
         border = entry.border,
         curtain = entry.curtain,
+        -- The admin screen-lock: when true, only a lock-admin may change this set.
+        -- Broadcast so every panel can show it and grey out its controls (the real
+        -- gate is on the server, in `open77:media:control`).
+        locked = entry.locked == true,
         -- The panel's heading, for the client half of the reveal effect: the
         -- fireworks are placed in the world, in front of the panel, and the
         -- quad's own offset is in the prop's local frame -- so a client that
@@ -371,6 +459,42 @@ local blockConfig, blockProblems = AdBlock.buildConfig(MediaServerConfig)
 for _, problem in ipairs(blockProblems) do
     print("[open77_media] adblock config: " .. tostring(problem))
 end
+
+-- Who may drive a television, from the operator's own file.
+--
+-- `adminOnlyControl` is about the whole panel, not one screen (the screen-lock is
+-- `keep`/`media.lock`): with it on -- the default, and what `server/config.lua`
+-- documents -- every control a panel can send needs `LOCK_ACE`, so a server whose
+-- televisions are one person's can say so in one line. A value that is not a boolean
+-- is not a decision, so the safe answer is taken and said out loud, the way every
+-- other unclear setting in this resource is.
+if type(blockConfig.adminOnlyControl) ~= "boolean" then
+    print(string.format("[open77_media] media config: adminOnlyControl must be true or false (got %s); " ..
+        "treating it as true", type(blockConfig.adminOnlyControl)))
+else
+    adminOnlyControl = blockConfig.adminOnlyControl
+end
+print(string.format("[open77_media] panel controls: %s", adminOnlyControl and
+    ("admin-only (the ACE " .. LOCK_ACE .. ")") or
+    "every player may drive any set that is not locked"))
+
+-- THE ACL'S RECEIPT, AND WHY IT IS SAID OUT LOUD.
+--
+-- `Open77.acl` is installed PER RESOURCE, and only for a manifest that declares
+-- `acl.read`. A resource without the grant is handed no such table at all -- so
+-- `shared/acl.lua`'s wrapped read raises, the FiveM fallback is absent, and the
+-- gate answers `false` for EVERY player, the owner holding `command.media.lock`
+-- included, who is then told the panel is admin-only. That failure is invented
+-- entirely by a line in `open77.lua`, and from inside the Lua it looks exactly
+-- like a player who simply has no ACE: the same answer, no error, nothing in
+-- the log. This is the sentence that tells the two apart, printed at start.
+local function aclInstalled()
+    return type(Open77) == "table" and type(Open77.acl) == "table"
+        and type(Open77.acl.isAllowed) == "function"
+end
+print(string.format("[open77_media] acl: %s", aclInstalled() and
+    "installed (acl.read declared)" or
+    "NOT INSTALLED -- open77.lua does not declare \"acl.read\", so every player is refused"))
 
 -- The live list, and where it came from. `blockSource` is reported on every push
 -- and in every banner, because "which list is in force" is the first question
@@ -735,6 +859,66 @@ local function linkedUrl(record)
     return nil
 end
 
+---A provider vouches for a link the spawner brought: `exports[provider]:claim(url)`
+---answers it back when it is one of the provider's live pages, nil otherwise.
+---Lets a spawner put up their own screen -- the /watch cinema command names the
+---player's own party -- when the record's `link` would otherwise win.
+---
+---Asked of the record's `linkFrom` provider and of every provider named in its
+---`linkClaimFrom` list. The list is what lets one record serve both: the room's
+---two panels take the room's own page from opx_tvbrowser, and a watch party
+---vouches for its own page in the same spawn. A provider without `claim`
+---vouches for nothing, and a page nobody vouches for is still refused.
+local function claimedUrl(record, url)
+    if type(url) ~= "string" or url == "" then return nil end
+    if type(exports) ~= "table" and type(exports) ~= "userdata" then return nil end
+    local providers = {}
+    if record and type(record.linkFrom) == "string" and record.linkFrom ~= "" then
+        providers[#providers + 1] = record.linkFrom
+    end
+    if record and type(record.linkClaimFrom) == "table" then
+        for _, provider in ipairs(record.linkClaimFrom) do
+            if type(provider) == "string" and provider ~= "" then
+                providers[#providers + 1] = provider
+            end
+        end
+    end
+    for _, provider in ipairs(providers) do
+        local ok, answer = pcall(function() return exports[provider]:claim(url) end)
+        if ok and type(answer) == "string" and answer ~= "" then return answer end
+    end
+    return nil
+end
+
+---A second provider behind a linked record that names one: a record's optional
+---`linkFallback` is asked when the first has nothing, so a spawn from the menu
+---can land somewhere usable instead of being refused. No record in the current
+---catalogue declares one -- the room is always the picture -- but the field is
+---kept for a deployment whose panel has a second home. nil when no fallback is
+---named, or it has nothing either.
+local function fallbackUrl(record)
+    local fallback = type(record) == "table" and record.linkFallback or nil
+    if type(fallback) ~= "string" or fallback == "" then return nil end
+    if type(exports) ~= "table" and type(exports) ~= "userdata" then return nil end
+    local ok, link = pcall(function() return exports[fallback]:link() end)
+    if ok and type(link) == "string" and link ~= "" then return link end
+    return nil
+end
+
+---Why a provider's `link` export answered nil, in the player's words: the
+---provider's `linkWhy` export names the reason (`no_watch_party_running`), and
+---it is forwarded as the refusal. nil when the provider does not say -- older
+---providers only have `link` -- and the caller falls back to naming the
+---resource, as before.
+local function linkedWhy(record)
+    local provider = record and record.linkFrom
+    if type(provider) ~= "string" or provider == "" then return nil end
+    if type(exports) ~= "table" and type(exports) ~= "userdata" then return nil end
+    local ok, why = pcall(function() return exports[provider]:linkWhy() end)
+    if ok and type(why) == "string" and why ~= "" then return why end
+    return nil
+end
+
 -- The mark a shared-browser link ends in (opx_tvbrowser's `OpxTvBrowserLink.MARK`,
 -- `SHARED_BROWSER_MARK` in web/tv.js). A spawn of the browser cinema that brings
 -- such a link itself -- `/browser cinema` does, from the server that holds it --
@@ -745,7 +929,7 @@ local function isSharedBrowserLink(url)
         and url:sub(-#SHARED_BROWSER_MARK) == SHARED_BROWSER_MARK
 end
 
-local function spawn(recordId, position, yaw, url, source)
+local function spawn(recordId, position, yaw, url, source, venue)
     local record = Open77MediaRecord(recordId)
     if record == nil then return nil, "unknown_record" end
     if nextMediaId > MAX_MEDIA then return nil, "too_many_televisions" end
@@ -820,6 +1004,10 @@ local function spawn(recordId, position, yaw, url, source)
         -- answer that does not need a screenshot.
         yaw = facing,
         source = source,
+        -- The record key this set stands in for, when it is a venue screen. The
+        -- store and the panel both address a venue by its record, so nothing has
+        -- to trust an index a client sent back.
+        venue = venue,
     }
     -- The programme starts now. Every set is born playing, so its clock starts
     -- with it -- and this is the origin every later position is measured from.
@@ -996,6 +1184,22 @@ command("media.curtain", "media.curtain <id> <open|closed|reveal>", true,
         output(source, raw, true, string.format(
             "television %d curtain=%s", entry.id, state))
     end)
+
+-- The admin screen-lock, from the console or any restricted command path.
+-- Restricted (ACE `command.media.lock`): only a lock-admin may run it, matching
+-- who may bypass the lock. Locking a set stops other players changing the screen
+-- somebody is using; unlocking hands it back.
+command("media.lock", "media.lock <id> <on|off>", true, function(source, args, raw)
+    if args.n ~= 2 then error("wrong argument count", 0) end
+    local entry = media[math.floor(number(args[1]))]
+    if entry == nil then return output(source, raw, false, "no such television") end
+    local state = string.lower(tostring(args[2]))
+    if state ~= "on" and state ~= "off" then error("state must be on or off", 0) end
+    entry.locked = state == "on"
+    entry.lockedBy = entry.locked and source or nil
+    broadcast(nil)
+    output(source, raw, true, string.format("television %d locked=%s", entry.id, tostring(entry.locked)))
+end)
 
 command("media.remove", "media.remove <id>", true, function(source, args, raw)
     if args.n ~= 1 then error("wrong argument count", 0) end
@@ -1240,7 +1444,7 @@ RegisterNetEvent("open77:media:ready", function()
     local source = source
     if source == nil then return end
     local entries = liveEntries()
-    TriggerClientEvent("open77:media:snapshot", source, snapshotFor(entries))
+    TriggerClientEvent("open77:media:snapshot", source, snapshotFor(entries), controlPolicy(source))
     -- The blocklist goes out with the snapshot, and for the same reason: a client
     -- that has just joined is exactly the client whose television is about to
     -- load somebody else's page. It is pushed again whenever the list changes, so
@@ -1279,6 +1483,28 @@ RegisterNetEvent("open77:media:control", function(action, payload)
         -- entity. Reaching here with "spawn" means a caller used the wrong
         -- event, and saying so is cheaper than guessing.
         TriggerClientEvent("open77:media:result", source, false, "use_open77_media_spawn")
+        return
+    end
+
+    -- The operator's admin-only switch, enforced here -- the one handler every panel
+    -- control passes through -- and not in the page: a greyed-out button is a
+    -- courtesy, and this is the boundary. It is checked BEFORE the screen-lock so
+    -- that a player who may not drive anything is told that, rather than told about
+    -- one set's lock.
+    local policy = controlPolicy(source)
+    if not policy.canControl then
+        TriggerClientEvent("open77:media:result", source, false, policy.reason)
+        return
+    end
+
+    -- The admin screen-lock. While a set is locked, a player who is not a
+    -- lock-admin may not change it -- not the link, volume, mute, pause, curtain,
+    -- placement, and not remove it. This is the enforcement, on the server, in
+    -- the one handler every panel control passes through; a greyed-out button in
+    -- the page is a courtesy, not a boundary. The `lock` action is let through
+    -- here and gated in its own branch, so an admin can lock or unlock a set.
+    if entry.locked and not isLockAdmin(source) and action ~= "lock" then
+        TriggerClientEvent("open77:media:result", source, false, "screen_locked_by_admin")
         return
     end
 
@@ -1406,6 +1632,106 @@ RegisterNetEvent("open77:media:control", function(action, payload)
                 "rotate_refused:" .. tostring(turnReason))
             return
         end
+    elseif action == "pinHere" then
+        -- SAVE THIS SPOT, for a venue screen only: the set STAYS where it is.
+        -- The lining-up is the panel's nudge pad (or `pinFront` below), and this
+        -- is the one action that makes that work survive a restart. The numbers
+        -- are the entry's own -- the transform every client already sees -- so a
+        -- payload cannot name a spot, and nothing moves as a side effect of
+        -- saving.
+        if entry.venue == nil then
+            TriggerClientEvent("open77:media:result", source, false,
+                "not_a_venue_screen")
+            return
+        end
+        local saved, saveError = persistVenuePlacement(entry.venue, {
+            x = entry.position.x, y = entry.position.y, z = entry.position.z,
+            yaw = entry.yaw, bucket = entry.position.bucket,
+        })
+        if not saved then
+            TriggerClientEvent("open77:media:result", source, false,
+                "not_saved:" .. tostring(saveError))
+            return
+        end
+        TriggerClientEvent("open77:media:result", source, true, string.format(
+            "venue %s saved at %.2f,%.2f,%.2f yaw=%.1f -- it comes back here after a restart",
+            tostring(entry.venue), entry.position.x, entry.position.y, entry.position.z,
+            tonumber(entry.yaw) or 0.0))
+        return
+    elseif action == "pinFront" then
+        -- PUT IT IN FRONT OF ME: the one-press version, for the common case. A
+        -- 45.7 m cinema screen is not something a 0.25 m nudge pad lines up
+        -- quickly, so the operator stands where the audience sits, faces the
+        -- wall, and this puts the hang point the record's own distance ahead --
+        -- the same `facingPlacement` a panel spawn uses -- then saves it. The
+        -- facing comes from the SERVER's read of the player, never the payload.
+        if entry.venue == nil then
+            TriggerClientEvent("open77:media:result", source, false,
+                "not_a_venue_screen")
+            return
+        end
+        local position = Open77.players.position(source)
+        if position == nil then
+            TriggerClientEvent("open77:media:result", source, false, "no_position_snapshot")
+            return
+        end
+        -- The facing: the server's own read when it has one, and otherwise the
+        -- client's offer -- the same rule `media.spawn` follows, because the
+        -- engine publishes a character's yaw to the client on every build and to
+        -- the server on some. A non-finite or missing one is still refused rather
+        -- than placed facing north: the whole reason this action exists is that a
+        -- screen pointing the wrong way is invisible from the audience's side.
+        local heading = callerHeading(source)
+        if heading == nil then
+            local offered = tonumber(payload.yaw)
+            if offered ~= nil and offered == offered and offered ~= math.huge
+                and offered ~= -math.huge then
+                heading = offered % 360.0
+            end
+        end
+        if heading == nil then
+            TriggerClientEvent("open77:media:result", source, false, "no_heading_snapshot")
+            return
+        end
+        local target, yaw = facingPlacement(Open77MediaRecord(entry.record), position, heading)
+        local moved, moveReason = applyPlacement(entry, target, yaw)
+        if not moved then
+            TriggerClientEvent("open77:media:result", source, false,
+                "pin_refused:" .. tostring(moveReason))
+            return
+        end
+        local saved, saveError = persistVenuePlacement(entry.venue, {
+            x = entry.position.x, y = entry.position.y, z = entry.position.z,
+            yaw = entry.yaw, bucket = entry.position.bucket,
+        })
+        if not saved then
+            -- The set MOVED -- that is done and every client sees it -- but the
+            -- file did not take it, so the answer must not promise a restart.
+            TriggerClientEvent("open77:media:result", source, false,
+                "moved_but_not_saved:" .. tostring(saveError))
+            broadcast(nil)
+            return
+        end
+        TriggerClientEvent("open77:media:result", source, true, string.format(
+            "venue %s placed in front of you at %.2f,%.2f,%.2f yaw=%.1f and saved -- it comes back here after a restart",
+            tostring(entry.venue), entry.position.x, entry.position.y, entry.position.z,
+            tonumber(entry.yaw) or 0.0))
+        broadcast(nil)
+        return
+    elseif action == "lock" then
+        -- Admin-only: the enforcement above let a `lock` action through to here
+        -- so an admin can toggle it, and this is where a non-admin is turned
+        -- away. `payload.value` is the new state.
+        if not isLockAdmin(source) then
+            TriggerClientEvent("open77:media:result", source, false, "lock_is_admin_only")
+            return
+        end
+        if type(payload.value) ~= "boolean" then
+            TriggerClientEvent("open77:media:result", source, false, "value_must_be_boolean")
+            return
+        end
+        entry.locked = payload.value
+        entry.lockedBy = payload.value and source or nil
     elseif action == "remove" then
         remove(entry.id)
     else
@@ -1444,13 +1770,18 @@ RegisterNetEvent("open77:media:spawn", function(payload)
     -- created through them. See `facingPlacement`.
     local placed, facing = facingPlacement(definition, position, acceptYaw(payload.yaw))
     -- A set whose picture is another resource's takes that resource's link,
-    -- whatever the panel's link field held: it is what the record is for.
+    -- whatever the panel's link field held: it is what the record is for. The
+    -- one exception is a page a provider vouches for -- /watch cinema brings the
+    -- player's own party -- which is asked FIRST so it is not overridden by the
+    -- room's link on the same panel.
     local url = payload.url
     if definition.linkFrom ~= nil then
-        url = linkedUrl(definition) or (isSharedBrowserLink(payload.url) and payload.url or nil)
+        url = claimedUrl(definition, payload.url) or linkedUrl(definition)
+            or (isSharedBrowserLink(payload.url) and payload.url or nil)
+            or fallbackUrl(definition)
         if url == nil then
             TriggerClientEvent("open77:media:result", source, false,
-                "linked_resource_unavailable:" .. tostring(definition.linkFrom))
+                linkedWhy(definition) or ("linked_resource_unavailable:" .. tostring(definition.linkFrom)))
             return
         end
     end
@@ -1487,5 +1818,153 @@ RegisterNetEvent("open77:media:catalogue", function()
     end
     TriggerClientEvent("open77:media:catalogue", source, out)
 end)
+
+-- =============================================================================
+-- VENUE SETS: the screens that are part of the world
+-- =============================================================================
+-- `MediaVenueSets` in server/config.lua. A set a player places is a SESSION -- it
+-- is gone at the next restart, which is right for a television rolled into a
+-- garage and wrong for a venue's screen: scenery that has to be re-placed every
+-- morning is scenery nobody keeps.
+--
+-- These are ordinary sets. They go through the SAME `spawn` a panel request goes
+-- through, so they are numbered by `media.list`, driven by the panel, movable by
+-- `media.place` and claimable by a watch party exactly like a hand-placed screen.
+-- The only difference is who asked: nobody, at start.
+--
+-- ON A THREAD AND AFTER A BEAT, because `Open77.props.create` is a host call and
+-- the props layer is not up at the instant this file runs -- the resource host
+-- loads the Lua before the world it creates props in.
+--
+-- A BAD ENTRY IS REFUSED BY NAME AND THE REST STILL START. A typo in one screen
+-- must not cost the venue its other screens, and it must not be silent either:
+-- a screen that simply is not there is indistinguishable from a record that does
+-- not exist.
+
+local function finite(value)
+    local n = tonumber(value)
+    return n ~= nil and n == n and n ~= math.huge and n ~= -math.huge
+end
+
+---The saved placement store, read once at load. `data/venue-sets.json` is what
+---an operator last said; the config rows are the survey. A store that exists but
+---cannot be read is reported and the survey is used -- a venue screen at its
+---surveyed spot is recoverable, a venue with no screen is not.
+---The store's file name, or the shipped one. The host confines the write to the
+---resource's own `data/` directory, so a path here is a mistake that would only
+---be reported later; it is answered with the default and said out loud.
+local function venueFile()
+    local file = type(blockConfig.venueDataFile) == "string" and blockConfig.venueDataFile or ""
+    if file == "" or file:find("[/\\]") or file:find("..", 1, true) then
+        if file ~= "" then
+            print(string.format("[open77_media] venue sets: venueDataFile %q must be a plain file name; " ..
+                "using %s", file, tostring(VenueStore ~= nil and VenueStore.FILE or "venue-sets.json")))
+        end
+        return VenueStore ~= nil and VenueStore.FILE or "venue-sets.json"
+    end
+    return file
+end
+
+local function loadVenuePlacements()
+    venuePlacements = {}
+    if VenueStore == nil then return end
+    local file = venueFile()
+    if not (ioAvailable() and type(Open77.io.exists) == "function") then return end
+
+    local exists, existenceError = Open77.io.exists(file)
+    if not exists then
+        if existenceError ~= nil and existenceError ~= "not_found" then
+            print(string.format("[open77_media] venue sets: %s unreadable (%s); using the survey",
+                file, tostring(existenceError)))
+        end
+        return
+    end
+    local value, readError = Open77.io.readJson(file)
+    if value == nil then
+        print(string.format("[open77_media] venue sets: %s unreadable (%s); using the survey",
+            file, tostring(readError)))
+        return
+    end
+    local placements, problems = VenueStore.Load(value, function(record)
+        return Open77MediaRecord(record) ~= nil
+    end)
+    for _, problem in ipairs(problems) do
+        print("[open77_media] venue sets: " .. tostring(problem))
+    end
+    venuePlacements = placements
+end
+
+---Writes one placement, and only that one: the file is re-serialised from the
+---whole store so a second venue's saved spot survives this one being moved.
+---@param record string the venue's record key
+---@param placement table { x, y, z, yaw, bucket }
+---@return boolean ok
+---@return string|nil reason
+persistVenuePlacement = function(record, placement)
+    if VenueStore == nil then return false, "venue_store_missing" end
+    local clean, why = VenueStore.Placement(placement)
+    if clean == nil then return false, tostring(why) end
+    local file = venueFile()
+    if not ioAvailable() then return false, "filesystem_unavailable" end
+
+    local nextPlacements = {}
+    for key, value in pairs(venuePlacements) do nextPlacements[key] = value end
+    nextPlacements[record] = clean
+
+    local ok, reason = Open77.io.writeJson(file, VenueStore.Snapshot(nextPlacements))
+    if not ok then return false, tostring(reason or "write_failed") end
+    venuePlacements = nextPlacements
+    print(string.format("[open77_media] venue set %s saved at %.2f,%.2f,%.2f yaw=%.1f (data/%s)",
+        record, clean.x, clean.y, clean.z, clean.yaw, file))
+    return true
+end
+
+local function startVenueSets()
+    local specs = type(MediaVenueSets) == "table" and MediaVenueSets or {}
+    if #specs == 0 then return end
+    Wait(2000)
+
+    local started = 0
+    for index, spec in ipairs(specs) do
+        local where = "venue set " .. tostring(index)
+        if type(spec) ~= "table" then
+            print("[open77_media] " .. where .. " is not a table; skipped")
+        else
+            local record = spec.record
+            if type(record) ~= "string" or Open77MediaRecord(record) == nil then
+                print("[open77_media] " .. where .. ": record " .. tostring(record) ..
+                    " is not in the catalogue; skipped")
+            elseif not (finite(spec.x) and finite(spec.y) and finite(spec.z)) then
+                print("[open77_media] " .. where .. ": needs finite x, y and z; skipped")
+            else
+                -- THE SAVED PLACEMENT WINS OVER THE SURVEY. `Store.For` answers
+                -- the row's own numbers when nothing was saved, so a fresh
+                -- install and one whose store was deleted behave the same, and
+                -- the line says which of the two is in force.
+                local placement, origin = VenueStore.For(venuePlacements, record, spec)
+                local position = { x = placement.x, y = placement.y, z = placement.z,
+                    bucket = placement.bucket }
+                local entry, reason = spawn(record, position, placement.yaw, spec.url, nil, record)
+                if entry == nil then
+                    print("[open77_media] " .. where .. " refused: " .. tostring(reason))
+                else
+                    started = started + 1
+                    print(string.format("[open77_media] %s placed: television %d (%s) at %.2f,%.2f,%.2f yaw=%.1f (%s spot)",
+                        where, entry.id, entry.record, entry.position.x, entry.position.y,
+                        entry.position.z, entry.yaw, origin))
+                end
+            end
+        end
+    end
+
+    if started > 0 then broadcast(nil) end
+    print(string.format("[open77_media] %d of %d venue set(s) placed", started, #specs))
+end
+
+loadVenuePlacements()
+
+if type(CreateThread) == "function" then
+    CreateThread(startVenueSets)
+end
 
 print("open77_media ready -- " .. tostring(#Open77MediaCatalogue()) .. " television records")

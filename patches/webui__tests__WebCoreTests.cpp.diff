@@ -2,10 +2,10 @@
 # tools/extract-tv-patches.py. Apply by hand: this is not a patch
 # series, and the surrounding file has other unreleased work in it.
 diff --git a/webui/tests/WebCoreTests.cpp b/webui/tests/WebCoreTests.cpp
-index f011342f..79dfec55 100644
+index f011342f..0a42b50d 100644
 --- a/webui/tests/WebCoreTests.cpp
 +++ b/webui/tests/WebCoreTests.cpp
-@@ -1,18 +1,23 @@
+@@ -1,18 +1,24 @@
 +#include <op77/WebUI/AdBlock.hpp>
 +#include <op77/WebUI/CookieJar.hpp>
 +#include <op77/WebUI/FramePolicy.hpp>
@@ -22,6 +22,7 @@ index f011342f..79dfec55 100644
  
  #include <algorithm>
  #include <array>
++#include <cmath>
 +#include <filesystem>
  #include <iostream>
  #include <limits>
@@ -29,7 +30,44 @@ index f011342f..79dfec55 100644
  #include <thread>
  #include <utility>
  #include <vector>
-@@ -117,12 +122,13 @@ int main()
+@@ -46,12 +52,36 @@ int main()
+             !Check(LogicalToDevice(1920, 1.0F) == 1920 && LogicalToDevice(1920, 2.0F) == 3840,
+                    "integer scaling changed") ||
+             !Check(LogicalToDevice(1921, 0.5F) == 961 && LogicalToDevice(1081, 1.25F) == 1352,
+                    "fractional pixels must round outward")) return 1;
+     }
+ 
++    {
++        // The case measured in game on 2026-10-23: a 100 ft cinema spawned 20 m
++        // away, view 1165x728 laid out at 2.198, rasterised at 2561x1601 for a
++        // 1280x720 stream. A world screen caps the density and keeps the layout;
++        // every other surface must keep the density it always had.
++        const float cinematics = 1601.0F / 728.0F;
++        const float capped = EffectiveDeviceScale(cinematics, 1.0F);
++        if (!Check(std::abs(capped - 1.0F) < 0.0001F,
++                   "a capped world screen must rasterise at its layout pixels") ||
++            !Check(LogicalToDevice(1165, capped) == 1165 && LogicalToDevice(728, capped) == 728,
++                   "a capped cinema must allocate 1165x728, not 2561x1601") ||
++            !Check(std::abs(EffectiveDeviceScale(cinematics, 0.0F) - cinematics) < 0.0001F &&
++                       std::abs(EffectiveDeviceScale(cinematics, -1.0F) - cinematics) < 0.0001F,
++                   "no cap must leave a HUD surface at its own scale") ||
++            !Check(std::abs(EffectiveDeviceScale(0.5F, 1.0F) - 0.5F) < 0.0001F,
++                   "a cap must not enlarge a distant screen") ||
++            !Check(std::abs(EffectiveDeviceScale(cinematics, 0.1F) - 0.25F) < 0.0001F,
++                   "a cap must stay inside the pipeline's own clamp") ||
++            !Check(std::abs(EffectiveDeviceScale(0.0F, 1.0F) - 1.0F) < 0.0001F &&
++                       std::abs(EffectiveDeviceScale(std::numeric_limits<float>::quiet_NaN(), 1.0F) - 1.0F) <
++                           0.0001F,
++                   "a degenerate layout scale must fall back to one device pixel per CSS pixel")) return 1;
++    }
++
+     {
+         const auto full = ResolveDrawBounds(std::nullopt, 1920, 1080, 2560, 1440);
+         const auto crop = ResolveDrawBounds(std::array<float, 4>{-600, -160, 600, 160}, 1920, 1080, 3840, 2160);
+         const auto wide = ResolveDrawBounds(std::array<float, 4>{-600, -160, 600, 160}, 2560, 1080, 5120, 2160);
+         const auto outside = ResolveDrawBounds(std::array<float, 4>{2000, 0, 100, 100}, 1920, 1080, 1920, 1080);
+         const auto invalid = ResolveDrawBounds(std::array<float, 4>{0, 0, std::numeric_limits<float>::infinity(), 1},
+@@ -117,12 +147,13 @@ int main()
          .deviceScaleFactor = 2.0F,
          .framesPerSecond = 30,
          .layer = SurfaceLayer::Menu,
@@ -43,7 +81,7 @@ index f011342f..79dfec55 100644
      {
          return 1;
      }
-@@ -133,18 +139,90 @@ int main()
+@@ -133,18 +164,90 @@ int main()
                     createDecoded.generation == create.generation && createDecoded.entry == create.entry &&
                     createDecoded.allowedFiles == create.allowedFiles &&
                     createDecoded.width == create.width && createDecoded.height == create.height &&
@@ -135,7 +173,7 @@ index f011342f..79dfec55 100644
          .frameMapping = "Local\\Open77.WebUI.Frame.9.Resize.1",
          .width = 1920,
          .height = 1080,
-@@ -437,9 +515,549 @@ int main()
+@@ -437,9 +540,549 @@ int main()
                     "fail must return the slot with success=false and deactivate")) return 1;
          const auto failedEmpty = GpuRingConsumer{}.Fail();
          if (!Check(failedEmpty.size() == 1 && !failedEmpty[0].success,

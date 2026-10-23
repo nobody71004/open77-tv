@@ -2,7 +2,7 @@
 # tools/extract-tv-patches.py. Apply by hand: this is not a patch
 # series, and the surrounding file has other unreleased work in it.
 diff --git a/tools/lua-test/run.lua b/tools/lua-test/run.lua
-index 7d7123f0..4aabe819 100644
+index 7d7123f0..fd8ffdb5 100644
 --- a/tools/lua-test/run.lua
 +++ b/tools/lua-test/run.lua
 @@ -22,13 +22,39 @@ local resources = root .. "/resources"
@@ -45,7 +45,7 @@ index 7d7123f0..4aabe819 100644
          file = resources .. "/open77_cynosure/tests/phases_test.lua",
          entry = "RunPhasesTests",
      },
-@@ -52,16 +78,70 @@ local suites = {
+@@ -52,16 +78,85 @@ local suites = {
      {
          name = "open77_sandevistan / episode",
          preload = { resources .. "/system/open77_sandevistan/server/episode.lua" },
@@ -101,6 +101,21 @@ index 7d7123f0..4aabe819 100644
 +        -- This one loads the file under test itself (`client/main.lua`), so it
 +        -- needs the root. Passed in rather than read from the working directory,
 +        -- the same way `DIRECTOR_PATH` is passed to the director suite.
++        globals = { OPEN77_REPO_ROOT = root },
++    },
++    {
++        name = "open77_appearance / model",
++        -- The body publication now carries the model a player wears, and both
++        -- halves of that are silent when they break: a model that is never
++        -- published leaves every observer drawing the authored body, and one that
++        -- is never withdrawn leaves a body behind that the player stopped
++        -- wearing. Neither reports itself anywhere, so both are pinned here.
++        --
++        -- Last, like the media client suite: it installs process-wide `Open77`,
++        -- `CreateThread` and `Wait` stubs so the resource can be loaded outside
++        -- the game, and it loads the file under test itself.
++        file = resources .. "/system/open77_appearance/tests/model_test.lua",
++        entry = nil,
 +        globals = { OPEN77_REPO_ROOT = root },
 +    },
  }

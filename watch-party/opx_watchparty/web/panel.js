@@ -82,6 +82,10 @@
         " in step · " + p.members + " in party";
       $("code").textContent = p.code;
       $("stop").classList.toggle("hidden", !state.isHost);
+      // The room's screen is shared: only its host offers to take it for Android.
+      Array.prototype.forEach.call(document.querySelectorAll("#in-party .android-go"), function (b) {
+        b.classList.toggle("hidden", !state.isHost);
+      });
       tick();
     } else {
       var n = state.nearby;
@@ -121,6 +125,12 @@
   $("seek-go").addEventListener("click", seekTyped);
   $("seek-at").addEventListener("keydown", function (e) { if (e.key === "Enter") seekTyped(); });
   $("copy").addEventListener("click", function () { emit("copylink"); });
+  $("cinema").addEventListener("click", function () { emit("cinema"); });
+  // Android is the emulator on the room's screen (a browser cinema), either way
+  // in or out of a party: the room starts it if it is stopped.
+  Array.prototype.forEach.call(document.querySelectorAll(".android-go"), function (b) {
+    b.addEventListener("click", function () { emit("android"); });
+  });
   $("leave").addEventListener("click", function () { emit("leave"); });
   $("stop").addEventListener("click", function () { emit("stop"); });
   $("start").addEventListener("click", function () {

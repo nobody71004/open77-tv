@@ -1,0 +1,31 @@
+[Unit]
+Description=open77 screen-mirror relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=__DEST__
+ExecStart=/usr/bin/node __DEST__/relay.mjs
+Environment=PORT=8787
+# Shared secret. Clients pass the same value as ?token=. If left empty the relay
+# treats the channel name as the secret (fine for a private link; set it on a
+# public VPS). deploy/up.sh fills this in at install time.
+Environment=MIRROR_TOKEN=__TOKEN__
+Restart=always
+RestartSec=2
+User=mirror
+Group=mirror
+
+# Hardening: the relay needs to listen on a port and read its own files, nothing
+# else.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

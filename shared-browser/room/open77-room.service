@@ -1,0 +1,29 @@
+[Unit]
+Description=Open77 room page: sign-in splash, profile library, Android control
+Documentation=file:/opt/open77-room/README.md
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/open77-room
+Environment=PORT=8002
+# puppeteer-core only, to reach the room's own DevTools socket on the Docker
+# bridge; nothing here talks to the internet.
+Environment=NODE_PATH=/opt/open77-room/node_modules
+# One adb for the whole box. The room asks "is the Android device up" with the
+# same platform-tools both Android stacks push their server with: the distro's
+# adb and the SDK's do not share a server for long (whichever starts one wins,
+# and the other's connections to a network device -- Waydroid's -- are dropped).
+Environment=PATH=/opt/android-sdk/platform-tools:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/usr/bin/node /opt/open77-room/server.mjs
+Restart=always
+RestartSec=5
+# The page is for the room, not the world: the host's INPUT policy is drop and
+# port 8002 is not on its allowlist, so this one rule is the only way in.
+ExecStartPost=/bin/sh -c 'nft list ruleset | grep -q "iifname \"docker0\" tcp dport 8002" || nft insert rule ip filter INPUT iifname "docker0" tcp dport 8002 counter accept'
+ExecStopPost=/bin/sh -c 'true'
+
+[Install]
+WantedBy=multi-user.target

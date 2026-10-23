@@ -118,7 +118,7 @@ what the overlay supplies is the one thing a page cannot supply for itself —
 **where on the world the rectangle goes**. Read the comment on the enum member
 for the occlusion caveat; it is the same text as the README.
 
-**`client/src/webui/WebUiService.hpp` / `.cpp`** — two additions:
+**`client/src/webui/WebUiService.hpp` / `.cpp`** — three additions:
 
 * a **surface texture accessor**, so the overlay can sample the CEF texture for
   a given surface;
@@ -127,6 +127,27 @@ for the occlusion caveat; it is the same text as the README.
   across the viewport, which looks like a bug in the game rather than a bug in
   this feature. The resource's manifest asks for it with
   `web_ui_auto_create false` plus the flag on the create call.
+
+**`webui/include/op77/WebUI/SurfaceSizing.hpp`** — **`maxDeviceScale`**, per
+surface, on the create options (0, the default, means no ceiling).
+
+A viewport page is laid out at its reference size and rasterised at that size
+times the window scale, which is what makes it crisp, and the two numbers are
+the same scale. A screen in the world is not: its layout stays the rectangle's,
+while its device size follows the quad's **projected** size, so a screen that
+fills the viewport is rasterised at the whole viewport. Measured in game on
+2026-10-23, a 100 ft cinema spawned 20.4 m away logged
+`view=1165x728 pixels=2561x1601` — 4.1 megapixels of Chromium compositing thirty
+times a second, on the player's GPU, plus a three-slot frame ring of the same
+size (49 MB), for a 1280x720 stream the quad then re-samples anyway. The
+resource asks for `maxDeviceScale = 1.5`: the layout is untouched (the page
+still thinks it is 1165x728, so text and controls are the size they were) and
+the picture rasterises at 1748x1092 instead — 1.9 MP, ring 22 MB. `1` is the
+cheapest cap (1165x728, the stream's own resolution, ring 10 MB) and is a
+one-number change in the resource.
+`tests/WebCoreTests.cpp` pins the measured case, that a cap never enlarges a
+distant screen, that it stays inside the pipeline's own clamp, and that a
+surface which does not ask keeps the density it always had.
 
 ## 5. The server has to load it
 

@@ -88,7 +88,7 @@ RegisterNetEvent("opx:tvbrowser:cinema", function(payload)
         local ok, character = pcall(Open77.character.state)
         if ok and type(character) == "table" then yaw = character.yaw end
     end
-    local record = tostring(payload.record or "cinema.150ft.browser")
+    local record = tostring(payload.record or "cinema.150ft")
     TriggerServerEvent("open77:media:spawn", { record = record, url = payload.url, yaw = yaw })
     report(true, "putting up a " .. (record:find("100ft", 1, true) and "100" or "150") ..
         " ft cinema in front of you with the shared browser on it: press F8 at the screen to use it")

@@ -183,6 +183,22 @@ video.media { object-fit: contain; }
    disabled and a play button that does nothing are only width taken from the
    address bar. tv.js marks the strip while the shared browser is on. */
 .controls.browser .transport { display: none; }
+/* The admin screen-lock, reflected on screen: while a set is locked its
+   controls are greyed and take no click (the server refuses a non-admin change
+   on a locked set regardless -- this is the on-screen half). The lock button
+   stays live: it asks the server to toggle the lock, and only an admin (the ACE
+   command.media.lock) is obeyed. */
+.controls.locked .transport,
+.controls.locked .audio,
+.controls.locked .source > :not(#lock) {
+  opacity: 0.4;
+  pointer-events: none;
+}
+.button#lock.engaged {
+  background: rgba(230, 126, 34, 0.22);
+  border-color: rgba(230, 126, 34, 0.6);
+  color: #f0c090;
+}
 
 .button {
   flex: 0 0 auto;

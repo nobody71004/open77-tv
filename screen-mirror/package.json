@@ -1,0 +1,17 @@
+{
+  "name": "open77-screen-mirror",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "View-only screen mirror: one sender publishes JPEG frames, many receivers watch, relayed through a small host/VPS.",
+  "scripts": {
+    "start": "node relay.mjs",
+    "test": "node test.mjs"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "playwright": "^1.48.0"
+  }
+}

@@ -234,6 +234,42 @@ end
 
 RegisterNetEvent("opx:watch:joinnear", function() joinNear() end)
 
+-- Only these two records may be spawned through this handler, and only showing
+-- this player's own party page: the server is trusted, but any resource can
+-- speak to a client, so the shape, the code and (when known) the base are
+-- checked here rather than believed.
+local WATCH_CINEMAS = { ["cinema.100ft"] = true, ["cinema.150ft"] = true }
+
+RegisterNetEvent("opx:watch:cinema", function(payload)
+    if type(payload) ~= "table" then return end
+    local party = myParty()
+    if party == nil then
+        return result(false, "join a watch party first (/watch join <code>, or Start at a TV)")
+    end
+    local record = tostring(payload.record or "")
+    if not WATCH_CINEMAS[record] then return end
+    -- The party's page, and nothing else: an https URL ending in this party's
+    -- /v1/tv/<code> (the public base carries a path prefix, so only the tail
+    -- is pinned down here).
+    local url = tostring(payload.url or "")
+    if url:sub(1, 8) ~= "https://" or url:match("/v1/tv/([A-Za-z2-9]+)$") ~= party.code then return end
+    if base ~= nil then
+        local b = base:gsub("/+$", "")
+        if url:sub(1, #b) ~= b then return end
+    end
+    -- The facing is offered, as open77_media's own remote does: the server
+    -- places the set in front of the player and clamps whatever arrives.
+    local yaw = nil
+    if type(Open77) == "table" and type(Open77.character) == "table"
+        and type(Open77.character.state) == "function" then
+        local ok, character = pcall(Open77.character.state)
+        if ok and type(character) == "table" then yaw = character.yaw end
+    end
+    TriggerServerEvent("open77:media:spawn", { record = record, url = url, yaw = yaw })
+    result(true, "putting up a " .. (record:find("100ft", 1, true) and "100" or "150") ..
+        " ft cinema in front of you with this party on it")
+end)
+
 -- ---------------------------------------------------------------------------
 -- The panel
 -- ---------------------------------------------------------------------------
@@ -273,6 +309,8 @@ local function onAction(payload)
         return TriggerServerEvent("opx:watch:join", { code = code })
     end
     if action == "leave" then return TriggerServerEvent("opx:watch:leave") end
+    if action == "cinema" then return TriggerServerEvent("opx:watch:cinema", {}) end
+    if action == "android" then return TriggerServerEvent("opx:watch:android") end
     if action == "stop" then return TriggerServerEvent("opx:watch:stop") end
     if action == "start" then
         local id, reason = WatchNetflix.parse(tostring(payload.link or ""))

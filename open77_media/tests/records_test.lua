@@ -326,15 +326,12 @@ local declaredFronts = {
     -- convention, and it says so in shared/records.lua.
     ["surveillance"] = { -1.0, 0.0, 0.0 },
 
-    -- The cinema screens: the same panel and the same measured glass as
+    -- The room's two panels: the same panel and the same measured glass as
     -- `tv.screen.16x9` above, on a prop scaled up. Declared here for the same
     -- reason the record declares it -- a 30 m panel painted from both sides would
-    -- show the film to whoever is standing behind it.
+    -- show the picture to whoever is standing behind it.
     ["cinema.100ft"] = { 0.0, 1.0, 0.0 },
     ["cinema.150ft"] = { 0.0, 1.0, 0.0 },
-    -- The 100 ft and 150 ft panels again, showing the shared browser: the same glass.
-    ["cinema.100ft.browser"] = { 0.0, 1.0, 0.0 },
-    ["cinema.150ft.browser"] = { 0.0, 1.0, 0.0 },
 }
 
 local gated = 0
@@ -382,13 +379,13 @@ for _, record in ipairs(catalogue) do
         end
     end
 end
--- Twenty-three: the five television records, the eight bare monitors, the five
--- housed monitors, the security monitor, and the four cinema screens (the 100 ft
--- and 150 ft panels twice each: once as a screen, once as a browser cinema).
+-- Twenty-one: the five television records, the eight bare monitors, the five
+-- housed monitors, the security monitor, and the room's two panels (100 ft and
+-- 150 ft).
 -- Every other record in the catalogue is deliberately undeclared, and the loop
 -- above fails on any that is not listed here -- so a new record cannot gain or
 -- lose a front quietly.
-check(gated == 23, string.format("exactly the twenty-three measured records declare a front (got %d)", gated))
+check(gated == 21, string.format("exactly the twenty-one measured records declare a front (got %d)", gated))
 
 -- -----------------------------------------------------------------------------
 -- A SCALED RECORD'S QUAD IS ITS BASE'S, TIMES THE SAME FACTOR
@@ -439,32 +436,44 @@ for _, record in ipairs(catalogue) do
         end
     end
 end
-check(scaled == 4,
-    string.format("exactly the four cinema records scale their prop (got %d)", scaled))
+check(scaled == 2,
+    string.format("exactly the room's two panels scale their prop (got %d)", scaled))
 
--- A record whose picture is another resource's names that resource, and only
--- the two browser cinemas do: anything else that names one would be put up
--- asking a resource that may not be there. Each is its cinema's panel exactly.
-local BROWSER_CINEMAS = { ["cinema.100ft.browser"] = "cinema.100ft", ["cinema.150ft.browser"] = "cinema.150ft" }
+-- A record whose picture is another resource's names that resource -- the room's
+-- two panels ask opx_tvbrowser -- and nothing else may name one, or it would be
+-- put up asking a resource that may not be there. `linkClaimFrom` is the narrower
+-- permission, for a provider that can vouch for a page the spawner brought
+-- (opx_watchparty, so /watch cinema reaches the same panel), and the label is the
+-- name a host picks the panel by.
+local ROOM_PANELS = {
+    ["cinema.100ft"] = "open77-TV-ROOM (100 ft)",
+    ["cinema.150ft"] = "open77-TV-ROOM (150 ft)",
+}
 local linked = 0
 for _, record in ipairs(catalogue) do
     if record.linkFrom ~= nil then
         linked = linked + 1
-        local base = BROWSER_CINEMAS[record.id]
-        check(base ~= nil and record.linkFrom == "opx_tvbrowser",
-            string.format("record '%s' names linkFrom '%s'; only the browser cinemas ask opx_tvbrowser",
-                record.id, tostring(record.linkFrom)))
-        local panel = base and Open77MediaRecord(base)
-        if panel ~= nil then
-            check(record.scale == panel.scale and record.streamingRadius == panel.streamingRadius
-                and record.collision == panel.collision and record.model == panel.model
-                and record.quad.width == panel.quad.width and record.quad.height == panel.quad.height
-                and record.quad.offset[2] == panel.quad.offset[2] and record.quad.offset[3] == panel.quad.offset[3],
-                string.format("'%s' is the '%s' panel exactly", record.id, base))
-        end
+        check(ROOM_PANELS[record.id] ~= nil,
+            string.format("record '%s' names linkFrom; only the room's two panels name a provider", record.id))
+        check(record.linkFrom == "opx_tvbrowser",
+            string.format("record '%s': linkFrom is opx_tvbrowser (got %s)", record.id, tostring(record.linkFrom)))
+        check(record.linkFallback == nil,
+            string.format("record '%s' names no linkFallback: the room is the picture", record.id))
+    end
+    if record.linkClaimFrom ~= nil then
+        check(ROOM_PANELS[record.id] ~= nil and #record.linkClaimFrom == 1
+            and record.linkClaimFrom[1] == "opx_watchparty",
+            string.format("record '%s': linkClaimFrom is exactly { opx_watchparty }", record.id))
+    end
+    local wanted = ROOM_PANELS[record.id]
+    if wanted ~= nil then
+        check(record.label == wanted,
+            string.format("record '%s' is labelled '%s' (got '%s')", record.id, wanted, tostring(record.label)))
+        check(record.border == "#3fb6ff", string.format("record '%s' keeps the room's blue edge", record.id))
     end
 end
-check(linked == 2, string.format("exactly the two browser cinemas take their link from another resource (got %d)", linked))
+check(linked == 2,
+    string.format("exactly the room's two panels take their link from another resource (got %d)", linked))
 
 -- The property that ties the render gate to the spawn placement: a declared
 -- front has to be the rectangle's own front, `up` crossed into `right`. The two

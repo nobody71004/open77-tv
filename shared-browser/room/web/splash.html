@@ -1,0 +1,703 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Open77 TV</title>
+<!--
+  The page a shared browser opens on, drawn as a television's home screen: one
+  rail of app icons, a shelf under it that describes whatever is focused, a
+  clock, and a profile picker behind the avatar.
+
+  WHY IT LOOKS LIKE tvOS. This page is the room's face: it is the first thing a
+  browser cinema shows when it is put up, and the thing a player stands in front
+  of. A wall of sign-in tiles with labels read as a settings dialog on a
+  television. The layout here is the one every television in a living room
+  already teaches: a row of large, colourful icons at a focal distance, a wide
+  shelf of detail under it, and a focus that follows the remote. Nothing about
+  the ROOM changed -- the same services, the same profiles, the same Android --
+  only how much of it is on screen at once: you see the apps, and the one you are
+  on is explained underneath.
+
+  WHAT IS DELIBERATE:
+    - no blur filters and no backdrop-filter. This page is painted by the room's
+      own Chromium on a GPU-less host (pixman), and a live blur behind the rail
+      would cost frames on the thing being streamed. Depth comes from gradients,
+      scale and a white focus ring instead.
+    - every icon is drawn from CSS and inline SVG. There are no image assets: the
+      brands are their colours and a wordmark/glyph, which is what makes the wall
+      read at ten feet.
+    - Inter, served from this directory, because the room's Chromium falls back to
+      DejaVu Sans and a television UI lives or dies on its letterforms.
+    - the keyboard is the remote: arrows move focus, Enter opens, Escape closes
+      the profile sheet. The mouse works too (hover is focus), because the room
+      can be driven by either.
+-->
+<style>
+  @font-face {
+    font-family: "InterRoom";
+    src: url("/inter.woff2") format("woff2");
+    font-weight: 400 700;
+    font-style: normal;
+    font-display: swap;
+  }
+
+  :root {
+    color-scheme: dark;
+    --ink: #f6f7f9;
+    --dim: #a2a8b3;
+    --faint: #6d7480;
+    --accent: #7bd7ff;
+    --good: #43d17c;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; overflow: hidden; }
+  body {
+    background: #050507;
+    color: var(--ink);
+    font-family: "InterRoom", "Helvetica Neue", system-ui, -apple-system, sans-serif;
+    font-feature-settings: "cv11", "ss01";
+    -webkit-font-smoothing: antialiased;
+    cursor: default;
+    user-select: none;
+  }
+
+  /* The wall: a dark room with two soft lights in it. Static gradients only. */
+  .bg {
+    position: fixed; inset: 0;
+    background:
+      radial-gradient(900px 520px at 18% -12%, #1a2438 0%, rgba(26, 36, 56, 0) 62%),
+      radial-gradient(1100px 620px at 92% 118%, #221a2e 0%, rgba(34, 26, 46, 0) 60%),
+      radial-gradient(1400px 900px at 50% 45%, #10121a 0%, #050507 78%);
+  }
+  /* The focused app's colour, as a slow wash behind the shelf. */
+  .wash {
+    position: fixed; inset: auto 0 -22vh 0; height: 78vh;
+    background: radial-gradient(60% 60% at 50% 100%, var(--accent) 0%, rgba(0,0,0,0) 70%);
+    opacity: .10; filter: none;
+    transition: background .28s ease;
+    pointer-events: none;
+  }
+
+  .top {
+    position: absolute; top: 0; left: 0; right: 0; height: 92px;
+    display: flex; align-items: center; gap: 20px;
+    padding: 0 60px;
+  }
+  .brand {
+    font-size: 15px; font-weight: 650; letter-spacing: .16em; color: #cfd5df;
+    text-transform: uppercase;
+  }
+  .brand b { color: var(--faint); font-weight: 600; }
+  .top .spacer { flex: 1; }
+  .clock {
+    font-size: 17px; font-weight: 500; color: #e8ebf0; font-variant-numeric: tabular-nums;
+  }
+  .avatar {
+    width: 34px; height: 34px; border-radius: 50%; border: 0; padding: 0;
+    background: linear-gradient(150deg, #4d5a72, #2b3342);
+    color: #fff; font: inherit; font-size: 14px; font-weight: 650; cursor: pointer;
+    display: grid; place-items: center;
+    transition: transform .12s ease, box-shadow .12s ease;
+  }
+  .avatar:hover, .avatar:focus-visible { transform: scale(1.08); box-shadow: 0 0 0 3px #fff; outline: none; }
+  .avatar .who { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+
+  /* ---- the app rail ---------------------------------------------------- */
+  .rail-wrap {
+    position: absolute; top: 122px; left: 0; right: 0;
+    /* Clipped, so the rail's extra width never becomes a scrollable page: the
+       padding is the room the focused tile's scale and ring need. */
+    padding: 16px 60px;
+    overflow: hidden;
+  }
+  .rail {
+    display: flex; gap: 24px; align-items: flex-start;
+    transition: transform .22s cubic-bezier(.32, .72, .25, 1);
+    will-change: transform;
+  }
+  .app {
+    flex: none; width: 208px; background: none; border: 0; padding: 0;
+    font: inherit; color: inherit; text-align: center; cursor: pointer;
+    display: flex; flex-direction: column; align-items: center; gap: 10px;
+  }
+  .app .icon {
+    position: relative; width: 208px; height: 117px; border-radius: 13px;
+    overflow: hidden; display: grid; place-items: center;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, .55);
+    transform: scale(1);
+    transition: transform .16s cubic-bezier(.32, .72, .25, 1), box-shadow .16s ease;
+  }
+  .app .icon svg { width: 54%; height: 54%; display: block; }
+  .app .icon .word {
+    font-size: 30px; font-weight: 700; letter-spacing: -.02em; color: #fff;
+  }
+  .app .icon .word.small { font-size: 22px; letter-spacing: .01em; }
+  .app .label {
+    font-size: 14px; font-weight: 500; color: #9aa1ad; letter-spacing: .01em;
+    transition: color .16s ease, transform .16s ease;
+    max-width: 208px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .app[data-focus="1"] .icon { transform: scale(1.11); box-shadow: 0 0 0 4px #fff, 0 14px 30px rgba(0,0,0,.6); }
+  .app[data-focus="1"] .label { color: #fff; transform: scale(1.04); }
+  .app .badge {
+    position: absolute; top: 9px; right: 9px; width: 9px; height: 9px; border-radius: 50%;
+    background: var(--good); box-shadow: 0 0 0 2px rgba(0,0,0,.35);
+  }
+
+  /* ---- the shelf ------------------------------------------------------- */
+  .shelf-wrap { position: absolute; left: 60px; right: 60px; top: 330px; bottom: 74px; }
+  .shelf {
+    height: 100%; border-radius: 22px; overflow: hidden; position: relative;
+    background: #0c0e13;
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .07);
+    display: flex; flex-direction: column; justify-content: flex-end;
+    padding: 34px 44px;
+    transition: box-shadow .2s ease;
+  }
+  .shelf .art {
+    position: absolute; inset: 0;
+    background: radial-gradient(120% 130% at 88% 8%, var(--accent) 0%, rgba(0,0,0,0) 64%);
+    opacity: .38;
+    transition: background .28s ease, opacity .28s ease;
+  }
+  .shelf .art::after {
+    content: ""; position: absolute; inset: 0;
+    background: linear-gradient(0deg, rgba(6,7,10,.92) 22%, rgba(6,7,10,.35) 62%, rgba(6,7,10,.08) 100%);
+  }
+  .shelf .watermark {
+    position: absolute; right: 54px; top: 50%; transform: translateY(-50%);
+    width: 150px; height: 150px; opacity: .16;
+  }
+  .shelf .watermark svg { width: 100%; height: 100%; }
+  .shelf .inner { position: relative; max-width: 720px; }
+  .shelf .kicker {
+    font-size: 12px; font-weight: 600; letter-spacing: .16em; text-transform: uppercase;
+    color: #cfd5df; margin-bottom: 10px;
+  }
+  .shelf h1 { margin: 0 0 8px; font-size: 40px; line-height: 1.06; font-weight: 650; letter-spacing: -.02em; }
+  .shelf .meta { margin: 0 0 22px; font-size: 16px; color: #b9c0cc; line-height: 1.4; }
+  .shelf .meta .on { color: #a5f0c4; }
+  .shelf .meta .off { color: #d8b28a; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 9px;
+    border: 0; border-radius: 999px; padding: 11px 22px;
+    background: #f6f7f9; color: #0a0b0e; font: inherit; font-size: 15px; font-weight: 650;
+    cursor: pointer; transition: transform .12s ease, background .12s ease;
+  }
+  .pill:hover, .pill:focus-visible { transform: scale(1.04); outline: none; box-shadow: 0 0 0 3px rgba(255,255,255,.55); }
+  .pill[disabled] { opacity: .6; }
+  .ghost {
+    border: 0; background: none; color: #a9b0bc; font: inherit; font-size: 14px; cursor: pointer;
+    padding: 10px 4px; margin-left: 14px;
+  }
+  .ghost:hover, .ghost:focus-visible { color: #fff; outline: none; }
+
+  .hint {
+    position: absolute; left: 60px; right: 60px; bottom: 22px;
+    display: flex; gap: 18px; align-items: center;
+    font-size: 12.5px; color: #6f7784; letter-spacing: .01em;
+    transition: opacity .5s ease;
+  }
+  .hint.gone { opacity: 0; }
+  .hint .sep { color: #3a414c; }
+
+  /* ---- who's watching ------------------------------------------------- */
+  .sheet {
+    position: fixed; inset: 0; z-index: 20;
+    background: radial-gradient(1000px 620px at 50% 8%, #1b2333 0%, #05060a 66%);
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 34px;
+  }
+  .sheet[hidden] { display: none; }
+  .sheet h2 {
+    margin: 0; font-size: 40px; font-weight: 650; letter-spacing: -.02em;
+  }
+  .people { display: flex; gap: 52px; align-items: flex-start; }
+  .person {
+    border: 0; background: none; font: inherit; color: inherit; cursor: pointer;
+    display: flex; flex-direction: column; align-items: center; gap: 14px;
+  }
+  .person .face {
+    width: 132px; height: 132px; border-radius: 50%;
+    display: grid; place-items: center; font-size: 46px; font-weight: 600; color: #fff;
+    background: linear-gradient(155deg, #55637c, #2a3140);
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.08);
+    transition: transform .14s cubic-bezier(.32,.72,.25,1), box-shadow .14s ease;
+  }
+  .person[data-focus="1"] .face { transform: scale(1.09); box-shadow: 0 0 0 5px #fff; }
+  .person .name { font-size: 17px; color: #b6bcc7; }
+  .person[data-focus="1"] .name { color: #fff; }
+  .person .inuse { font-size: 12px; color: #8ce7b3; letter-spacing: .04em; text-transform: uppercase; }
+  .sheet .foot { display: flex; gap: 8px; align-items: center; }
+  .sheet .foot .ghost { margin: 0; font-size: 15px; }
+
+  .toast {
+    position: fixed; left: 50%; bottom: 46px; transform: translateX(-50%) translateY(8px);
+    background: rgba(16, 19, 26, .96); color: #e9edf3; border-radius: 12px;
+    padding: 12px 18px; font-size: 14px; opacity: 0; pointer-events: none;
+    transition: opacity .2s ease, transform .2s ease;
+    box-shadow: 0 0 0 1px rgba(255,255,255,.08);
+  }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  .toast.bad { color: #ffc2c6; box-shadow: 0 0 0 1px #58222a; }
+</style>
+</head>
+<body>
+  <div class="bg"></div>
+  <div class="wash" id="wash"></div>
+
+  <header class="top">
+    <div class="brand">Open77 <b>TV</b></div>
+    <div class="spacer"></div>
+    <div class="clock" id="clock"></div>
+    <button class="avatar" id="avatar" aria-label="Who's watching">
+      <span id="avatar-letter">?</span>
+    </button>
+  </header>
+
+  <div class="rail-wrap"><nav class="rail" id="apps" aria-label="Apps"></nav></div>
+
+  <div class="shelf-wrap">
+    <section class="shelf" id="shelf" aria-label="Selected app">
+      <div class="art" id="shelf-art"></div>
+      <div class="watermark" id="shelf-mark"></div>
+      <div class="inner">
+        <div class="kicker" id="shelf-kicker">Open77</div>
+        <h1 id="shelf-title">Starting…</h1>
+        <p class="meta" id="shelf-meta">Reading the room.</p>
+        <button class="pill" id="shelf-action" disabled>Open</button>
+        <button class="ghost" id="shelf-alt">Manage profiles</button>
+      </div>
+    </section>
+  </div>
+
+  <footer class="hint" id="hint">
+    <span>Use the arrow keys</span><span class="sep">·</span>
+    <span>Enter to open</span><span class="sep">·</span>
+    <span>F8 for the mouse and keyboard</span>
+  </footer>
+
+  <div class="sheet" id="sheet" hidden>
+    <h2>Who's watching?</h2>
+    <div class="people" id="profile"></div>
+    <div class="foot">
+      <button class="ghost" id="manage">Manage profiles</button>
+      <span class="sep" style="color:#3a414c">·</span>
+      <button class="ghost" id="reload">Reload the room</button>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+<script>
+(function () {
+  "use strict";
+  var params = new URLSearchParams(location.search);
+  var role = params.get("room") || "production";
+  var state = null;
+  var apps = [];            // built from the room's own state
+  var focus = 0;            // index into apps
+  var sheetOpen = false;
+  var personFocus = 0;
+  var toastTimer = null;
+
+  function el(id) { return document.getElementById(id); }
+
+  function toast(text, bad) {
+    var t = el("toast");
+    t.textContent = text;
+    t.className = "toast show" + (bad ? " bad" : "");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { t.className = "toast"; }, 5000);
+  }
+
+  function call(action, extra) {
+    var body = Object.assign({ room: role, action: action }, extra || {});
+    return fetch("/api/action", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (value) {
+        if (!value.ok) { toast(value.error || "refused", true); return value; }
+        load();
+        return value;
+      })
+      .catch(function (e) { toast(String(e), true); });
+  }
+
+  function clock() {
+    el("clock").textContent = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  }
+
+  // ---- the icons -------------------------------------------------------
+  // Each app is a colour, a glyph and a wordmark. `glyph` is inline SVG so the
+  // wall has no image assets to lose.
+  var PLAY = '<svg viewBox="0 0 64 64" aria-hidden="true"><path d="M22 12.5c0-2.2 2.4-3.6 4.3-2.4l25 17.5c1.7 1.2 1.7 3.7 0 4.9l-25 17.5c-1.9 1.3-4.3-.2-4.3-2.4z" fill="#fff"/></svg>';
+  var SPOTIFY = '<svg viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="30" fill="#1ed760"/><path d="M18 24.5c10-3 21-2.2 29.5 2.3M19.5 33c8-2.3 17.5-1.6 25 2.2M21 41c6.6-1.8 14-1.2 20 1.9" fill="none" stroke="#06251a" stroke-width="4.4" stroke-linecap="round"/></svg>';
+  var TWITCH = '<svg viewBox="0 0 64 64" aria-hidden="true"><path d="M14 8 8 18v36h14v8l9-8h11l12-12V8zm38 30-8 8h-11l-7 6v-6H16V14h36z" fill="#fff"/><path d="M28 22h6v14h-6zm14 0h6v14h-6z" fill="#9146ff"/></svg>';
+  var ANDROID = '<svg viewBox="0 0 64 64" aria-hidden="true"><path d="M16 30h32v18a4 4 0 0 1-4 4H20a4 4 0 0 1-4-4z" fill="#fff"/><path d="M20 26a12 12 0 0 1 24 0z" fill="#fff"/><circle cx="26" cy="22" r="2" fill="#3ddc84"/><circle cx="38" cy="22" r="2" fill="#3ddc84"/><path d="M22 12l-4-5M42 12l4-5" stroke="#fff" stroke-width="2.4" stroke-linecap="round"/><path d="M12 32h4v12h-4zM48 32h4v12h-4z" fill="#fff"/></svg>';
+  // Chrome: the three wedges and the blue centre, drawn rather than shipped as
+  // an image, like every other mark on this wall.
+  var CHROME = '<svg viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="31" fill="#fff"/><path d="M32 32V1a31 31 0 0 1 27 15.5z" fill="#ea4335"/><path d="M32 32l27 15.5A31 31 0 0 1 32 63z" fill="#34a853"/><path d="M32 32 5 47A31 31 0 0 1 5 17z" fill="#fbbc05"/><circle cx="32" cy="32" r="12.5" fill="#4285f4" stroke="#fff" stroke-width="2.5"/></svg>';
+  // Mirror: a screen with the sender's picture on it, and an arrow going one way.
+  var MIRROR = '<svg viewBox="0 0 64 64" aria-hidden="true"><rect x="5" y="11" width="54" height="34" rx="5" fill="#fff"/><rect x="10" y="16" width="44" height="24" rx="2" fill="#062018"/><path d="M20 28h15m-5.5-5.5L35 28l-5.5 5.5" fill="none" stroke="#3fd98a" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M28 45h8l5 7H23z" fill="#fff"/><rect x="17" y="52" width="30" height="4" rx="2" fill="#fff"/></svg>';
+  var GEAR = '<svg viewBox="0 0 64 64" aria-hidden="true"><path d="M32 20a12 12 0 1 0 0 24 12 12 0 0 0 0-24zm0 18a6 6 0 1 1 0-12 6 6 0 0 1 0 12z" fill="#fff"/><path d="M35.6 6h-7.2l-1 7.4a20 20 0 0 0-5 2.9l-7-2.6-3.6 6.2 5.6 4.9a20 20 0 0 0 0 5.6l-5.6 4.9 3.6 6.2 7-2.6a20 20 0 0 0 5 2.9l1 7.4h7.2l1-7.4a20 20 0 0 0 5-2.9l7 2.6 3.6-6.2-5.6-4.9a20 20 0 0 0 0-5.6l5.6-4.9-3.6-6.2-7 2.6a20 20 0 0 0-5-2.9z" fill="#fff" opacity=".92"/></svg>';
+
+  function brandWord(text, size) {
+    return '<div class="word' + (size ? " small" : "") + '">' + text + "</div>";
+  }
+
+  var LOOK = {
+    "Netflix": {
+      bg: "linear-gradient(150deg,#2a0000 0%,#0a0a0a 62%), #000",
+      glyph: function () { return brandWord("N") ; },
+      accent: "#e50914",
+    },
+    "YouTube": {
+      bg: "linear-gradient(150deg,#3a0505 0%,#120404 100%)",
+      glyph: function () { return PLAY; },
+      accent: "#ff2b2b",
+    },
+    "Prime Video": {
+      bg: "linear-gradient(150deg,#04121f 0%,#071a2b 60%,#0b2b45 100%)",
+      glyph: function () { return brandWord("prime", true); },
+      accent: "#00a8e1",
+    },
+    "Disney+": {
+      bg: "linear-gradient(150deg,#0b1b4a 0%,#071033 60%,#0a2a6b 100%)",
+      glyph: function () { return brandWord("D+"); },
+      accent: "#1a6dff",
+    },
+    "Spotify": {
+      bg: "linear-gradient(150deg,#07301c 0%,#04140d 100%)",
+      glyph: function () { return SPOTIFY; },
+      accent: "#1ed760",
+    },
+    "Twitch": {
+      bg: "linear-gradient(150deg,#2a1046 0%,#120a1e 100%)",
+      glyph: function () { return TWITCH; },
+      accent: "#9146ff",
+    },
+    "HBO Max": {
+      bg: "linear-gradient(150deg,#1a1030 0%,#0a0716 60%,#142a4a 100%)",
+      glyph: function () { return brandWord("max", true); },
+      accent: "#8b5cf6",
+    },
+    "Android": {
+      bg: "linear-gradient(150deg,#0c3a24 0%,#06180f 100%)",
+      glyph: function () { return ANDROID; },
+      accent: "#3ddc84",
+    },
+    "Chrome": {
+      bg: "linear-gradient(150deg,#2c3138 0%,#111419 100%)",
+      glyph: function () { return CHROME; },
+      accent: "#4285f4",
+    },
+    "Mirror": {
+      bg: "linear-gradient(150deg,#07301f 0%,#04120c 100%)",
+      glyph: function () { return MIRROR; },
+      accent: "#3fd98a",
+    },
+    "Settings": {
+      bg: "linear-gradient(150deg,#2c3037 0%,#14171c 100%)",
+      glyph: function () { return GEAR; },
+      accent: "#9aa4b2",
+    },
+  };
+
+  function look(name) {
+    return LOOK[name] || { bg: "linear-gradient(150deg,#20242c,#101317)", glyph: function () { return brandWord(name.slice(0, 2)); }, accent: "#8aa0b8" };
+  }
+
+  // ---- state -> apps ---------------------------------------------------
+  function buildApps() {
+    if (!state) return;
+    var list = [];
+    var signed = {};
+    (state.signin || []).forEach(function (s) { signed[s.name] = s; });
+    var channels = {};
+    (state.channels || []).forEach(function (c) { channels[c.label] = c; });
+
+    (state.signin || []).forEach(function (s) {
+      var channel = channels[s.name];
+      list.push({
+        id: "svc:" + s.name, label: s.name, accent: look(s.name).accent,
+        glyph: look(s.name),
+        signedIn: s.signedIn,
+        url: s.signedIn && channel ? channel.url : s.url,
+        verb: s.signedIn ? "Open" : "Sign in",
+        status: s.signedIn ? "Signed in on this profile" : "Not signed in on this profile",
+        kind: "service",
+      });
+    });
+
+    // Chrome first: free browsing is the room's front door when nobody knows
+    // what to watch yet.
+    list.unshift({
+      id: "web:chrome", label: "Chrome", kind: "web", accent: "#4285f4",
+      glyph: look("Chrome"), signedIn: false,
+      url: (channels["Chrome"] || {}).url || "https://www.google.com/",
+      verb: "Browse",
+      status: "The web, on this room's own browser",
+    });
+
+    // The screen mirror, when this room's server has one configured. The link
+    // lives on the service, so the tile only ever says /mirror.
+    if (state.mirror) {
+      list.push({
+        id: "mirror", label: "Mirror", kind: "mirror", accent: "#3fd98a",
+        glyph: look("Mirror"), signedIn: false,
+        url: "/mirror?room=" + encodeURIComponent(role),
+        verb: "Show mirror",
+        status: "A remote PC's screen, live and view-only",
+      });
+    }
+
+    var android = channels["Android"] || (state.channels || []).filter(function (c) { return c.id === "android"; })[0];
+    var running = !!state.androidDevice;
+    list.push({
+      // The rail says "Android"; the shelf says which Android (the emulator or
+      // the native one) because that is the name that tells a player what they
+      // are about to look at.
+      id: "android", label: "Android", shelf: state.androidLabel || "Android", accent: "#3ddc84",
+      glyph: look("Android"), signedIn: running,
+      url: "/android",
+      verb: running ? "Open" : "Start Android",
+      status: running ? "Running · " + state.androidDevice : (state.androidStarting ? "Starting…" : "Stopped"),
+      kind: "android",
+    });
+
+    list.push({
+      id: "settings", label: "Settings", accent: "#9aa4b2", glyph: look("Settings"),
+      signedIn: false, url: "/profiles?room=" + encodeURIComponent(role),
+      verb: "Open Settings",
+      status: "Manage profiles and sign-ins on this room",
+      kind: "settings",
+    });
+
+    apps = list;
+    if (focus >= apps.length) focus = Math.max(0, apps.length - 1);
+  }
+
+  // ---- drawing ---------------------------------------------------------
+  function drawRail() {
+    var rail = el("apps");
+    rail.innerHTML = "";
+    apps.forEach(function (app, index) {
+      var b = document.createElement("button");
+      b.className = "app";
+      b.type = "button";
+      b.dataset.focus = index === focus && !sheetOpen ? "1" : "0";
+      b.setAttribute("aria-label", app.label);
+      var icon = document.createElement("span");
+      icon.className = "icon";
+      icon.style.background = app.glyph.bg;
+      icon.innerHTML = app.glyph.glyph();
+      if (app.signedIn && app.kind === "service") {
+        var dot = document.createElement("span");
+        dot.className = "badge";
+        icon.appendChild(dot);
+      }
+      b.appendChild(icon);
+      var label = document.createElement("span");
+      label.className = "label";
+      label.textContent = app.label;
+      b.appendChild(label);
+      b.addEventListener("mouseenter", function () { setFocus(index); });
+      b.addEventListener("focus", function () { setFocus(index); });
+      b.addEventListener("click", function () { activate(index); });
+      rail.appendChild(b);
+    });
+    scrollRail();
+  }
+
+  // Keep the focused icon in view by moving the rail, the way a television does.
+  // The maths is on measured boxes rather than on a tile width: the wrap is padded,
+  // so its clientWidth is the viewport, not the room the rail has to sit in.
+  function scrollRail() {
+    var rail = el("apps");
+    var wrap = rail.parentElement;
+    var tile = rail.children[focus];
+    if (!tile) return;
+    var style = getComputedStyle(wrap);
+    var inner = wrap.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+    var overflow = Math.max(0, rail.scrollWidth - inner);
+    var wanted = tile.offsetLeft - (inner - tile.offsetWidth) / 2;
+    rail.style.transform = "translateX(" + (-Math.min(overflow, Math.max(0, wanted))) + "px)";
+  }
+
+  function drawShelf() {
+    var app = apps[focus];
+    if (!app) return;
+    var lookRef = app.glyph;
+    el("shelf-art").style.background =
+      "radial-gradient(120% 130% at 88% 8%, " + app.accent + " 0%, rgba(0,0,0,0) 64%)";
+    el("wash").style.setProperty("--accent", app.accent);
+    el("shelf-mark").innerHTML = lookRef.glyph();
+    el("shelf-kicker").textContent = app.kind === "settings" ? "Room"
+      : (app.kind === "android" ? "Games and apps"
+      : (app.kind === "mirror" ? "Screen mirror"
+      : (app.kind === "web" ? "The web" : "Open77 TV")));
+    el("shelf-title").textContent = app.shelf || app.label;
+    var meta = el("shelf-meta");
+    meta.innerHTML = "";
+    var span = document.createElement("span");
+    // Only a service or Android can be signed in / off: Chrome and the mirror
+    // are neither, and colouring their line amber reads as a fault.
+    span.className = (app.kind === "service" || app.kind === "android")
+      ? (app.signedIn ? "on" : "off") : "";
+    span.textContent = app.status;
+    meta.appendChild(span);
+    var action = el("shelf-action");
+    action.textContent = app.verb;
+    action.disabled = false;
+    el("shelf-alt").textContent = app.kind === "settings" ? "Who's watching?" : "Manage profiles";
+  }
+
+  function drawAvatar() {
+    var name = (state && state.profile) || "";
+    el("avatar-letter").textContent = name ? name.slice(0, 1).toUpperCase() : "?";
+    el("avatar").title = name ? "Profile: " + name : "No profile";
+  }
+
+  function drawPeople() {
+    var box = el("profile");
+    box.innerHTML = "";
+    var people = (state && state.profiles) || [];
+    if (!people.length) return;
+    if (personFocus >= people.length) personFocus = 0;
+    people.forEach(function (p, index) {
+      var b = document.createElement("button");
+      b.className = "person";
+      b.type = "button";
+      b.dataset.focus = index === personFocus ? "1" : "0";
+      var face = document.createElement("span");
+      face.className = "face";
+      face.textContent = p.name.slice(0, 1).toUpperCase();
+      b.appendChild(face);
+      var name = document.createElement("span");
+      name.className = "name";
+      name.textContent = p.name;
+      b.appendChild(name);
+      if (state.profile === p.name) {
+        var inUse = document.createElement("span");
+        inUse.className = "inuse";
+        inUse.textContent = "Watching";
+        b.appendChild(inUse);
+      }
+      b.addEventListener("mouseenter", function () { personFocus = index; drawPeople(); });
+      b.addEventListener("click", function () { chooseProfile(p.name); });
+      box.appendChild(b);
+    });
+  }
+
+  function render() {
+    if (!state) return;
+    buildApps();
+    drawRail();
+    drawShelf();
+    drawAvatar();
+    if (sheetOpen) drawPeople();
+  }
+
+  // ---- actions ---------------------------------------------------------
+  function setFocus(index) {
+    if (index === focus) return;
+    focus = index;
+    drawRail();
+    drawShelf();
+  }
+
+  function activate(index) {
+    var app = apps[index];
+    if (!app) return;
+    if (app.kind === "settings") { location.href = app.url; return; }
+    // The mirror is the room's own route: it redirects to the relay's viewer
+    // page, so the token never passes through this page.
+    if (app.kind === "mirror") { location.href = app.url; return; }
+    if (app.kind === "android") {
+      var action = el("shelf-action");
+      action.disabled = true;
+      action.textContent = "Starting…";
+      call("open", { url: "android" }).then(function (value) {
+        action.disabled = false;
+        if (value && value.ok) { location.href = "/android"; } else { load(); }
+      });
+      return;
+    }
+    call("open", { url: app.url }).then(function (value) {
+      if (value && value.ok) toast("Opening " + app.label + "…");
+    });
+  }
+
+  function chooseProfile(name) {
+    if (!name || (state && name === state.profile)) { closeSheet(); return; }
+    toast("Switching to " + name + "…");
+    call("use", { profile: name }).then(function () { closeSheet(); });
+  }
+
+  function openSheet() {
+    sheetOpen = true;
+    var people = (state && state.profiles) || [];
+    var at = people.findIndex(function (p) { return state && p.name === state.profile; });
+    personFocus = at >= 0 ? at : 0;
+    el("sheet").hidden = false;
+    drawPeople();
+    drawRail();
+  }
+
+  function closeSheet() {
+    sheetOpen = false;
+    el("sheet").hidden = true;
+    drawRail();
+  }
+
+  function load() {
+    fetch("/api/state?room=" + encodeURIComponent(role))
+      .then(function (r) { return r.json(); })
+      .then(function (value) { state = value; render(); })
+      .catch(function () {});
+  }
+
+  // ---- the remote ------------------------------------------------------
+  document.addEventListener("keydown", function (e) {
+    if (sheetOpen) {
+      var people = (state && state.profiles) || [];
+      if (e.key === "Escape") { e.preventDefault(); closeSheet(); return; }
+      if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
+        e.preventDefault();
+        personFocus = (personFocus + (e.key === "ArrowRight" ? 1 : people.length - 1)) % Math.max(1, people.length);
+        drawPeople();
+        return;
+      }
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        if (people[personFocus]) chooseProfile(people[personFocus].name);
+        return;
+      }
+      return;
+    }
+    if (e.key === "ArrowRight") { e.preventDefault(); setFocus(Math.min(apps.length - 1, focus + 1)); }
+    else if (e.key === "ArrowLeft") { e.preventDefault(); setFocus(Math.max(0, focus - 1)); }
+    else if (e.key === "Enter" || e.key === " ") { e.preventDefault(); activate(focus); }
+    else if (e.key === "Escape") { /* nothing to dismiss */ }
+  });
+
+  el("shelf-action").addEventListener("click", function () { activate(focus); });
+  el("shelf-alt").addEventListener("click", openSheet);
+  el("avatar").addEventListener("click", openSheet);
+  el("manage").addEventListener("click", function () { location.href = "/profiles?room=" + encodeURIComponent(role); });
+  el("reload").addEventListener("click", function () { call("restart"); closeSheet(); });
+  el("sheet").addEventListener("click", function (e) { if (e.target === el("sheet")) closeSheet(); });
+
+  // The hint is for the first few seconds, then it gets out of the picture.
+  setTimeout(function () { el("hint").classList.add("gone"); }, 9000);
+
+  clock();
+  setInterval(clock, 10000);
+  load();
+  setInterval(load, 5000);
+})();
+</script>
+</body>
+</html>

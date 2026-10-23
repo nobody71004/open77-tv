@@ -76,6 +76,9 @@
     stepMenu: document.getElementById("step-menu"),
     stepLabel: document.getElementById("step-label"),
     remove: document.getElementById("remove"),
+    pinRow: document.getElementById("pin-row"),
+    pin: document.getElementById("pin"),
+    pinFront: document.getElementById("pin-front"),
     search: document.getElementById("search"),
     refresh: document.getElementById("refresh"),
     catalogue: document.getElementById("catalogue"),
@@ -201,6 +204,9 @@
     const target = state.target;
     const nearest = state.nearest;
     elements.controls.hidden = !target;
+    // A venue screen is the only kind whose position is meant to outlive the
+    // session; the server says which ones those are (`venue` on the target).
+    elements.pinRow.hidden = !target || !target.venue;
     // The link is the set's when there is one, and the next spawn's when there is
     // not -- one field, and the line under it says which of the two it is now.
     elements.load.disabled = !target;
@@ -419,6 +425,22 @@
     if (!state.target) return;
     emit("remove");
     note("removing set #" + state.target.id + " ...");
+  });
+  // SAVE THIS SPOT: the set stays exactly where the nudge pad left it and the
+  // spot is written for the next start. One effect from one press, and the line
+  // says it -- the server is the only writer, so this claims nothing on its own.
+  elements.pin.addEventListener("click", () => {
+    if (!state.target) return;
+    emit("pinHere");
+    note("saving this spot for " + (state.target.venue || "the venue") + " ...");
+  });
+  // IN FRONT OF ME: the coarse half. Stand where the audience sits and face the
+  // wall; the server reads the player's own position and heading, puts the
+  // screen the record's hanging distance ahead facing back, and saves it.
+  elements.pinFront.addEventListener("click", () => {
+    if (!state.target) return;
+    emit("pinFront");
+    note("placing " + (state.target.venue || "the venue") + " in front of you ...");
   });
 
   // Sent on release rather than on every pixel of the drag: the server is the

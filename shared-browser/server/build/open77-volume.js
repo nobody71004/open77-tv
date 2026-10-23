@@ -22,13 +22,16 @@
 // The leveler is there because twice the stream's level at 100 was still too
 // quiet in game: a film on a streaming site sits far below the game's own sound
 // (dialogue measured at -46 dBFS on staging), and gain alone only made its loud
-// moments clip. So everything above -36 dBFS is pulled into a narrow band near
-// -15 dBFS (a compressor at -36 dB, 6:1, whose make-up gain raises quiet passages
-// by up to about 18 dB and holds loud ones down), the level works on that, and the
+// moments clip. So everything above -42 dBFS is pulled into a narrow band near
+// -15 dBFS (a compressor at -42 dB, 6:1, whose make-up gain raises quiet passages
+// by up to about 24 dB and holds loud ones down), the level works on that, and the
 // limiter keeps the peaks under full scale. Even -11 dBFS rms at 100 was too quiet
-// next to the game, so the level is a curve up to three times the leveled sound:
-// 100 is +9.5 dB (about -6 dBFS rms, as loud as sound gets without distortion),
-// 75 is 1.95, 50 is 1.06, 0 silence. The original track is only disabled once Web Audio is running, so a
+// next to the game, so the level is a curve up to four and a half times the
+// leveled sound: 100 is +13 dB, 75 is 3.15 (+10 dB), 50 is 1.90, 35 is 1.19,
+// 0 silence. Raised on 2026-10-16 after a live in-game test: a film playing in
+// the room measured peak -7.9 dBFS / rms -26.6 dBFS at the source, which the
+// old curve (3 at 100, 1.95 at 75) still put well under the game's own mix.
+// The original track is only disabled once Web Audio is running, so a
 // page where it cannot run (or has not been allowed to start yet) keeps its
 // sound, with the level on the element as before.
 //
@@ -36,6 +39,11 @@
 // is told back to it when that changes (kind `volume`, which the television logs
 // as browser_ice): a level, a gain and a state, and five seconds after a change
 // how loud the result is (the root mean square of the output, in dBFS).
+//
+// open77-fit.js's strips are left alone (see `decor`): they are the same stream
+// again, muted, on the picture's edges, and the sound is the picture element's
+// alone -- a level on a strip would be reported as being on one, and without Web
+// Audio it would unmute one and play the stream a second time.
 (function () {
   "use strict";
   if (!window.parent || window.parent === window) return;
@@ -56,8 +64,17 @@
     return !!target && (target.tagName === "VIDEO" || target.tagName === "AUDIO");
   }
 
+  // open77-fit.js's strips: the same stream again, on the picture's edges, muted,
+  // carrying the game's bars. They are decor -- the sound is the picture's own
+  // element -- so they are never hooked (the level would then be reported as being
+  // on a strip) and never given a level either: without Web Audio the loop below
+  // would unmute one and play the stream a second time.
+  function decor(target) {
+    return !!target && typeof target.closest === "function" && target.closest("#open77-fit") !== null;
+  }
+
   function gainFor(level) {
-    return level.muted ? 0 : 3 * Math.pow(level.volume, 1.5);
+    return level.muted ? 0 : 4.5 * Math.pow(level.volume, 1.25);
   }
 
   function makeAudio() {
@@ -70,14 +87,14 @@
     try {
       var context = new Context({ latencyHint: "playback" });
       var leveler = context.createDynamicsCompressor();
-      leveler.threshold.value = -36;
+      leveler.threshold.value = -42;
       leveler.knee.value = 6;
       leveler.ratio.value = 6;
       leveler.attack.value = 0.01;
       leveler.release.value = 0.35;
       var gain = context.createGain();
       var limiter = context.createDynamicsCompressor();
-      limiter.threshold.value = -1.5;
+      limiter.threshold.value = -1.0;
       limiter.knee.value = 0;
       limiter.ratio.value = 20;
       limiter.attack.value = 0.001;
@@ -147,6 +164,7 @@
     var onGain = 0;
     for (var i = 0; i < elements.length; i++) {
       var element = elements[i];
+      if (decor(element)) continue;
       if (onGain === 0 && hook(element)) {
         onGain++;
         continue;
@@ -250,7 +268,7 @@
     } else if (hooked === null && audio && audio.context.state === "running") {
       var elements = document.querySelectorAll("video, audio");
       for (var i = 0; i < elements.length; i++) {
-        if (audioTrackOf(elements[i]) !== null) {
+        if (!decor(elements[i]) && audioTrackOf(elements[i]) !== null) {
           apply("stream found");
           break;
         }
@@ -273,6 +291,11 @@
       wanted: wanted, hooked: hooked !== null, audio: audio ? audio.context.state : (audio === false ? "none" : "not made"),
       gain: audio ? audio.gain.gain.value : null, original: hooked !== null ? hooked.track.enabled : null, level: level,
       peak: peak,
+      // Which element carries the sound: the picture, and never one of
+      // open77-fit.js's strips (they are the same stream again, muted, on the
+      // picture's edges -- see `decor`).
+      on: hooked === null ? null : (hooked.element.id || hooked.element.getAttribute("data-open77-fit") ||
+        hooked.element.tagName.toLowerCase()),
     };
   };
 })();

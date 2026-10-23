@@ -2,7 +2,7 @@
 # tools/extract-tv-patches.py. Apply by hand: this is not a patch
 # series, and the surrounding file has other unreleased work in it.
 diff --git a/client/src/webui/WebUiService.cpp b/client/src/webui/WebUiService.cpp
-index db02375c..13e8666f 100644
+index db02375c..9bd5d720 100644
 --- a/client/src/webui/WebUiService.cpp
 +++ b/client/src/webui/WebUiService.cpp
 @@ -1,7 +1,8 @@
@@ -14,7 +14,23 @@ index db02375c..13e8666f 100644
  #include <d3dcompiler.h>
  #include <dxgi1_4.h>
  #include <windowsx.h>
-@@ -136,12 +137,27 @@ struct Surface
+@@ -121,12 +122,15 @@ struct Surface
+     // CreateSurface message can therefore already reference the previous
+     // mapping when the resize publishes a replacement. Keep every bootstrap
+     // mapping alive until WebHost confirms that it opened one successfully.
+     std::vector<SharedFrameBuffer> bootstrapFrames;
+     uint32_t referenceWidth{};
+     uint32_t referenceHeight{};
++    // The owner's ceiling on device pixels per CSS pixel, 0 for none. Set at
++    // creation and read by `ResizeForViewport`, like the reference size.
++    float maxDeviceScale{};
+     std::atomic_uint32_t viewWidth{};
+     std::atomic_uint32_t viewHeight{};
+     std::atomic_uint32_t pixelWidth{};
+     std::atomic_uint32_t pixelHeight{};
+     uint64_t resizeRevision{};
+     std::atomic_uint64_t announcedSequence{};
+@@ -136,12 +140,27 @@ struct Surface
      std::atomic_bool closing{};
      std::atomic_bool visible{true};
      // A native lifecycle gate, deliberately separate from `visible`: Lua owns
@@ -42,7 +58,7 @@ index db02375c..13e8666f 100644
      std::atomic_bool gpuUsePending{};
      std::atomic_uint64_t lastUseFence{};
  
-@@ -229,12 +245,21 @@ DWORD s_processId{};
+@@ -229,12 +248,21 @@ DWORD s_processId{};
  std::mutex s_surfaceMutex;
  std::unordered_map<SurfaceId, std::shared_ptr<Surface>> s_surfaces;
  
@@ -64,7 +80,7 @@ index db02375c..13e8666f 100644
  
  std::mutex s_focusMutex;
  SurfaceId s_focusSurface{};
-@@ -520,17 +564,23 @@ bool LaunchHost(std::string& aError)
+@@ -520,17 +567,23 @@ bool LaunchHost(std::string& aError)
      if (directoryError)
      {
          aError = "web_data_directory_failed";
@@ -89,7 +105,7 @@ index db02375c..13e8666f 100644
      PROCESS_INFORMATION process{};
      if (!CreateProcessW(s_hostExecutable.c_str(), mutableCommand.data(), nullptr, nullptr, FALSE,
                          CREATE_NO_WINDOW | CREATE_SUSPENDED, nullptr,
-@@ -627,12 +677,28 @@ void HandleMessage(const Message& aMessage)
+@@ -627,12 +680,28 @@ void HandleMessage(const Message& aMessage)
          }
          Log(LogLevel::Info, std::format(
              "Open77 WebUI surface {} [{}] generation {} transport reported by the host: {} ({})",
@@ -118,7 +134,43 @@ index db02375c..13e8666f 100644
          if (!DecodePayload(aMessage, payload)) return;
          const std::scoped_lock lock(s_surfaceMutex);
          if (const auto found = s_surfaces.find(payload.surface); found != s_surfaces.end() &&
-@@ -1738,12 +1804,19 @@ void Shutdown()
+@@ -979,21 +1048,28 @@ bool ResizeForViewport(const std::shared_ptr<Surface>& aSurface, const uint32_t
+     // The normal DXGI ResizeBuffers path tears down WebUI graphics and waits
+     // for all frame fences before a new viewport is observed. Avoid releasing
+     // a texture that may still be referenced by an in-flight command list if a
+     // host changes the viewport without rebuilding the swapchain.
+     if (aSurface->texture) return false;
+ 
+-    const float scale = std::clamp(static_cast<float>(aViewportHeight) /
+-                                       static_cast<float>(aSurface->referenceHeight),
+-                                   0.5F, 4.0F);
++    // The layout scale: what the page's CSS is laid out at, and therefore how
++    // much of the page is on the surface. It is the owner's number, not ours.
++    const float layoutScale = std::clamp(static_cast<float>(aViewportHeight) /
++                                             static_cast<float>(aSurface->referenceHeight),
++                                         0.5F, 4.0F);
+     const uint32_t viewWidth = std::max(1U, static_cast<uint32_t>(std::floor(
+-        static_cast<float>(aViewportWidth) / scale + 0.5F)));
++        static_cast<float>(aViewportWidth) / layoutScale + 0.5F)));
+     const uint32_t viewHeight = std::max(1U, static_cast<uint32_t>(std::floor(
+-        static_cast<float>(aViewportHeight) / scale + 0.5F)));
+-    const uint32_t pixelWidth = LogicalToDevice(viewWidth, scale);
+-    const uint32_t pixelHeight = LogicalToDevice(viewHeight, scale);
++        static_cast<float>(aViewportHeight) / layoutScale + 0.5F)));
++    // The density: how many frames' pixels that layout is rasterised into. The
++    // same number as the layout scale for a viewport-authored surface; a world
++    // screen may cap it, because its device size follows the quad's projected
++    // size rather than its layout (see `EffectiveDeviceScale`).
++    const float deviceScale = WebUI::EffectiveDeviceScale(layoutScale, aSurface->maxDeviceScale);
++    const uint32_t pixelWidth = LogicalToDevice(viewWidth, deviceScale);
++    const uint32_t pixelHeight = LogicalToDevice(viewHeight, deviceScale);
+     if (viewWidth > kMaximumSurfaceDimension || viewHeight > kMaximumSurfaceDimension ||
+         pixelWidth > kMaximumSurfaceDimension || pixelHeight > kMaximumSurfaceDimension) return false;
+ 
+     if (aSurface->viewWidth.load(std::memory_order_acquire) == viewWidth &&
+         aSurface->viewHeight.load(std::memory_order_acquire) == viewHeight &&
+         aSurface->pixelWidth.load(std::memory_order_acquire) == pixelWidth &&
+@@ -1738,12 +1815,19 @@ void Shutdown()
          s_events.clear();
      }
      {
@@ -138,7 +190,21 @@ index db02375c..13e8666f 100644
      s_pipeName.clear();
      Log(LogLevel::Info, "Open77 WebUI service stopped.");
  }
-@@ -1820,15 +1893,17 @@ SurfaceId Create(const CreateOptions& aOptions, std::string& aError)
+@@ -1796,12 +1880,13 @@ SurfaceId Create(const CreateOptions& aOptions, std::string& aError)
+         L"." + std::to_wstring(id) + L"." + std::to_wstring(aOptions.generation);
+     auto surface = std::make_shared<Surface>();
+     if (!surface->frames.Create(mappingName, aOptions.width, aOptions.height, aError,
+                                  (s_hostCapabilities.load(std::memory_order_acquire) & kHostDeferredFrameCommit) != 0)) return 0;
+     surface->referenceWidth = aOptions.width;
+     surface->referenceHeight = aOptions.height;
++    surface->maxDeviceScale = aOptions.maxDeviceScale;
+     surface->viewWidth.store(aOptions.width, std::memory_order_release);
+     surface->viewHeight.store(aOptions.height, std::memory_order_release);
+     surface->drawBounds = aOptions.drawBounds;
+     surface->pixelWidth.store(aOptions.width, std::memory_order_release);
+     surface->pixelHeight.store(aOptions.height, std::memory_order_release);
+     surface->definition = {
+@@ -1820,15 +1905,17 @@ SurfaceId Create(const CreateOptions& aOptions, std::string& aError)
          .deviceScaleFactor = 1.0F,
          .framesPerSecond = aOptions.framesPerSecond,
          .layer = aOptions.layer,
@@ -156,7 +222,7 @@ index db02375c..13e8666f 100644
      }
      if (s_connected.load(std::memory_order_acquire)) SendCreate(surface);
      return id;
-@@ -1939,12 +2014,18 @@ bool SetFocus(const SurfaceId aSurface, const bool aKeyboard, const bool aCursor
+@@ -1939,12 +2026,18 @@ bool SetFocus(const SurfaceId aSurface, const bool aKeyboard, const bool aCursor
                  s_suppressedFocusKeys.fill(false);
              }
          }
@@ -175,7 +241,7 @@ index db02375c..13e8666f 100644
              s_focusCursor = false;
              s_keepGameInput = false;
              s_suppressedFocusKeys.fill(false);
-@@ -1967,12 +2048,201 @@ bool SendEvent(const SurfaceId aSurface, const std::string_view aName, const std
+@@ -1967,12 +2060,201 @@ bool SendEvent(const SurfaceId aSurface, const std::string_view aName, const std
      if (!surface || aName.empty() || aName.size() > 128 || aJson.size() > 2U * 1024U * 1024U) return false;
      return SendPayload(MessageType::LuaToJsEvent,
                         WebEventPayload{aSurface, surface->definition.generation, 0,
@@ -377,7 +443,7 @@ index db02375c..13e8666f 100644
      auto surface = FindSurface(aSurface);
      if (!surface || aRequest == 0 || aJson.size() > 2U * 1024U * 1024U) return false;
      return SendPayload(MessageType::InvokeResult,
-@@ -2046,13 +2316,21 @@ std::vector<SurfaceStatus> DescribeSurfaces()
+@@ -2046,13 +2328,21 @@ std::vector<SurfaceStatus> DescribeSurfaces()
              status.cpuGraphicsBytes = surface->cpuGraphicsBytes.load(std::memory_order_acquire);
              status.drawPixels = surface->drawPixels.load(std::memory_order_acquire);
              // Exactly the predicate Draw() applies, so `drawn=no` next to the
@@ -399,7 +465,7 @@ index db02375c..13e8666f 100644
      }
      std::ranges::sort(result, [](const SurfaceStatus& aLeft, const SurfaceStatus& aRight) {
          return aLeft.surface < aRight.surface;
-@@ -2379,17 +2657,36 @@ void Draw(const float aViewportWidth, const float aViewportHeight)
+@@ -2379,17 +2669,36 @@ void Draw(const float aViewportWidth, const float aViewportHeight)
      // two coordinate spaces can differ after WebUI scaling and cause a visible
      // pointer to disagree with the element that actually receives the click.
      const bool pageDrawsCursor = focused && focused->first->definition.resource == "open77_shell";
@@ -440,7 +506,7 @@ index db02375c..13e8666f 100644
          }
      }
      std::vector<std::shared_ptr<Surface>> allSurfaces;
-@@ -2470,12 +2767,17 @@ void Draw(const float aViewportWidth, const float aViewportHeight)
+@@ -2470,12 +2779,17 @@ void Draw(const float aViewportWidth, const float aViewportHeight)
      std::vector<std::shared_ptr<Surface>> surfaces;
      for (const auto& surface : allSurfaces)
      {
@@ -458,7 +524,7 @@ index db02375c..13e8666f 100644
      }
      std::ranges::sort(surfaces, [](const auto& left, const auto& right) {
          if (left->definition.layer != right->definition.layer)
-@@ -2645,12 +3005,18 @@ void HandleRawMouseMotion(HWND aWindow, const RAWMOUSE& aMouse)
+@@ -2645,12 +3017,18 @@ void HandleRawMouseMotion(HWND aWindow, const RAWMOUSE& aMouse)
      y = std::clamp(y, 0L, std::max(0L, viewportHeight - 1));
      s_pointerX.store(x, std::memory_order_release);
      s_pointerY.store(y, std::memory_order_release);
@@ -477,7 +543,7 @@ index db02375c..13e8666f 100644
  
  void HandleRawMouseButtons(HWND aWindow, const RAWMOUSE& aMouse)
  {
-@@ -2701,12 +3067,13 @@ void HandleRawMouseButtons(HWND aWindow, const RAWMOUSE& aMouse)
+@@ -2701,12 +3079,13 @@ void HandleRawMouseButtons(HWND aWindow, const RAWMOUSE& aMouse)
              y = viewportHeight / 2;
          }
      }

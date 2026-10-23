@@ -1,20 +1,36 @@
 # The shared browser a television in Open77 shows: neko's Chromium, streamed to
-# the screen over WebRTC. XBUNIVERSE STAGING only. Staging runs it as
-# open77/tvbrowser-chromium:6 (the history is in shared-browser/README.md): no DRM
-# module, the managed policies, three scripts in the client page, and a health
+# the screen over WebRTC. One instance per server role (`up.sh staging`, `up.sh
+# production`), and both run this as open77/tvbrowser-chromium:9 (the history is
+# in shared-browser/README.md). Image 9 keeps image 8's profile library
+# (Chromium on --user-data-dir=/profiles/active, mounted from the host) and
+# loopback DevTools socket with a forwarder, and runs Chromium in kiosk mode so
+# a cinema screen shows the page and nothing else. It still has: no DRM
+# module, the managed policies, four scripts in the client page, and a health
 # check at the path the server answers on. No port, capability or setting changes.
 FROM ghcr.io/m1k1o/neko/chromium:3@sha256:2471119c7b4010067f76f3421a78a8bcf35e3c223b2d1f4db084914ec915fb30
 
-# No DRM module. This browser's picture is captured and streamed to players, so
-# protected video (Netflix and the like) must not be able to play in it at all:
-# the image ships Widevine, and it is removed here. Component updates are off in
-# the policy below, so it is not fetched back.
+# No DRM module baked in. The room plays protected video (Netflix and the like)
+# through the host's own Widevine copy, mounted read-only at run time (up.sh),
+# so Google's CDM binary is never copied into -- or redistributed with -- this
+# image: the image ships Widevine, and it is removed here. Component updates are
+# off in the policy below, so it is not fetched back either.
 RUN rm -rf /usr/lib/chromium/WidevineCdm \
  && ! find / -xdev -iname '*widevine*' 2>/dev/null | grep -q .
 
 COPY policies.json /etc/chromium/policies/managed/policies.json
+# neko launches Chromium from this program definition; the copy replaces the
+# --user-data-dir with the mounted profile library and adds the DevTools socket
+# and its loopback-only forwarder.
+COPY chromium.conf /etc/neko/supervisord/chromium.conf
+# The window manager the kiosk window needs (the stock image has openbox but
+# does not run it, so a kiosk window stayed at Chrome's default size).
+COPY openbox.conf /etc/neko/supervisord/openbox.conf
+# socat is the forwarder; the stock image does not carry it.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends socat \
+ && rm -rf /var/lib/apt/lists/*
 
-# Three scripts in the client page, ahead of the client's own (which reads the
+# Four scripts in the client page, ahead of the client's own (which reads the
 # login from the address bar and then takes it off, and opens its socket):
 #   open77-ice.js    what the stream did, told to the television framing the page
 #                    (kinds and counts, no addresses), and one retry over TCP
@@ -23,17 +39,46 @@ COPY policies.json /etc/chromium/policies/managed/policies.json
 #   open77-volume.js the television's volume and mute on the picture's sound,
 #                    through Web Audio (the game takes the sound before an
 #                    element's volume is applied)
+#   open77-fit.js    what the 16:9 picture does with a screen box that is not its
+#                    shape, since the television frames the page in the box exactly
+#                    and does not fit the picture to it: the picture is scaled up
+#                    until it covers the box, keeping its shape, and what hangs over
+#                    is cut off. Nothing is drawn beside it -- no bars, no wash, no
+#                    second stream. Five fills that left something beside the picture
+#                    were measured on a television on 2026-10-16 and all five were
+#                    rejected as bars (README.md)
 COPY open77-ice.js /var/www/open77-ice.js
 COPY open77-paste.js /var/www/open77-paste.js
 COPY open77-volume.js /var/www/open77-volume.js
+COPY open77-fit.js /var/www/open77-fit.js
 # Readable by the browser and by the client's own server whatever modes the build
 # context had: copied from Windows the files arrive root-only, and then neko
 # answers 403 for the scripts and Chromium never reads its policies.
-RUN chmod 644 /etc/chromium/policies/managed/policies.json \
-      /var/www/open77-ice.js /var/www/open77-paste.js /var/www/open77-volume.js
+RUN chmod 644 /etc/chromium/policies/managed/policies.json /etc/neko/supervisord/chromium.conf \
+      /etc/neko/supervisord/openbox.conf \
+      /var/www/open77-ice.js /var/www/open77-paste.js /var/www/open77-volume.js /var/www/open77-fit.js
+# `?v=3` on the fit script is deliberate: the file is served with no Cache-Control at
+# all, and a page that already has a copy is not guaranteed to fetch a changed one --
+# which is how a fixed script can leave a player still looking at the old bars. The tag
+# is bumped whenever that script's behaviour changes, and it is part of the check below
+# so an image that lost it fails the build rather than shipping quietly.
 RUN grep -q '<head>' /var/www/index.html \
- && sed -i 's#<head>#<head><script src="open77-ice.js"></script><script src="open77-paste.js"></script><script src="open77-volume.js"></script>#' /var/www/index.html \
- && grep -c 'src="open77-ice.js"></script><script src="open77-paste.js"></script><script src="open77-volume.js"' /var/www/index.html | grep -qx 1
+ && sed -i 's#<head>#<head><script src="open77-ice.js"></script><script src="open77-paste.js"></script><script src="open77-volume.js"></script><script src="open77-fit.js?v=3"></script>#' /var/www/index.html \
+ && grep -c 'src="open77-ice.js"></script><script src="open77-paste.js"></script><script src="open77-volume.js"></script><script src="open77-fit.js?v=3"' /var/www/index.html | grep -qx 1
+
+# The profile library and the room service are the two things this image is
+# for, and both are easy to lose silently: without --user-data-dir=/profiles the
+# sign-ins die with the container, and without the forwarder the room cannot be
+# driven at all. Fail the build rather than ship either.
+RUN grep -q -- '--user-data-dir=/profiles/active' /etc/neko/supervisord/chromium.conf \
+ && grep -q -- '--kiosk' /etc/neko/supervisord/chromium.conf \
+ && grep -q 'program:openbox' /etc/neko/supervisord/openbox.conf \
+ && test -x /usr/bin/openbox \
+ && grep -q -- '--remote-debugging-port=9223' /etc/neko/supervisord/chromium.conf \
+ && grep -q 'program:cdp' /etc/neko/supervisord/chromium.conf \
+ && grep -q '?room=__ROOM__' /etc/chromium/policies/managed/policies.json \
+ && ! grep -q '"172.17.0.1"' /etc/chromium/policies/managed/policies.json \
+ && command -v socat >/dev/null
 
 # neko's own check asks /health, which a server with a path prefix answers
 # under the prefix: it reported this healthy container as unhealthy.

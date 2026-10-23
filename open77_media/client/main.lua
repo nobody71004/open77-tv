@@ -113,6 +113,12 @@ local DEFAULT_REACH = 15.0
 -- Above this, the surface is created at a lower frame rate. A distant screen
 -- showing a menu is not worth 30 fps of a compositor this process shares with
 -- the game, and the page has no animation that matters at that size.
+--
+-- The near rate is also the rate the room's stream should be sent at: a
+-- television paints at most 30 frames a second, so a 60 fps WebRTC stream from
+-- the shared browser is decoded twice over for nothing -- and that decode runs
+-- on the player's machine, beside the game (shared-browser/README.md,
+-- `NEKO_STREAM_FPS`). Raising this without raising that only buys decode work.
 local NEAR_DISTANCE = 25.0
 
 -- mediaId -> { spec = <server payload>, page = <WebUI page or nil>,
@@ -234,6 +240,16 @@ local function watchPartiesRunning()
     return ok and (name == "running" or name == "started" or name == "starting")
 end
 
+-- The panel's access to the sets, as the server last said it.
+--
+-- Only the SERVER can answer "may this player drive a television" -- a client cannot
+-- read its own ACEs -- so the answer travels with the snapshot and is kept here for the
+-- page, whose controls are greyed by it. Nil until a policy arrives, which is read as
+-- "may drive": the panel is a courtesy and the server is the boundary, so a client
+-- talking to an older server draws a live panel and is refused per action, exactly as
+-- it was before this existed.
+local controlAccess = nil   -- { adminOnly = bool, canControl = bool, reason = string }
+
 ---What the page is told. The page owns no state of its own: everything it shows
 ---came from the server through here, so two clients watching the same television
 ---cannot disagree about what is playing.
@@ -260,6 +276,14 @@ local function pageState(entry)
         -- and a hint that says "press the screen key" teaches nobody.
         key = remoteKeyName(),
         parties = watchPartiesRunning(),
+        -- Whether THIS player may drive a set at all, from the operator's admin-only
+        -- switch, which the server enforces in the one handler every control passes
+        -- through. The page greys its controls for a player who may not, and says
+        -- why: a click would be refused either way, and a panel that looks live and
+        -- does nothing is exactly the complaint this answers.
+        controlDenied = (controlAccess ~= nil and not controlAccess.canControl)
+            and (controlAccess.reason ~= "" and controlAccess.reason or "media_control_is_admin_only")
+            or nil,
     }
 end
 
@@ -535,6 +559,29 @@ local function materialisePage(entry)
         layer = "hud",
         width = surfaceWidth,
         height = surfaceHeight,
+        -- At most 1.5 device pixels per CSS pixel: about 1092 px tall for this
+        -- rectangle, i.e. 1080p, instead of whatever the quad's projected size
+        -- happens to be.
+        --
+        -- The surface's pixel size otherwise follows the quad's *projected*
+        -- size: a screen that fills the viewport is rasterised at the whole
+        -- viewport, whatever the page's own layout is. Measured in game on
+        -- 2026-10-23 -- a 100 ft cinema spawned 20.4 m away -- that was
+        -- `view=1165x728 pixels=2561x1601`: 4.1 megapixels of Chromium
+        -- compositing thirty times a second on the player's own GPU, and a
+        -- three-slot frame ring of the same size (49 MB), for a picture that is
+        -- a 1280x720 stream drawn onto the quad and re-sampled anyway. At 1.5
+        -- the page rasterises 1748x1092 (1.9 MP, ring 22 MB); at 1 it is
+        -- 1165x728 (0.85 MP, ring 10 MB), which is exactly the stream's own
+        -- resolution and the cheapest a screen of this size can be.
+        --
+        -- The layout is untouched either way -- the page still thinks it is
+        -- 1165x728, so text and controls are the size they were -- and the quad
+        -- stretches that picture over the screen. What is given up is sharpness
+        -- on a set the player is standing at, and only there: a screen whose
+        -- projected size is under its own layout is already below the cap and
+        -- rasterises exactly as it did before.
+        maxDeviceScale = 1.5,
         -- A television does not need the compositor's full rate. The screen is
         -- mapped 1:1 onto the quad and most of what it shows is static.
         fps = near and 30 or 15,
@@ -626,6 +673,16 @@ local function materialisePage(entry)
     -- The page's curtain button. Same path as its URL bar and its volume keys:
     -- the request goes to the server, so the curtain every client sees is the one
     -- the server holds.
+    -- The page's admin lock button. Like every control it goes to the server,
+    -- which obeys it only for a holder of the command.media.lock ACE and refuses
+    -- a non-admin's attempt to lock or unlock. The lock comes back with the next
+    -- media:state.
+    page:on("media:lock", function(payload)
+        if type(payload) ~= "table" or type(payload.locked) ~= "boolean" then return end
+        TriggerServerEvent("open77:media:control", "lock",
+            { id = entry.spec.id, value = payload.locked })
+    end)
+
     page:on("media:curtain", function(payload)
         if type(payload) ~= "table" or type(payload.curtain) ~= "string" then return end
         TriggerServerEvent("open77:media:control", "curtain",
@@ -837,7 +894,24 @@ RegisterNetEvent("open77:media:adblock", function(payload)
     adBlockPending = { revision = revision, deadline = 3.0 }
 end)
 
-RegisterNetEvent("open77:media:snapshot", applySnapshot)
+-- The snapshot and the policy that came with it. The policy is optional on purpose:
+-- a server older than it sends one argument, and that is not an error to report.
+RegisterNetEvent("open77:media:snapshot", function(snapshot, policy)
+    if type(policy) == "table" then
+        local before = controlAccess == nil or controlAccess.canControl
+        controlAccess = {
+            adminOnly = policy.adminOnly == true,
+            canControl = policy.canControl == true,
+            reason = tostring(policy.reason or ""),
+        }
+        -- Gaining or losing the ACE mid-session changes what every panel may do, and
+        -- that is drawn per screen: the screens already on the glass are told again.
+        if controlAccess.canControl ~= before then
+            for _, entry in pairs(screens) do refreshPage(entry) end
+        end
+    end
+    applySnapshot(snapshot)
+end)
 
 -- Logged here and nowhere re-emitted. A resource that wants the answer registers
 -- the same net event and receives it from the server directly, exactly as this
@@ -1188,6 +1262,10 @@ local function remoteState()
             distance = entry.distance,
             reach = entryReach(entry),
             materialised = entry.materialised == true,
+            -- The venue record this set stands for, or nil. Only a venue screen
+            -- can be pinned: the panel offers SAVE THIS SPOT for the sets that
+            -- come back after a restart, not for one somebody rolled in.
+            venue = entry.spec.venue,
         }
     elseif remoteNearest ~= nil and remoteNearest.distance ~= nil then
         -- Nothing is drivable, so the panel is told what IS near and why it is
@@ -1632,6 +1710,21 @@ local function createRemote()
         elseif action == "rotate" then
             TriggerServerEvent("open77:media:control", "rotate", { id = id,
                 direction = tostring(payload.direction or ""), degrees = tonumber(payload.degrees) })
+        elseif action == "pinHere" then
+            -- The page sends NO numbers: the set stays where it is and the server
+            -- writes the spot it already holds. A placement a client could name
+            -- would be a screen any client could put anywhere and keep there.
+            TriggerServerEvent("open77:media:control", "pinHere", { id = id })
+        elseif action == "pinFront" then
+            -- The POSITION is the server's own read of this player; the facing is
+            -- offered the way `spawn` offers one, because the engine publishes a
+            -- character's yaw here and not, on every build, to the server. The
+            -- server prefers its own read and clamps whatever arrives.
+            local character = Open77.character.state()
+            TriggerServerEvent("open77:media:control", "pinFront", {
+                id = id,
+                yaw = type(character) == "table" and character.yaw or nil,
+            })
         elseif action == "remove" then
             TriggerServerEvent("open77:media:control", "remove", { id = id })
         else

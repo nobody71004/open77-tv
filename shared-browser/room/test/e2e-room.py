@@ -1,0 +1,244 @@
+#!/usr/bin/env python3
+"""The room service, end to end, against the real thing.
+
+Run on the game server as root:
+
+    python3 room/test/e2e-room.py [staging|production|f2077|fr-us]
+
+It talks to the service on loopback (port 8002), so it sees exactly what the
+room's Chromium sees, and reads the room's own DevTools socket to check that a
+"open" really put the page on the screen. It creates, renames, resets and
+deletes a temporary profile (never the active one), and leaves the room on its
+splash page.
+
+What it does not do is press keys: that is e2e-android-input.sh, which needs
+Android running and is written for whichever screen the room is showing.
+"""
+
+import glob
+import json
+import os
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+
+ROLE = sys.argv[1] if len(sys.argv) > 1 else "staging"
+BASE = "http://127.0.0.1:8002"
+CONTAINERS = {
+    "staging": "open77-tvbrowser-xbs",
+    "production": "open77-tvbrowser-xb",
+    "f2077": "open77-tvbrowser-f2077",
+    "fr-us": "open77-tvbrowser-fr-us",
+}
+CONTAINER = CONTAINERS.get(ROLE)
+if CONTAINER is None:
+    sys.exit("usage: e2e-room.py [staging|production|f2077|fr-us]")
+
+checks = 0
+failures = 0
+
+
+def check(label, ok, detail=None):
+    global checks, failures
+    checks += 1
+    if ok:
+        print(f"  ok   {label}")
+    else:
+        failures += 1
+        print(f"  FAIL {label}" + (f"  -- {detail}" if detail is not None else ""))
+
+
+def get(path, timeout=10):
+    with urllib.request.urlopen(BASE + path, timeout=timeout) as response:
+        return response.status, response.read().decode("utf-8", "replace")
+
+
+def post(body, timeout=30):
+    data = json.dumps(body).encode()
+    request = urllib.request.Request(BASE + "/api/action", data=data,
+                                     headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.status, json.loads(response.read().decode())
+    except urllib.error.HTTPError as error:
+        return error.code, json.loads(error.read().decode())
+
+
+def state():
+    return json.loads(get(f"/api/state?room={ROLE}")[1])
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Keep a 302 a 302: the mirror route's Location is the point of the check."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def redirect(path):
+    """(status, Location) without following the redirect."""
+    opener = urllib.request.build_opener(_NoRedirect)
+    try:
+        with opener.open(BASE + path, timeout=10) as response:
+            return response.status, response.headers.get("Location", "")
+    except urllib.error.HTTPError as error:
+        return error.code, error.headers.get("Location", "")
+
+
+def sh(*args):
+    return subprocess.run(args, capture_output=True, text=True, timeout=30).stdout.strip()
+
+
+def devtools_pages():
+    ip = sh("docker", "inspect", "-f",
+            "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}", CONTAINER)
+    if not ip:
+        return []
+    try:
+        with urllib.request.urlopen(f"http://{ip}:9222/json/list", timeout=5) as response:
+            return json.load(response)
+    except Exception:
+        return []
+
+
+def room_url():
+    pages = [t for t in devtools_pages() if t.get("type") == "page"]
+    return pages[-1]["url"] if pages else None
+
+
+def wait_for_url(fragment, seconds=25):
+    for _ in range(seconds):
+        url = room_url()
+        if url and fragment in url:
+            return url
+        time.sleep(1)
+    return None
+
+
+def profile_names(payload):
+    return [p["name"] for p in payload.get("profiles") or []]
+
+
+def find(payload, name):
+    for p in payload.get("profiles") or []:
+        if p["name"] == name:
+            return p
+    return None
+
+
+print(f"== the room service for {ROLE} ({CONTAINER})")
+
+status, text = get("/api/status")
+room = json.loads(text)["rooms"].get(ROLE) or {}
+check("the status endpoint answers and names this room's container",
+      status == 200 and room.get("container") == CONTAINER and room.get("running") is True, text[:200])
+
+before = state()
+active = before.get("profile")
+check("the room has an active profile and a profile library to switch it",
+      bool(active) and active in profile_names(before), active)
+check("the state carries everything a screen draws: channels, services, sign-ins, Android",
+      len(before.get("channels") or []) >= 4
+      and any(c["id"] == "android" for c in before["channels"])
+      and len(before.get("signin") or []) == 7
+      and all(s.get("url", "").startswith("https://") for s in before["signin"])
+      and "androidDevice" in before and "androidUp" in before)
+android_channel = next(c for c in before["channels"] if c["id"] == "android")
+android_url = android_channel["url"]
+# Two screens exist on this host (../../android-native/): the emulator's ws-scrcpy
+# stream, and the native one's VNC page. The service says which it is set for
+# with ANDROID_PAGE_PATH; both are "the Android tile", and the test asserts the
+# shape that matches. The native page is open77-screen.html, not noVNC's own
+# vnc.html: a canvas that fills the window, with no control bar taking its height
+# off the picture.
+native_screen = "open77-screen.html" in android_url
+if before.get("androidDevice"):
+    shape_ok = android_url.endswith("/open77-screen.html") if native_screen else \
+               ("captureKeyboard=true" in android_url and "action=stream" in android_url)
+else:
+    shape_ok = android_url == "/android"
+check("the Android tile is the screen the service is configured for (native VNC or scrcpy)",
+      shape_ok, android_url[:120])
+
+splash_status, splash = get(f"/?room={ROLE}")
+profiles_status, profiles_page = get("/profiles")
+with urllib.request.urlopen(BASE + "/inter.woff2", timeout=10) as response:
+    font_status = response.status
+    font_type = response.headers.get("Content-Type", "")
+check("the splash is a television home screen: an app rail, a shelf, a clock and the profile sheet",
+      splash_status == 200 and 'id="apps"' in splash and 'id="shelf"' in splash
+      and 'id="shelf-action"' in splash and 'id="clock"' in splash
+      and 'id="sheet"' in splash and 'id="profile"' in splash
+      and "Who's watching?" in splash and "Manage profiles" in splash)
+check("the home screen is drawn in Inter, served from the room itself",
+      font_status == 200 and "font/woff2" in font_type and '/inter.woff2' in splash,
+      (font_status, font_type))
+check("the rail has Chrome for the web, and the Mirror app where this room has one",
+      "Chrome" in splash and "The web, on this room's own browser" in splash
+      and "Show mirror" in splash and "kind === \"mirror\"" in splash)
+mirror_status, mirror_location = redirect(f"/mirror?room={ROLE}")
+if before.get("mirror"):
+    check("the Mirror app redirects to this room's relay page, token and all, without caching it",
+          mirror_status == 302 and mirror_location.startswith("https://")
+          and "channel=" in mirror_location, (mirror_status, mirror_location[:40]))
+else:
+    check("a room with no mirror configured says so instead of redirecting",
+          mirror_status == 404, mirror_status)
+check("the settings page is the profile library: the list, the detail and the controls",
+      profiles_status == 200 and "Rename" in profiles_page and "Reset" in profiles_page
+      and "Delete" in profiles_page and "Details" in profiles_page
+      and 'id="rows"' in profiles_page and 'id="facts"' in profiles_page
+      and 'id="acts"' in profiles_page)
+
+name = "e2e" + time.strftime("%H%M%S")
+code, value = post({"room": ROLE, "action": "create", "profile": name})
+after = state()
+check("a new profile is created on the host and listed",
+      code == 200 and value.get("ok") is True and name in profile_names(after)
+      and (find(after, name) or {}).get("dir", "").endswith("/" + name),
+      value)
+
+renamed = name + "b"
+code, value = post({"room": ROLE, "action": "rename", "profile": name, "to": renamed})
+after = state()
+check("renaming moves the directory and the listing follows",
+      code == 200 and renamed in profile_names(after) and name not in profile_names(after), value)
+check("and the directory really is at the new name",
+      os.path.isdir(os.path.join(find(after, renamed)["dir"])), find(after, renamed)["dir"])
+
+code, value = post({"room": ROLE, "action": "reset", "profile": renamed})
+after = state()
+entry = find(after, renamed)
+code2, value2 = post({"room": ROLE, "action": "delete", "profile": renamed})
+after2 = state()
+check("reset clears the sign-ins and keeps the old directory as a hidden backup",
+      code == 200 and entry is not None and entry.get("cookies") == 0
+      and bool(glob.glob(os.path.join(os.path.dirname(entry["dir"]), "." + renamed + ".reset-*"))),
+      value)
+check("delete removes it for good",
+      code2 == 200 and renamed not in profile_names(after2) and not os.path.exists(entry["dir"]), value2)
+
+check("a profile name that is not a name is refused, and so is an unknown action",
+      post({"room": ROLE, "action": "create", "profile": "Not A Name"})[0] == 400
+      and post({"room": ROLE, "action": "explode"})[0] == 400)
+
+splash_url = f"http://172.17.0.1:8002/?room={ROLE}"
+code, value = post({"room": ROLE, "action": "open", "url": splash_url})
+check("opening a page puts it on the room's screen (a tab swap the television sees)",
+      code == 200 and value.get("ok") is True and wait_for_url(f"8002/?room={ROLE}") is not None,
+      value)
+
+code, value = post({"room": ROLE, "action": "open", "url": "android"}, timeout=180)
+url = wait_for_url("open77-screen.html" if native_screen else "action=stream", seconds=40)
+want = "open77-screen.html" if native_screen else "captureKeyboard=true"
+check("opening Android starts it if needed and puts its screen on the screen",
+      code == 200 and url is not None and want in url, (value, url))
+
+post({"room": ROLE, "action": "open", "url": splash_url})
+check("and the splash comes back on the same tab",
+      wait_for_url(f"8002/?room={ROLE}") is not None)
+
+print(f"\n{checks} checks, {failures} failed")
+sys.exit(0 if failures == 0 else 1)

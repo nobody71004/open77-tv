@@ -34,7 +34,12 @@ check(L.cinemaSize({ "cinema", "7" }) == nil and select(2, L.cinemaSize({ "cinem
 -- ---------------------------------------------------------------------------
 -- The server
 -- ---------------------------------------------------------------------------
-local function loadServer(url)
+-- THE HOST'S ACL IS PART OF THE FIXTURE, because /browser asks it before it hands
+-- anything out. This harness had no `Open77` at all, so the wrapped read raised,
+-- the FiveM fallback was absent, and every admin-gated command was refused --
+-- the same answer a server without the `acl.read` grant gives. `admin = false` is
+-- the refusal case; `acl = false` is a host that installs no ACL table at all.
+local function loadServer(url, admin, acl)
     local sent, commands, handlers, printed = {}, {}, {}, {}
     _G.TriggerClientEvent = function(name, target, ...) sent[#sent + 1] = { name = name, target = target, args = { ... } } end
     _G.RegisterCommand = function(name, fn) commands[name] = fn end
@@ -42,7 +47,14 @@ local function loadServer(url)
     _G.AddEventHandler = function() end
     _G.GetCurrentResourceName = function() return "opx_tvbrowser" end
     _G.print = function(text) printed[#printed + 1] = tostring(text) end
-    OpxTvBrowserConfig = { url = url, cinemaRecord = "cinema.150ft.browser", cinema100Record = "cinema.100ft.browser" }
+    if acl ~= false then
+        _G.Open77 = { acl = { isAllowed = function(_, ace)
+            return admin ~= false and ace == "command.media.lock"
+        end } }
+    else
+        _G.Open77 = {}
+    end
+    OpxTvBrowserConfig = { url = url, cinemaRecord = "cinema.150ft", cinema100Record = "cinema.100ft" }
     assert(loadfile("server/main.lua"))()
     return sent, commands, handlers, printed
 end
@@ -54,10 +66,10 @@ check(#sent == 1 and sent[1].name == "opx:tvbrowser:put" and sent[1].target == 7
     "/browser hands the link to the player who asked, and only to them")
 sent[1] = nil
 commands.browser(7, { "cinema" }, "browser cinema")
-check(sent[1] and sent[1].name == "opx:tvbrowser:cinema" and sent[1].args[1].record == "cinema.150ft.browser", "/browser cinema asks for the 150 ft cinema")
+check(sent[1] and sent[1].name == "opx:tvbrowser:cinema" and sent[1].args[1].record == "cinema.150ft", "/browser cinema asks for the 150 ft cinema")
 sent[1] = nil
 commands.browser(7, { "cinema", "100" }, "browser cinema 100")
-check(sent[1] and sent[1].name == "opx:tvbrowser:cinema" and sent[1].args[1].record == "cinema.100ft.browser"
+check(sent[1] and sent[1].name == "opx:tvbrowser:cinema" and sent[1].args[1].record == "cinema.100ft"
     and sent[1].args[1].url == GOOD, "/browser cinema 100 asks for the 100 ft browser cinema")
 sent[1] = nil
 commands.browser(7, { "cinema", "7" }, "browser cinema 7")
@@ -95,6 +107,22 @@ do
     local s3, c3 = loadServer("https://x.example/no-mark")
     c3.browser(3, {}, "browser")
     check(s3[1] and s3[1].name == "open77:command:result" and s3[1].args[2] == false, "an unmarked configured link is not handed out")
+end
+
+-- THE GATE ITSELF. The link carries the browser's viewer password, so a player
+-- without `command.media.lock` must be refused -- and a host that installs no
+-- ACL (no `acl.read` grant, an older build) must refuse rather than crash.
+do
+    local s4, c4 = loadServer(GOOD, false)
+    c4.browser(7, {}, "browser")
+    check(s4[1] and s4[1].name == "open77:command:result" and s4[1].args[2] == false
+        and tostring(s4[1].args[3]):find("admin-only", 1, true) ~= nil,
+        "a player without the ACE is told the browser is admin-only")
+    check(#s4 == 1, "and is handed no link")
+    local s5, c5 = loadServer(GOOD, true, false)
+    c5.browser(7, {}, "browser")
+    check(s5[1] and s5[1].name == "open77:command:result" and s5[1].args[2] == false,
+        "a host with no Open77.acl refuses instead of raising")
 end
 print = realPrint
 
@@ -149,17 +177,17 @@ control = lastServer("open77:media:control")
 check(control and control.args[2].id == 2 and control.args[2].url == "", "off clears a set that shows it")
 
 toServer = {}
-net["opx:tvbrowser:cinema"]({ url = GOOD, record = "cinema.150ft.browser" })
+net["opx:tvbrowser:cinema"]({ url = GOOD, record = "cinema.150ft" })
 local spawn = lastServer("open77:media:spawn")
-check(spawn and spawn.args[1].record == "cinema.150ft.browser" and spawn.args[1].url == GOOD and spawn.args[1].yaw == 90,
+check(spawn and spawn.args[1].record == "cinema.150ft" and spawn.args[1].url == GOOD and spawn.args[1].yaw == 90,
     "cinema spawns the 150 ft record with the link and the player's facing")
 said = lastServer("opx:tvbrowser:report")
 check(said and said.args[1].text:find("150 ft", 1, true), "and says 150 ft")
 toServer = {}
-net["opx:tvbrowser:cinema"]({ url = GOOD, record = "cinema.100ft.browser" })
+net["opx:tvbrowser:cinema"]({ url = GOOD, record = "cinema.100ft" })
 spawn = lastServer("open77:media:spawn")
 said = lastServer("opx:tvbrowser:report")
-check(spawn and spawn.args[1].record == "cinema.100ft.browser" and said and said.args[1].text:find("100 ft", 1, true),
+check(spawn and spawn.args[1].record == "cinema.100ft" and said and said.args[1].text:find("100 ft", 1, true),
     "the 100 ft one spawns its own record and says 100 ft")
 toServer = {}
 net["opx:tvbrowser:put"]({ url = "https://evil.example/" })

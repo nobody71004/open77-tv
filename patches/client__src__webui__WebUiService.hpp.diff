@@ -2,10 +2,27 @@
 # tools/extract-tv-patches.py. Apply by hand: this is not a patch
 # series, and the surrounding file has other unreleased work in it.
 diff --git a/client/src/webui/WebUiService.hpp b/client/src/webui/WebUiService.hpp
-index 8c3cdb03..dbaf91df 100644
+index 8c3cdb03..ea428d1f 100644
 --- a/client/src/webui/WebUiService.hpp
 +++ b/client/src/webui/WebUiService.hpp
-@@ -34,12 +34,24 @@ struct CreateOptions
+@@ -24,22 +24,41 @@ struct CreateOptions
+     uint64_t generation{1};
+     std::filesystem::path resourceRoot;
+     std::vector<std::string> allowedFiles;
+     std::string entry;
+     uint32_t width{1280};
+     uint32_t height{720};
++    // The owner's ceiling on device pixels per CSS pixel, 0 for none. The page's
++    // layout is `width`x`height` and never changes with this; only how densely
++    // it is rasterised does. A surface composited into a world quad sets 1:
++    // its device size otherwise follows the quad's projected size, so a screen
++    // filling the viewport would rasterise at the viewport's resolution for a
++    // picture the quad then re-samples (see `WebUI::EffectiveDeviceScale`).
++    float maxDeviceScale{};
+     uint16_t framesPerSecond{60};
+     WebUI::SurfaceLayer layer{WebUI::SurfaceLayer::Hud};
+     int32_t zIndex{};
+     bool transparent{true};
      bool visible{true};
      // Independent from the visibility requested by the page owner. A caller
      // can prepare a visible surface while a world is loading, then allow its
@@ -30,7 +47,7 @@ index 8c3cdb03..dbaf91df 100644
  struct Event
  {
      WebUI::SurfaceId surface{};
-@@ -63,12 +75,28 @@ void Shutdown();
+@@ -63,12 +82,28 @@ void Shutdown();
                               std::string_view aJson);
  [[nodiscard]] bool ResolveInvoke(WebUI::SurfaceId aSurface, uint64_t aRequest,
                                   bool aSuccess, std::string_view aJson);
@@ -59,7 +76,7 @@ index 8c3cdb03..dbaf91df 100644
  // six questions by reading WebUiService.cpp: is the surface created, is it
  // ready, is it visible, does it own a texture, has the WebHost ever published a
  // frame into its mapping, and has this client ever uploaded one. None of them
-@@ -80,12 +108,15 @@ struct SurfaceStatus
+@@ -80,12 +115,15 @@ struct SurfaceStatus
      std::string resource;
      uint64_t generation{};
      uint8_t layer{};
@@ -75,7 +92,7 @@ index 8c3cdb03..dbaf91df 100644
      bool closing{};
      bool texture{};
      bool drawn{};
-@@ -206,12 +237,33 @@ void OnGraphicsShutdown();
+@@ -206,12 +244,33 @@ void OnGraphicsShutdown();
  // is the newest one the host produced.
  void AcquireFrames(uint64_t aCompletedFence);
  [[nodiscard]] bool PrepareFrame(ID3D12GraphicsCommandList* aCommands, uint32_t aFrameIndex,

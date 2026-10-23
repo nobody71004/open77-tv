@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Settings — Open77 TV</title>
+<!--
+  The profile library, drawn as the settings screen of the television the home
+  page imitates: a list of profiles on the left, the selected one's detail on the
+  right, and the actions that change it at the bottom of that detail.
+
+  A profile is a Chromium user-data directory on the host, mounted into the room
+  at /profiles and used as --user-data-dir=/profiles/active. Switching re-points
+  that symlink and restarts the room's Chromium, so the sign-ins move with the
+  profile instead of dying with a container.
+
+  The controls are the same as they were; only the frame changed. Inter comes from
+  the same place the home page gets it (/inter.woff2), and there is no blur here
+  either: this page is painted by a GPU-less host.
+-->
+<style>
+  @font-face {
+    font-family: "InterRoom";
+    src: url("/inter.woff2") format("woff2");
+    font-weight: 400 700;
+    font-style: normal;
+    font-display: swap;
+  }
+  :root { color-scheme: dark; --ink: #f4f6f9; --dim: #9aa1ad; --faint: #6a717d; --edge: rgba(255,255,255,.08); --bad: #ff9aa2; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; overflow: hidden; }
+  body {
+    display: flex; flex-direction: column;
+    background:
+      radial-gradient(1000px 600px at 20% -10%, #1a2334 0%, rgba(26,35,52,0) 60%),
+      radial-gradient(1200px 700px at 100% 110%, #221b30 0%, rgba(34,27,48,0) 60%),
+      #06070a;
+    color: var(--ink);
+    font-family: "InterRoom", "Helvetica Neue", system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .top { display: flex; align-items: center; gap: 18px; padding: 26px 60px 14px; flex: none; }
+  .top h1 { margin: 0; font-size: 40px; font-weight: 650; letter-spacing: -.02em; }
+  .top .room { font-size: 14px; color: var(--faint); }
+  .top .spacer { flex: 1; }
+  .top a { color: #9fd8ff; text-decoration: none; font-size: 15px; }
+  .top a:hover { color: #fff; }
+
+  .rooms { display: flex; gap: 10px; padding: 0 60px 16px; flex: none; }
+  .rooms button {
+    border: 0; border-radius: 999px; padding: 9px 18px; font: inherit; font-size: 14px;
+    background: rgba(255,255,255,.06); color: var(--dim); cursor: pointer;
+    transition: background .12s ease, color .12s ease, transform .12s ease;
+  }
+  .rooms button:hover { transform: scale(1.03); color: #fff; }
+  .rooms button.on { background: #f4f6f9; color: #0a0b0e; font-weight: 600; }
+
+  .body { display: flex; gap: 28px; padding: 0 60px; flex: 1; min-height: 0; }
+
+  .list { flex: 1.15; display: flex; flex-direction: column; gap: 10px; overflow: hidden; }
+  .row {
+    display: flex; align-items: center; gap: 18px; width: 100%;
+    border: 0; border-radius: 16px; padding: 13px 18px; font: inherit; color: inherit;
+    background: rgba(255,255,255,.045); cursor: pointer; text-align: left;
+    transition: transform .13s cubic-bezier(.32,.72,.25,1), background .13s ease, box-shadow .13s ease;
+  }
+  .row:hover, .row:focus-visible, .row[data-focus="1"] {
+    transform: scale(1.018);
+    background: rgba(255,255,255,.10);
+    box-shadow: 0 0 0 2px #fff;
+    outline: none;
+  }
+  .row[data-on="1"] { background: rgba(255,255,255,.09); }
+  .row .face {
+    width: 42px; height: 42px; border-radius: 50%; flex: none; display: grid; place-items: center;
+    font-size: 17px; font-weight: 650; background: linear-gradient(155deg,#55637c,#2a3140);
+  }
+  .row .text { min-width: 0; }
+  .row .name { font-size: 18px; font-weight: 550; display: flex; align-items: center; gap: 10px; }
+  .row .sub { font-size: 12.5px; color: var(--faint); margin-top: 3px; }
+  .row .pill {
+    font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; font-weight: 600;
+    color: #a8f0c6; background: rgba(67,209,124,.14); border-radius: 999px; padding: 3px 9px;
+  }
+  .row .dots { margin-left: auto; display: flex; gap: 5px; align-items: center; flex: none; }
+  .row .dots i {
+    width: 7px; height: 7px; border-radius: 50%; background: rgba(255,255,255,.16); display: block;
+  }
+  .row .dots i.on { background: #43d17c; }
+
+  .detail {
+    flex: 1; border-radius: 20px; background: rgba(255,255,255,.045);
+    box-shadow: inset 0 0 0 1px var(--edge);
+    padding: 26px 28px; display: flex; flex-direction: column; gap: 18px; overflow: hidden;
+  }
+  .detail h2 { margin: 0; font-size: 24px; font-weight: 620; letter-spacing: -.01em; }
+  .detail h2 span { font-size: 12px; color: #a8f0c6; letter-spacing: .1em; text-transform: uppercase; margin-left: 10px; }
+  .facts { display: grid; grid-template-columns: 128px 1fr; gap: 9px 14px; margin: 0; font-size: 13.5px; overflow: hidden; }
+  .facts dt { color: var(--faint); }
+  .facts dd { margin: 0; color: #d7dbe2; word-break: break-all; }
+  .acts { display: flex; flex-wrap: wrap; gap: 9px; margin-top: auto; }
+  .acts button, .create button {
+    border: 0; border-radius: 999px; padding: 10px 18px; font: inherit; font-size: 14px; font-weight: 600;
+    background: rgba(255,255,255,.10); color: #eef1f5; cursor: pointer;
+    transition: transform .12s ease, background .12s ease;
+  }
+  .acts button:hover, .create button:hover { transform: scale(1.04); background: rgba(255,255,255,.17); }
+  .acts button.primary, .create button { background: #f4f6f9; color: #0a0b0e; }
+  .acts button.danger { color: var(--bad); }
+  .acts button[disabled] { opacity: .35; cursor: default; transform: none; }
+  .create { display: flex; gap: 10px; padding: 14px 60px 16px; flex: none; }
+  .create input {
+    flex: 0 0 320px; border: 0; border-radius: 12px; padding: 12px 16px; font: inherit; font-size: 14px;
+    background: rgba(255,255,255,.07); color: var(--ink); outline: none;
+  }
+  .create input::placeholder { color: var(--faint); }
+  .create input:focus { box-shadow: 0 0 0 2px #fff; }
+  .note { padding: 0 60px 14px; margin: 0; font-size: 12.5px; line-height: 1.45; color: var(--faint); max-width: 118ch; flex: none; }
+
+  .toast {
+    position: fixed; left: 50%; bottom: 40px; transform: translateX(-50%) translateY(8px);
+    background: rgba(16,19,26,.96); color: #e9edf3; border-radius: 12px; padding: 12px 18px;
+    font-size: 14px; opacity: 0; pointer-events: none; transition: opacity .2s ease, transform .2s ease;
+    box-shadow: 0 0 0 1px var(--edge);
+  }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  .toast.bad { color: #ffc2c6; box-shadow: 0 0 0 1px #58222a; }
+</style>
+</head>
+<body>
+  <div class="top">
+    <h1>Profiles</h1>
+    <span class="room" id="room-line"></span>
+    <span class="spacer"></span>
+    <a href="/" id="back">Done</a>
+  </div>
+
+  <div class="rooms" id="rooms"></div>
+
+  <div class="body">
+    <div class="list" id="rows"></div>
+    <section class="detail" id="detail">
+      <h2 id="detail-title">A profile</h2>
+      <dl class="facts" id="facts"></dl>
+      <div class="acts" id="acts"></div>
+    </section>
+  </div>
+
+  <div class="create">
+    <input id="new-name" placeholder="New profile name (house, guest, alice)" maxlength="32" />
+    <button id="create" type="button">Create profile</button>
+  </div>
+  <p class="note">Switching restarts the room's Chromium: the screen goes dark for a few seconds, then the room
+    comes back on the other profile. Rename moves the directory, Reset clears the sign-ins and keeps the old
+    directory as a hidden backup.</p>
+
+  <div class="toast" id="toast"></div>
+
+<script>
+(function () {
+  "use strict";
+  var params = new URLSearchParams(location.search);
+  var role = params.get("room") || "production";
+  var state = null, selected = null, toastTimer = null;
+
+  function el(id) { return document.getElementById(id); }
+  function toast(text, bad) {
+    var t = el("toast");
+    t.textContent = text;
+    t.className = "toast show" + (bad ? " bad" : "");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { t.className = "toast"; }, 6000);
+  }
+
+  function call(action, extra) {
+    var body = Object.assign({ room: role, action: action }, extra || {});
+    fetch("/api/action", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
+      .then(function (r) { return r.json(); })
+      .then(function (value) {
+        if (!value.ok) return toast(value.error || "refused", true);
+        toast(action + " done");
+        load();
+      })
+      .catch(function (e) { toast(String(e), true); });
+  }
+
+  var SERVICES = ["Netflix", "YouTube", "Prime Video", "Disney+", "Spotify", "Twitch", "HBO Max"];
+
+  function render() {
+    if (!state) return;
+    el("room-line").textContent = state.label + " · " + state.container + " · " + state.chromium;
+
+    var rooms = el("rooms");
+    rooms.innerHTML = "";
+    ["production", "staging", "f2077", "fr-us"].forEach(function (r) {
+      var b = document.createElement("button");
+      b.type = "button";
+      b.textContent = r;
+      if (r === role) b.className = "on";
+      b.onclick = function () { role = r; selected = null; history.replaceState(null, "", "?room=" + r); load(); };
+      rooms.appendChild(b);
+    });
+
+    var rows = el("rows");
+    rows.innerHTML = "";
+    if (!state.profiles.length) {
+      var empty = document.createElement("div");
+      empty.className = "row";
+      empty.style.cursor = "default";
+      empty.textContent = "No profiles yet: create one below.";
+      rows.appendChild(empty);
+    }
+    state.profiles.forEach(function (p) {
+      var b = document.createElement("button");
+      b.type = "button";
+      b.className = "row";
+      b.dataset.on = p.active ? "1" : "0";
+      b.dataset.focus = selected === p.name ? "1" : "0";
+
+      var face = document.createElement("span");
+      face.className = "face";
+      face.textContent = p.name.slice(0, 1).toUpperCase();
+      b.appendChild(face);
+
+      var text = document.createElement("span");
+      text.className = "text";
+      var name = document.createElement("span");
+      name.className = "name";
+      name.textContent = p.name;
+      if (p.active) {
+        var pill = document.createElement("span");
+        pill.className = "pill";
+        pill.textContent = "Watching";
+        name.appendChild(pill);
+      }
+      text.appendChild(name);
+      var sub = document.createElement("span");
+      sub.className = "sub";
+      sub.textContent = (p.services || []).length + " of " + SERVICES.length + " signed in · " + p.size + " · " + p.updated;
+      text.appendChild(sub);
+      b.appendChild(text);
+
+      var dots = document.createElement("span");
+      dots.className = "dots";
+      SERVICES.forEach(function (s) {
+        var dot = document.createElement("i");
+        if ((p.services || []).indexOf(s) !== -1) dot.className = "on";
+        dots.appendChild(dot);
+      });
+      b.appendChild(dots);
+
+      b.onclick = function () { selected = p.name; render(); };
+      rows.appendChild(b);
+    });
+
+    renderDetail();
+  }
+
+  function renderDetail() {
+    var p = (state.profiles || []).filter(function (x) { return x.name === selected; })[0];
+    if (!p) {
+      el("detail-title").textContent = "A profile";
+      el("facts").innerHTML = "";
+      el("acts").innerHTML = "";
+      var hint = document.createElement("p");
+      hint.className = "note";
+      hint.style.padding = "0";
+      hint.textContent = "Choose a profile on the left to see what it holds.";
+      el("facts").appendChild(hint);
+      return;
+    }
+    var title = el("detail-title");
+    title.textContent = p.name;
+    if (p.active) {
+      var tag = document.createElement("span");
+      tag.textContent = "Watching";
+      title.appendChild(tag);
+    }
+
+    var facts = [
+      ["Directory", p.dir || p.name],
+      ["Chromium", state.chromium],
+      ["Signed in", (p.services || []).join(", ") || "nothing detected"],
+      ["Cookies", (p.cookies || 0) + " in this profile's database"],
+      ["Size", p.size],
+      ["Last used", p.updated],
+      ["Showing now", state.roomUrl || "nothing yet"],
+      [state.androidLabel || "Android", state.androidDevice ? "running · " + state.androidDevice : "stopped"],
+    ];
+    var dl = el("facts");
+    dl.innerHTML = "";
+    facts.forEach(function (row) {
+      var dt = document.createElement("dt");
+      dt.textContent = row[0];
+      var dd = document.createElement("dd");
+      dd.textContent = row[1];
+      dl.appendChild(dt);
+      dl.appendChild(dd);
+    });
+
+    var acts = el("acts");
+    acts.innerHTML = "";
+    function button(label, cls, disabled, onClick) {
+      var b = document.createElement("button");
+      b.type = "button";
+      b.textContent = label;
+      if (cls) b.className = cls;
+      b.disabled = !!disabled;
+      b.onclick = onClick;
+      acts.appendChild(b);
+    }
+    if (!p.active) button("Use this profile", "primary", false, function () { call("use", { profile: p.name }); });
+    button("Details", "", false, function () {
+      toast((p.dir || p.name) + " · " + (p.cookies || 0) + " cookies · " + (p.size || ""));
+    });
+    button("Rename", "", false, function () {
+      var to = (prompt("New name for " + p.name + " (lower-case letters, digits, - and _)", p.name) || "").trim().toLowerCase();
+      if (to && to !== p.name) call("rename", { profile: p.name, to: to });
+    });
+    button("Reset", "", p.active, function () {
+      if (confirm("Reset " + p.name + "? Its sign-ins are cleared (the old directory is kept).")) {
+        call("reset", { profile: p.name });
+      }
+    });
+    button("Delete", "danger", p.active, function () {
+      if (confirm("Delete " + p.name + " for good?")) call("delete", { profile: p.name });
+    });
+  }
+
+  function load() {
+    fetch("/api/state?room=" + encodeURIComponent(role))
+      .then(function (r) { return r.json(); })
+      .then(function (value) {
+        state = value;
+        if (!selected) {
+          var active = (state.profiles || []).filter(function (p) { return p.active; })[0];
+          selected = active ? active.name : ((state.profiles || [])[0] || {}).name || null;
+        }
+        render();
+      })
+      .catch(function () {});
+  }
+
+  el("create").onclick = function () {
+    var name = el("new-name").value.trim().toLowerCase();
+    if (!name) return toast("give the profile a name", true);
+    call("create", { profile: name });
+    el("new-name").value = "";
+  };
+  el("new-name").addEventListener("keydown", function (e) { if (e.key === "Enter") el("create").click(); });
+  el("back").onclick = function (e) { e.preventDefault(); location.href = "/?room=" + encodeURIComponent(role); };
+
+  load();
+  setInterval(load, 10000);
+})();
+</script>
+</body>
+</html>

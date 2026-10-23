@@ -52,8 +52,11 @@ sine and the same colour source, so codec pair is the only difference between th
 Netflix is out for two independent reasons: no CDM in this runtime, and — even with a
 CDM present (Edge's `widevinecdm.dll` exists on this machine, so `--widevine-cdm-path`
 is technically reachable) — Netflix gates L3 desktop playback on a VMP signature that a
-CEF host does not have. Neither can be solved by configuration, and neither CDM can be
-redistributed with a game that runs under EAC.
+CEF host does not have. The updater half is now configuration (`--open77-widevine`,
+forwarded by `OP77_WEBUI_WIDEVINE=1`; see `docs/widevine-cdm-integration.md`), but the
+build half still needs a Widevine-capable libcef and the VMP gate stands regardless:
+forging it would be circumvention. Neither CDM can be redistributed with a game that
+runs under EAC.
 
 ## Audio
 
@@ -288,6 +291,51 @@ it is a click on what is under it.
 and a click just above the strip lands in the shared browser. The strip's own buttons still
 take clicks, and a shut curtain stops at the strip. 4:3, square and portrait screens wrap
 without covering the picture. Against the page from before, ten of those checks fail.
+
+On 2026-10-16 a player on an ultrawide set reported black bars down the sides of a picture
+that filled the 16:9 set beside it, with the set set to fullscreen. The frame was the box
+and the box was 2.39, so the bars were painted by the player's own letterboxing *inside*
+the frame — which no measurement taken outside the frame can see.
+
+That day's first answer was to scale the frame until it covered the screen box, the excess
+cropped by the screen's own `overflow: hidden`. It was wrong, and a second player's report
+said so the same day: on a 32:9 client the picture lost 44 % of its height — "some of the
+video is now cut off at edge", the top of the browser's own window gone. So *the game's
+page* does not touch the picture: **the frame is the screen box, exactly**, on every shape.
+What happens *inside* the frame is the shared browser's own client page's business, and the
+image's `open77-fit.js` answers there, with one answer on every shape
+(`shared-browser/README.md`, "A box the picture does not fill"): **the picture fills the
+box**. It is scaled up, keeping its shape, until it reaches every edge of the screen box,
+and the overhang is cut off (`object-fit: cover`, the browser's own uniform scale, so it is
+cropped and never stretched), applied as a class so the page's own inline style is never
+written to. Nothing is drawn beside the picture: no canvas, no layer, no second stream.
+
+Five answers were measured on a television on 2026-10-16 and all five were rejected as bars:
+leaving the rest black; a blurred copy ("the two side bars are blurs"); the same stream
+scaled to cover the box and clipped to the bar ("showing another part of the video... double
+letters"); the picture's own edge column stretched across the bar ("it is like stretching the
+video" — a one-pixel column stretched sideways draws a horizontal smear per row); and the
+picture's own edge colours dimmed as a wash ("the blur side bars are back"). The cost of the
+answer that is left is real and stated: 26 % of a 16:9 picture's height on a 2.39 screen, and
+half of it on a 32:9 client surface, which was reported too ("the top of the browser's own
+window gone") — a screen with no bars is a screen with something cut off it. `open77-fit.js`
+is in the image, so a television that has the image has this; there is nothing for the game's
+page or the resource to configure.
+
+`tests/tv-page/run.mjs` reads the page's half of it (sections 32–33): on every shape the
+frame is the box to the pixel — measured against the record's own quad — and the game's own
+page never scales the picture to cover it. What the framed page does inside that box is
+measured where it happens, twice over: `shared-browser/server/test/fit-local.mjs` against a local stand-in shaped from the
+room's client page, in pixels, six box shapes each with a control run *without* the script
+(which has to read black exactly where the script fills) — the cover shapes held to the
+picture being the box with the synthetic stream's square mark still square and centred, the
+glow shapes held to the bars equalling the picture's own edge strip, stop for stop; and
+`shared-browser/server/test/e2e-fit.sh` on the VPS against the real page in the real
+container, which runs the 150 ft panel's own box (1280x728 — cover) and a 32:9 client's
+viewport (5120x1440 — glow) with the script and first WITHOUT it, whose gaps read exactly
+`[0,0,0]` — the client page's own black, the stripe a player reported — and then with it,
+where those same points are the picture (the 1280x728 run) or its own dimmed edge colours
+(the 5120x1440 run).
 
 ## Cinema-scale screens (2026-09-14)
 

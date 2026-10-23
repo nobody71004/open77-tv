@@ -1,0 +1,44 @@
+# TV-relevant hunks only, extracted from a working tree by
+# tools/extract-tv-patches.py. Apply by hand: this is not a patch
+# series, and the surrounding file has other unreleased work in it.
+diff --git a/webui/include/op77/WebUI/SurfaceSizing.hpp b/webui/include/op77/WebUI/SurfaceSizing.hpp
+index 40911f4f..c06a7182 100644
+--- a/webui/include/op77/WebUI/SurfaceSizing.hpp
++++ b/webui/include/op77/WebUI/SurfaceSizing.hpp
+@@ -12,7 +12,36 @@ namespace op77::WebUI
+ // A 1366-pixel ring would make D3D11 CopyResource silently reject every frame.
+ // Callers validate logical dimensions and scale before using this helper.
+ [[nodiscard]] inline uint32_t LogicalToDevice(const uint32_t aValue, const float aScale)
+ {
+     return std::max(1U, static_cast<uint32_t>(std::ceil(static_cast<float>(aValue) * aScale)));
+ }
++
++// How dense a surface's frames are actually rasterised: the layout scale, limited
++// by the owner's own ceiling on device pixels per CSS pixel.
++//
++// The two are the same number for every surface authored for the viewport (a
++// HUD page is laid out at 1920x1080 and drawn at 1920x1080 x the window scale,
++// which is what makes it crisp). A surface composited into a world quad is not:
++// its layout is the size the page thinks it is, while its device size follows the
++// quad's *projected* size. A screen that fills the viewport therefore rasterises
++// at the whole viewport -- measured 2026-10-23, a 100 ft cinema spawned 20 m away
++// logged `view=1165x728 pixels=2561x1601 scale=2.198`, 4.1 megapixels of Chromium
++// compositing 30 times a second on the player's own GPU for a 1280x720 stream,
++// plus a three-slot frame ring of the same size (49 MB). The quad re-samples all
++// of it anyway. So a world screen caps the density (`maxDeviceScale = 1`, i.e.
++// never above one device pixel per CSS pixel) and keeps its layout untouched.
++//
++// A cap of 0 (or a non-finite one) means "no ceiling", which is every surface
++// that does not ask. The result stays inside the clamp the layout scale already
++// uses, so a cap can never produce a ring outside the sizes the rest of the
++// pipeline accepts.
++[[nodiscard]] inline float EffectiveDeviceScale(const float aLayoutScale, const float aCap)
++{
++    if (!std::isfinite(aLayoutScale) || !(aLayoutScale > 0.0F))
++    {
++        return 1.0F;
++    }
++    const float capped = (std::isfinite(aCap) && aCap > 0.0F) ? std::min(aLayoutScale, aCap) : aLayoutScale;
++    return std::clamp(capped, 0.25F, 4.0F);
++}
+ } // namespace op77::WebUI

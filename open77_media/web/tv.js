@@ -25,10 +25,15 @@
 //                              fetches the film, and that request crosses the
 //                              game host: /op77/media/found hands it back, and
 //                              it goes to the decoder like any other link.
-//   Widevine / PlayReady       no CDM in libcef, so DRM video cannot play --
-//                              and a link to such a service (Netflix and the
-//                              rest of PROTECTED_SERVICES) says so on screen
-//                              instead of going to the probe
+//   Widevine / PlayReady       not in THIS libcef build (measured: no CDM), but
+//                              not a fixed "impossible" -- the page now ASKS
+//                              `requestMediaKeySystemAccess(com.widevine.alpha)`
+//                              and reports what it finds. A link to such a
+//                              service (Netflix and the rest of
+//                              PROTECTED_SERVICES) is still not a picture here:
+//                              it refuses to be framed in a screen and checks
+//                              the device itself, so a CDM alone is not enough.
+//                              See PROTECTED_SERVICES below.
 //
 // So a link is no longer judged by its file extension. The page ASKS the host:
 // /op77/media/probe runs ffprobe on the link and answers with the container,
@@ -38,9 +43,14 @@
 // Opus WebM, seekable because the page owns the element; `nothing` is a 404 or
 // an HTML page, and says so out loud instead of showing a black rectangle.
 //
-// Netflix is not a limitation of this code: no CDM can ship in a game that runs
-// under EAC, and Netflix additionally gates desktop playback on a hardware
-// signature a CEF host cannot present.
+// Netflix needs three things at once: Google's official Widevine CDM in the
+// surface that renders it, a top-level browser (Netflix refuses to be framed),
+// and Netflix accepting that host. The probe measures the first; this page
+// cannot supply the second (it shows links in a frame); the third is Netflix's
+// own device check. How to wire the CDM into the CEF build is in
+// docs/widevine-cdm-integration.md. Until a surface carries all three, the
+// watch-party path (everyone's own browser, in step) is how a Netflix title is
+// watched together.
 
 (function () {
   "use strict";
@@ -80,6 +90,7 @@
     curtainCountdown: document.getElementById("curtain-countdown"),
     curtainToggle: document.getElementById("curtain-toggle"),
     reveal: document.getElementById("reveal"),
+    lock: document.getElementById("lock"),
   };
 
   // The server's last word. Never mutated locally except by a `media:state`.
@@ -89,7 +100,7 @@
   // the first frame instead of the page holding 100 until the state round-trips.
   let state = {
     url: "", volume: 75, muted: false, paused: false, label: "",
-    border: "", curtain: "open", key: "", parties: false,
+    border: "", curtain: "open", key: "", parties: false, locked: false,
     // The server's playhead, and when it reached this page. `elapsed` is an
     // instant sampled when the record was built -- so it is only meaningful
     // together with its arrival time, and the pair is what `expectedPosition`
@@ -359,6 +370,11 @@
   // onto another browser. It has no DRM module, so protected video does not play
   // in it either (see PROTECTED_SERVICES).
   const SHARED_BROWSER_MARK = "#open77-shared-browser";
+  /// The screen-mirror mark. A link ending in it is shown as a live, view-only
+  /// picture of a remote PC (the screen-mirror relay's receiver page), framed
+  /// the same way the shared browser is. The remote PC publishes JPEG frames to
+  /// the relay; this screen draws them. Nothing is sent back to that PC.
+  const MIRROR_MARK = "#open77-mirror";
 
   /// The DRM-protected service a link belongs to, or null.
   function protectedService(url) {
@@ -402,8 +418,53 @@
 
   /// Decides how a URL is shown. Returns `{ kind, src, videoId }` or
   /// `{ kind: "refused", reason }`.
+  // ---------------------------------------------------------------------------
+  // Does this browser carry a Widevine CDM? MEASURED, not assumed.
+  // ---------------------------------------------------------------------------
+  // `requestMediaKeySystemAccess` is the only honest way to ask. A build that
+  // carries Google's official Widevine CDM answers it; this repo's libcef build
+  // answers `NotSupportedError` (measured, docs/webui-media-and-audio.md). The
+  // answer only decides what the screen SAYS about a DRM link -- it does not by
+  // itself make such a link play: a protected service also refuses to be framed
+  // here and checks the device, so even with a CDM a link is not a picture on a
+  // television (see PROTECTED_SERVICES below).
+  let widevineFn;
+  let widevineAvailable = false;
+  let widevinePending = false;
+
+  function ensureWidevine() {
+    const fn = (typeof navigator !== "undefined" && navigator.requestMediaKeySystemAccess) || null;
+    if (fn === widevineFn) return; // already asked this EME surface
+    widevineFn = fn;
+    if (!fn) {
+      widevineAvailable = false;
+      report("widevine", "unavailable");
+      return;
+    }
+    if (widevinePending) return;
+    widevinePending = true;
+    const configs = [{
+      initDataTypes: ["cenc"],
+      videoCapabilities: [{ contentType: 'video/mp4; codecs="avc1.42E01E"' }],
+    }];
+    Promise.resolve()
+      .then(function () { return fn.call(navigator, "com.widevine.alpha", configs); })
+      .then(function () { widevineAvailable = true; })
+      .catch(function () { widevineAvailable = false; })
+      .then(function () {
+        widevinePending = false;
+        report("widevine", widevineAvailable ? "available" : "unavailable");
+        render();
+      });
+  }
+
   function classify(url) {
+    ensureWidevine();
     if (!url) return { kind: "idle" };
+
+    if (url.endsWith(MIRROR_MARK)) {
+      return { kind: "mirror", src: url.slice(0, -MIRROR_MARK.length) };
+    }
 
     if (url.endsWith(SHARED_BROWSER_MARK)) {
       return { kind: "browser", src: url.slice(0, -SHARED_BROWSER_MARK.length) };
@@ -676,6 +737,10 @@
       // into: the level is posted to it, and the image's open77-volume.js puts it
       // on the stream (and says so, logged as browser_ice).
       postSharedBrowserVolume(volume, audible);
+    } else if (showing.kind === "mirror") {
+      // The screen mirror's sound comes from the framed receiver page. The
+      // level is posted to it, and its audio path puts it on the stream's gain.
+      postMirrorVolume(volume, audible);
     } else if (showing.kind === "embed") {
       // An arbitrary site's player is inside a document this page cannot reach.
       // Said once, on screen, rather than leaving an operator to wonder why the
@@ -809,7 +874,8 @@
     // Leaving the shared browser closes it, whatever comes next: its stream would
     // otherwise keep playing, sound included, in the hidden frame behind a probe
     // or a video.
-    if (showing.kind === "browser" && decided.kind !== "browser") {
+    if ((showing.kind === "browser" || showing.kind === "mirror") &&
+        decided.kind !== showing.kind) {
       stopPicture();
       showing = { kind: "none" };
     }
@@ -836,6 +902,11 @@
       return;
     }
 
+    if (decided.kind === "mirror") {
+      if (showing.kind !== "mirror" || showing.src !== decided.src) showMirror(decided.src);
+      return;
+    }
+
     if (decided.kind === "browser") {
       if (showing.kind !== "browser" || showing.src !== decided.src) showSharedBrowser(decided.src);
       // At every update: another player moving the volume is one.
@@ -851,7 +922,7 @@
       showing = { kind: "protected", url: decided.url };
       elements.idleDetail.textContent = service.name + " cannot play on a television in the game";
       notice(service.name + " is DRM-protected: it streams only to a browser with " + service.name +
-        "'s licensed DRM, and the game's browser has none. " +
+        "'s licensed DRM, and " + (widevineAvailable ? "this screen cannot show it: " + service.name + " refuses to be framed here and checks the device, even though this browser carries a Widevine module." : "this screen's browser carries no Widevine DRM module (measured), and " + service.name + " also refuses to be framed here and checks the device.") + " " +
         (service.parties && state.parties
           ? "To watch it together, type /watch at this TV: a watch party plays it on everyone's own " +
             service.name + " in Edge or Chrome, in step, and this screen shows the party."
@@ -1232,6 +1303,7 @@
   /// The level last posted to the shared browser's page, so an update that
   /// changes nothing is not reported again.
   let sharedBrowserVolume = "";
+  let mirrorFrame = null, mirrorVolume = "";
   /// The television's volume and mute, posted to the shared browser's client page
   /// -- to its origin only -- where the image's open77-volume.js puts it on the
   /// stream's media element and keeps it there. Without this the volume slider and
@@ -1256,6 +1328,94 @@
       report(audible ? "volume_applied" : "mute_applied", line);
     }
   }
+  /// The mirror receiver's volume and mute, posted to its page -- to its origin
+  /// only -- where the framed page's audio path puts it on the stream's gain.
+  /// Without this the television's mute button did nothing to the mirrored PC's
+  /// sound, which now streams alongside the picture.
+  function postMirrorVolume(volume, audible) {
+    if (!mirrorFrame || !mirrorFrame.contentWindow) return;
+    let origin;
+    try {
+      origin = new URL(mirrorFrame.src).origin;
+    } catch (error) {
+      return;
+    }
+    try {
+      mirrorFrame.contentWindow.postMessage(
+        { open77MirrorVolume: 1, volume: volume / 100, muted: !audible }, origin);
+    } catch (error) {
+      return;
+    }
+    const line = "asked=" + volume + (audible ? "" : " muted") + " via the screen mirror's page";
+    if (line !== mirrorVolume) {
+      mirrorVolume = line;
+      report(audible ? "volume_applied" : "mute_applied", line);
+    }
+  }
+
+  /// What shape the picture has to be shown in, measured.
+  ///
+  /// The shared browser's desktop is 1280x720 (`NEKO_DESKTOP_SCREEN` in
+  /// `shared-browser/server/up.sh`), so its stream is 16:9 whatever box it is put
+  /// in -- and the box is not always 16:9, nor even always the prop's shape: the
+  /// control strip takes its height out of the screen, and a client drives the
+  /// surface with the picture across the viewport, whose shape is that PC's own
+  /// monitor (a 5120x1440, 32:9 client, 2026-10-16).
+  ///
+  /// This page therefore does not fit the picture to the box itself. The frame is the
+  /// box, exactly, and what happens inside it is the framed page's: the shared
+  /// browser's own client page measures its stream against the box and answers for it
+  /// (`open77-fit.js` in the image) by scaling the picture up until it covers the box
+  /// and cropping what hangs over -- the cinema panel's 8 px stripe, a 2.39 screen's
+  /// 26 % of height, a 32:9 client surface's half of it. Nothing is drawn beside the
+  /// picture, ever: five fills that left something beside it were measured on a
+  /// television on 2026-10-16 -- black stripes, a blur, the video again, the picture's
+  /// edge column stretched, and the same edge colours dimmed as a wash -- and every one
+  /// of them was reported as bars by the player looking at the screen.
+  ///
+  /// Said once per box shape, because these numbers are what tells "this set's box
+  /// is not 16:9" apart from "this page is broken" -- and the framed page reports
+  /// what it did about it in the same log, as `browser_ice`.
+  const SHARED_BROWSER_ASPECT = 16 / 9;
+  let liveFrameBox = "";
+  function noteLiveFrameBox() {
+    if (showing.kind !== "browser") return;
+    const box = elements.embed;
+    const width = box.clientWidth;
+    const height = box.clientHeight;
+    // Hidden (`display: none`): nothing to measure, and it is measured again when
+    // it is shown.
+    if (!width || !height) return;
+    const line = Math.round(width) + "x" + Math.round(height) + ", " + (width / height).toFixed(2);
+    if (line === liveFrameBox) return;
+    liveFrameBox = line;
+    report("browser_box", "the shared browser's " + SHARED_BROWSER_ASPECT.toFixed(2) +
+      " picture in a " + line + " screen box: the frame is the box, the picture whole");
+  }
+
+  /// Shows a live, view-only picture of a remote PC in the frame. `src` is the
+  /// screen-mirror relay's receiver page for a channel; it joins over WebSocket
+  /// and draws whatever the remote PC publishes, picture and sound. Recreated on
+  /// a change of source.
+  function showMirror(src) {
+    stopPicture();
+    const frame = document.createElement("iframe");
+    frame.setAttribute("allow", "autoplay; fullscreen");
+    frame.setAttribute("referrerpolicy", "no-referrer");
+    frame.src = src;
+    frame.addEventListener("load", () => {
+      report("mirror_framed", "screen mirror receiver loaded");
+      // Its audio path is listening now: the level again.
+      applyVolume();
+    });
+    elements.embed.appendChild(frame);
+    mirrorFrame = frame;
+    showOnly("embed");
+    showing = { kind: "mirror", src: src };
+    notice("Screen mirror: a live view of another PC, with its sound, at this television.");
+    report("mirror", "screen mirror");
+  }
+
   function showSharedBrowser(src) {
     stopPicture();
     sharedBrowserVolume = "";
@@ -1267,10 +1427,16 @@
       report("browser_framed", "shared browser client loaded");
       // Its open77-volume.js is listening now: the level again.
       applyVolume();
+      // A surface laid out again can move the box under a frame that is already
+      // there, and the box is what the framed page is told about it.
+      noteLiveFrameBox();
     });
     elements.embed.appendChild(frame);
     youTubeFrame = frame;
     showOnly("embed");
+    // The frame is the screen box (see `noteLiveFrameBox`), and the box is
+    // measurable now that the embed is showing.
+    noteLiveFrameBox();
     showing = { kind: "browser", src: src };
     notice("Shared browser: a real Chromium on the server, the same for everyone at this TV. " +
       "Press F8 at the screen to use it.");
@@ -1607,10 +1773,44 @@
   // Marked while the shared browser is on, whose picture is another browser's:
   // nothing in the transport moves it, and the strip leaves that group out.
 
+  // The admin screen-lock, drawn. The server refuses a non-admin change on a
+  // locked set (open77:media:control); this greys the controls so the screen
+  // reads as locked and a stray click does nothing, and keeps the lock button
+  // live as the one control that can lift it.
+  //
+  // The same greying answers the other refusal: a server whose televisions are
+  // admin-only (`adminOnlyControl`) tells each client whether THAT player may drive
+  // a set, and a player who may not gets a strip that reads as locked and one line
+  // saying why. Without it the panel would look live and do nothing, because every
+  // click is refused -- and a greyed control that explains itself is the difference
+  // between "this is not mine to drive" and "the panel is broken".
+  let deniedLine = "";
+  function applyLock() {
+    const denied = state.controlDenied === "" ? "" : String(state.controlDenied);
+    const locked = state.locked === true || denied !== "";
+    elements.controls.classList.toggle("locked", locked);
+    if (elements.lock) {
+      // The set's own lock, not this player's access: a player who may not drive a
+      // television must not be shown "Unlock" for a screen nobody has locked.
+      elements.lock.textContent = state.locked === true ? "Unlock" : "Lock";
+      elements.lock.classList.toggle("engaged", state.locked === true);
+    }
+    if (denied !== deniedLine) {
+      deniedLine = denied;
+      notice(denied === "" ? "" : denied === "media_control_is_admin_only"
+        ? "Only an admin can drive the television on this server."
+        : denied);
+    }
+  }
+
   function syncControlsVisibility() {
     const focused = document.hasFocus();
     elements.controls.hidden = !focused;
     elements.controls.classList.toggle("browser", showing.kind === "browser");
+    applyLock();
+    // The strip has just taken its height, or given it back: the box the picture
+    // is drawn in changed with it.
+    noteLiveFrameBox();
   }
 
   function currentTimeText(seconds) {
@@ -1657,6 +1857,14 @@
       // Whether this server runs watch parties (the client asks for
       // `opx_watchparty`): the one place a Netflix link can be watched together.
       parties: payload.parties === true,
+      // The admin screen-lock, from the server record. Greyed and unclickable
+      // controls on screen; the server refuses a non-admin change regardless.
+      locked: payload.locked === true,
+      // Whether this PLAYER may drive a television at all, from the server's own
+      // admin-only switch -- the client cannot read its own ACEs, so the answer
+      // travels with the state. Empty when there is none, which is every player on
+      // a server that has not turned it on.
+      controlDenied: typeof payload.controlDenied === "string" ? payload.controlDenied : "",
       // The playhead and its arrival time travel together, so they are taken
       // together: an `elapsed` from this record with a `receivedAt` from the last
       // one is a position measured from the wrong instant.
@@ -1710,6 +1918,7 @@
   bridge.on("media:controls", function (payload) {
     const show = payload && payload.show === true;
     elements.controls.hidden = !show;
+    noteLiveFrameBox();
   });
 
   elements.media.addEventListener("loadedmetadata", syncSeek);
@@ -1807,12 +2016,22 @@
     presentCurtain(CURTAIN_REVEAL);
     bridge.emit("media:curtain", { curtain: CURTAIN_REVEAL });
   });
+  // The admin screen-lock button. It only asks the server -- the same path as
+  // every other control -- and the server obeys it only for a holder of the
+  // command.media.lock ACE, refusing a non-admin attempt to lock or unlock. No
+  // optimistic flip here on purpose: a non-admin click must not make the glass
+  // look locked when the server said no. The next media:state carries the real
+  // lock and applyLock draws it.
+  elements.lock.addEventListener("click", function () {
+    bridge.emit("media:lock", { locked: !state.locked });
+  });
   elements.url.addEventListener("keydown", function (event) {
     if (event.key === "Enter") bridge.emit("media:url", { url: elements.url.value });
   });
 
   window.addEventListener("focus", syncControlsVisibility);
   window.addEventListener("blur", syncControlsVisibility);
+  window.addEventListener("resize", noteLiveFrameBox);
 
   window.addEventListener("keydown", function (event) {
     if (event.target === elements.url) return;

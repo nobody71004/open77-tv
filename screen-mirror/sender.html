@@ -1,0 +1,432 @@
+<!doctype html>
+<!-- open77 screen-mirror sender. Runs on the PC you want to watch (your "work"
+     PC). Captures the screen and streams it over WebRTC -- H.264 video and Opus
+     audio -- straight to each receiver. View-only: it never receives or sends
+     input.
+
+     The WebSocket here is only the SIGNALING channel: it carries the small
+     SDP/ICE messages that let the sender and each receiver find each other. The
+     picture and sound travel over WebRTC -- relayed by the VPS's TURN server
+     only when the two ends cannot reach each other directly -- so they never
+     touch that socket. This is what keeps the picture sharp and the latency low.
+
+     Open it on the PC whose screen you want to mirror. If the link carries no
+     channel/token it asks once and remembers them in this browser:
+
+       /?channel=NAME&token=SECRET   prefill + skip the form
+       /?source=screen|canvas        capture the screen (default) or a test pattern
+       /?fps=N                       capture frame rate, capped at 60
+
+     DRM note: this captures the normal desktop output only. Protected video
+     (Netflix etc.) comes through black because the OS protected path blocks
+     capture -- by design. Nothing here bypasses that. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>open77 screen mirror - sender</title>
+<style>
+  body { background:#111; color:#ddd; font:14px system-ui, sans-serif; margin:0; }
+  #wrap { padding:12px; max-width:720px; }
+  video { max-width:100%; border:1px solid #333; border-radius:6px; background:#000; }
+  #status { margin:10px 0; padding:8px 10px; border-radius:6px; background:#1b2a1b; color:#9fe3a0; }
+  #status.bad { background:#2a1b1b; color:#e39f9f; }
+  small { color:#888; }
+  #setup { margin:12px 0; padding:12px; border:1px solid #333; border-radius:8px; background:#171717; }
+  #setup.hidden { display:none; }
+  #setup label { display:block; margin:8px 0 3px; font-size:13px; color:#bbb; }
+  #setup input { width:100%; max-width:420px; padding:7px 9px; border-radius:6px;
+    border:1px solid #444; background:#0c0c0c; color:#eee; font-size:14px; }
+  #setup button { margin-top:12px; padding:9px 16px; border:0; border-radius:6px;
+    background:#2e6da4; color:#fff; font-size:14px; cursor:pointer; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <h3 style="margin:0 0 8px">Screen mirror &mdash; sender</h3>
+
+  <div id="setup" class="hidden">
+    <strong>Connect this sender to your mirror channel</strong>
+    <div style="color:#999; font-size:13px; margin:4px 0 2px">
+      Use the same channel and token the television's capture link uses. They are
+      remembered in this browser only.
+    </div>
+    <label for="ch">Channel</label>
+    <input id="ch" placeholder="WORK" autocomplete="off">
+    <label for="tk">Token</label>
+    <input id="tk" placeholder="the mirror token" autocomplete="off">
+    <button id="go">Start mirroring</button>
+  </div>
+
+  <div id="status">starting &hellip;</div>
+  <video id="cap" autoplay muted playsinline></video>
+  <div><small id="meta"></small></div>
+</div>
+
+<script>
+const q = new URLSearchParams(location.search);
+
+// Channel/token: URL wins, then what this browser remembered, then a default
+// channel of WORK (the channel name is not the secret; the token is).
+function remembered(key) { try { return localStorage.getItem(key) || ""; } catch { return ""; } }
+function remember(key, val) { try { localStorage.setItem(key, val); } catch {} }
+
+let CHANNEL = q.get("channel") || remembered("mirror.channel") || "WORK";
+let TOKEN   = q.get("token")   || remembered("mirror.token")   || "";
+const SOURCE = q.get("source") || "screen";
+// Capture frame rate, CAPPED at 60. The screen may run faster; the mirror does
+// not: 60 is the ceiling the user asked for. `?fps=` can lower it further.
+const FPS_CAP = 60;
+const FPS = Math.max(1, Math.min(FPS_CAP, Number(q.get("fps") || FPS_CAP)));
+
+const video = document.getElementById("cap");
+const statusEl = document.getElementById("status");
+const metaEl = document.getElementById("meta");
+const setupEl = document.getElementById("setup");
+
+function setStatus(text, bad) {
+  statusEl.textContent = text;
+  statusEl.className = bad ? "bad" : "";
+}
+function base() { return location.pathname.replace(/[^/]*$/, ""); }
+function wsUrl() {
+  return (location.protocol === "https:" ? "wss://" : "ws://") + location.host + base() + "ws";
+}
+
+// ---- WebRTC ---------------------------------------------------------------
+// One peer connection per viewer. The display's video (H.264, preferred) and
+// audio (Opus) tracks are added to each, and the SDP/ICE dance runs over the
+// signaling WebSocket. The media itself never touches that socket.
+let displayStream = null;
+let iceServers = [];
+const peers = new Map();        // receiverId -> RTCPeerConnection
+const pendingReceivers = new Set(); // viewers seen before the capture started
+let webrtcReady = false;
+
+async function fetchIce() {
+  try {
+    const r = await fetch(base() + "ice");
+    iceServers = (await r.json()).iceServers || [];
+  } catch { iceServers = []; }
+}
+
+function signal(to, payload) {
+  if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: "signal", to, payload }));
+}
+
+// Put H.264 first on the video transceiver so the picture is negotiated as
+// H.264 where both ends support it (sharp text, hardware encode/decode). The
+// other codecs are kept as fallbacks; a browser without H.264 still works.
+function preferH264(transceiver) {
+  if (!transceiver || !transceiver.setCodecPreferences) return;
+  const caps = (window.RTCRtpReceiver.getCapabilities && RTCRtpReceiver.getCapabilities("video")) || { codecs: [] };
+  const codecs = caps.codecs || [];
+  const h264 = codecs.filter((c) => c.mimeType.toLowerCase() === "video/h264");
+  const rest = codecs.filter((c) => c.mimeType.toLowerCase() !== "video/h264");
+  if (h264.length) { try { transceiver.setCodecPreferences([...h264, ...rest]); } catch {} }
+}
+
+// ---- Adaptive bitrate ------------------------------------------------------
+// One controller per connected peer. It watches the outgoing video and backs the
+// bitrate off when the link shows loss, rising RTT, or a bandwidth limitation,
+// then eases back up while the link is clean (AIMD). This is what stops the
+// picture stalling mid-frame on Wi-Fi: the encoder stops overwhelming the link,
+// so the receiver stops freezing while it waits out lost packets.
+const adaptiveTimers = new Map();   // RTCPeerConnection -> interval id
+const adaptiveState = new Map();    // RTCPeerConnection -> {cur,lastSent,lastLost}
+function stopAdaptive(pc) {
+  const t = adaptiveTimers.get(pc);
+  if (t) { clearInterval(t); adaptiveTimers.delete(pc); }
+  adaptiveState.delete(pc);
+}
+function startAdaptive(pc, sender) {
+  if (!sender || adaptiveTimers.has(pc)) return;
+  const MIN = 250000, MAX = 8000000;
+  adaptiveState.set(pc, { cur: 3000000, lastSent: 0, lastLost: 0 });
+  const apply = () => {
+    const st = adaptiveState.get(pc);
+    if (!st) return;
+    try {
+      const p = sender.getParameters();
+      if (!p.encodings || !p.encodings.length) p.encodings = [{}];
+      p.encodings[0].maxBitrate = Math.round(st.cur);
+      p.degradationPreference = "maintain-resolution";  // keep text sharp
+      sender.setParameters(p).catch(() => {});
+    } catch {}
+  };
+  apply();
+  const timer = setInterval(async () => {
+    const st = adaptiveState.get(pc);
+    if (!st) { clearInterval(timer); return; }
+    if (pc.connectionState === "closed") { stopAdaptive(pc); return; }
+    let lossRate = 0, rttMs = 0, limited = "";
+    try {
+      const stats = await pc.getStats();
+      let sent = 0, lost = 0;
+      stats.forEach((r) => {
+        if (r.type === "outbound-rtp" && r.kind === "video") {
+          sent = r.packetsSent || 0;
+          limited = r.qualityLimitationReason || "";
+        }
+        if (r.type === "remote-inbound-rtp" && r.kind === "video") {
+          lost = r.packetsLost || 0;
+          rttMs = (r.roundTripTime || 0) * 1000;
+        }
+      });
+      const dSent = sent - st.lastSent, dLost = lost - st.lastLost;
+      st.lastSent = sent; st.lastLost = lost;
+      if (dSent > 0) lossRate = Math.max(0, dLost) / (dSent + Math.max(0, dLost));
+    } catch {}
+    const congested = limited === "bandwidth" || lossRate > 0.02 || rttMs > 250;
+    if (congested) st.cur = Math.max(MIN, st.cur * 0.8);
+    else if (limited === "" && lossRate < 0.005 && rttMs < 120) st.cur = Math.min(MAX, st.cur * 1.1 + 50000);
+    apply();
+  }, 2000);
+  adaptiveTimers.set(pc, timer);
+}
+
+function createPeerFor(rid) {
+  if (peers.has(rid)) return peers.get(rid);
+  const pc = new RTCPeerConnection({ iceServers });
+  peers.set(rid, pc);
+  const vTrack = displayStream.getVideoTracks()[0];
+  let vSender = null;
+  if (vTrack) {
+    // "detail" favours sharp text over smooth motion -- right for a desktop.
+    try { vTrack.contentHint = "detail"; } catch {}
+    const vTr = pc.addTransceiver(vTrack, { direction: "sendonly" });
+    preferH264(vTr);
+    vSender = vTr.sender;
+    // On a dip, drop framerate rather than blur the text.
+    try { const p = vSender.getParameters(); p.degradationPreference = "maintain-resolution"; vSender.setParameters(p); } catch {}
+  }
+  const aTrack = displayStream.getAudioTracks()[0];
+  if (aTrack) pc.addTransceiver(aTrack, { direction: "sendonly" });
+  pc.onicecandidate = (e) => {
+    if (e.candidate) signal(rid, { kind: "ice", candidate: e.candidate.toJSON() });
+  };
+  // One offer path for both the first offer and ICE-restart re-offers: whenever
+  // the pc wants to negotiate, push a fresh offer to this viewer.
+  pc.onnegotiationneeded = async () => {
+    try {
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      signal(rid, { kind: "offer", sdp: { type: pc.localDescription.type, sdp: pc.localDescription.sdp } });
+    } catch {}
+  };
+  let discTimer = null;
+  pc.onconnectionstatechange = () => {
+    reportState();
+    const s = pc.connectionState;
+    if (s === "connected") {
+      if (discTimer) { clearTimeout(discTimer); discTimer = null; }
+      startAdaptive(pc, vSender);
+    } else if (s === "disconnected") {
+      // Transient drop (Wi-Fi blip): give ICE a moment to recover, then restart.
+      if (!discTimer) discTimer = setTimeout(() => { discTimer = null; try { pc.restartIce(); } catch {} }, 4000);
+    } else if (s === "failed") {
+      if (discTimer) { clearTimeout(discTimer); discTimer = null; }
+      try { pc.restartIce(); } catch {}   // auto-reconnect: renegotiate a fresh route
+    } else if (s === "closed") {
+      if (discTimer) { clearTimeout(discTimer); discTimer = null; }
+      stopAdaptive(pc);
+    }
+  };
+  return pc;
+}
+
+function reportState() {
+  const states = [...peers.values()].map((p) => p.connectionState);
+  const live = states.filter((s) => s === "connected").length;
+  metaEl.textContent = live + " viewer(s) connected - " + canvasLabel() +
+    " - capped " + FPS + "fps" + (displayStream && displayStream.getAudioTracks().length ? " - with sound" : " - no sound");
+}
+function canvasLabel() {
+  const t = displayStream && displayStream.getVideoTracks()[0];
+  const s = t && t.getSettings ? t.getSettings() : {};
+  return (s.width || "?") + "x" + (s.height || "?") + (t && t.label ? " (" + t.label + ")" : "");
+}
+
+// ---- Signaling WebSocket lifecycle ---------------------------------------
+// One socket at a time, one reconnect timer at a time, exponential backoff, and
+// a stale-socket guard, so a transient drop settles back to live instead of
+// flapping. Only signaling rides here; media is unaffected by a reconnect once
+// the peer connections are up.
+let ws = null;
+let reconnectTimer = null;
+let backoffMs = 1000;
+const BACKOFF_MAX = 30000;
+let stopped = false;
+
+function scheduleReconnect() {
+  if (stopped || reconnectTimer) return;
+  reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(); }, backoffMs);
+  backoffMs = Math.min(backoffMs * 2, BACKOFF_MAX);
+}
+
+function connect() {
+  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+  const old = ws; ws = null;
+  if (old) { try { old.close(); } catch {} }
+  let sock;
+  try { sock = new WebSocket(wsUrl()); }
+  catch { setStatus("cannot open the relay connection - retrying", true); scheduleReconnect(); return; }
+  ws = sock;
+
+  sock.addEventListener("open", () => {
+    if (sock !== ws) return;
+    backoffMs = 1000;
+    sock.send(JSON.stringify({ type: "join", channel: CHANNEL, role: "sender", token: TOKEN }));
+    setStatus("connected - channel " + CHANNEL + (SOURCE === "screen" ? " - pick a screen to share" : " - test pattern"));
+  });
+
+  sock.addEventListener("message", (e) => {
+    if (sock !== ws) return;
+    let m; try { m = JSON.parse(e.data); } catch { return; }
+    if (m.type === "superseded") {
+      stopped = true;
+      setStatus("another sender took channel " + CHANNEL + " - this sender has stopped. Close the other one to resume here.", true);
+      showSetup();
+    } else if (m.type === "auth_failed") {
+      stopped = true;
+      setStatus("not accepted by the relay - check the channel and token below.", true);
+      showSetup();
+    } else if (m.type === "peer" && m.role === "receiver") {
+      // A viewer joined: open a peer connection and offer it the media.
+      if (webrtcReady && displayStream) createPeerFor(m.id);
+      else pendingReceivers.add(m.id);
+    } else if (m.type === "signal") {
+      const pc = peers.get(m.from);
+      const p = m.payload || {};
+      if (!pc) return;
+      if (p.kind === "answer") pc.setRemoteDescription(p.sdp).catch(() => {});
+      else if (p.kind === "ice") pc.addIceCandidate(p.candidate).catch(() => {});
+    } else if (m.type === "peer_left") {
+      const pc = peers.get(m.id);
+      if (pc) { try { pc.close(); } catch {} peers.delete(m.id); reportState(); }
+    }
+  });
+
+  sock.addEventListener("close", () => {
+    if (sock !== ws) return;
+    ws = null;
+    if (stopped) return;
+    setStatus("relay connection closed - retrying", true);
+    scheduleReconnect();
+  });
+  sock.addEventListener("error", () => {});
+}
+
+function showSetup() {
+  document.getElementById("ch").value = CHANNEL;
+  document.getElementById("tk").value = TOKEN;
+  setupEl.classList.remove("hidden");
+}
+
+document.getElementById("go").addEventListener("click", () => {
+  CHANNEL = (document.getElementById("ch").value || "WORK").trim();
+  TOKEN = document.getElementById("tk").value.trim();
+  remember("mirror.channel", CHANNEL);
+  remember("mirror.token", TOKEN);
+  setupEl.classList.add("hidden");
+  stopped = false; backoffMs = 1000;
+  setStatus("connecting to channel " + CHANNEL + " ...");
+  connect();
+});
+
+// ---- Capture ---------------------------------------------------------------
+// A test-pattern stream (animated canvas + a tone), so the audio/video paths and
+// the end-to-end test can run without a real screen or audio share.
+function testPatternStream() {
+  const canvas = document.createElement("canvas");
+  canvas.width = 1280; canvas.height = 720;
+  const ctx = canvas.getContext("2d");
+  let t = 0;
+  (function tick() {
+    t += 1;
+    const w = canvas.width, h = canvas.height;
+    ctx.fillStyle = "#12263a"; ctx.fillRect(0, 0, w, h);
+    ctx.fillStyle = "#2e6da4"; ctx.fillRect((t * 6) % w, 120, 220, 220);
+    ctx.fillStyle = "#e8e8e8"; ctx.font = "bold 48px system-ui";
+    ctx.fillText("open77 mirror " + t, 40, 90);
+    ctx.fillStyle = "#9fe3a0"; ctx.font = "28px system-ui";
+    ctx.fillText(new Date().toISOString().slice(11, 23), 40, h - 40);
+    requestAnimationFrame(tick);
+  })();
+  const vStream = canvas.captureStream(FPS);
+  const AC = window.AudioContext || window.webkitAudioContext;
+  const actx = new AC();
+  const osc = actx.createOscillator();
+  osc.frequency.value = 440;
+  const dest = actx.createMediaStreamDestination();
+  osc.connect(dest); osc.start();
+  actx.resume();
+  window.__open77SenderAudio = actx;
+  return new MediaStream([...vStream.getVideoTracks(), ...dest.stream.getAudioTracks()]);
+}
+
+async function startCapture() {
+  if (SOURCE !== "screen") {
+    displayStream = testPatternStream();
+    video.srcObject = displayStream;
+    try { await video.play(); } catch {}
+    webrtcReady = true;
+    setStatus("test pattern + tone - channel " + CHANNEL);
+    flushPending();
+    return true;
+  }
+  try {
+    // 60fps CAP: the screen may refresh faster; the mirror never exceeds 60.
+    const stream = await navigator.mediaDevices.getDisplayMedia({
+      video: { frameRate: { ideal: FPS, max: FPS } },
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+    });
+    displayStream = stream;
+    video.srcObject = stream;
+    try { await video.play(); } catch {}
+    webrtcReady = true;
+    setStatus("capturing the screen - channel " + CHANNEL +
+      (stream.getAudioTracks().length ? " - with sound" : " - no sound (tick 'Share audio' when picking)"));
+    flushPending();
+    return true;
+  } catch (err) {
+    setStatus("screen capture refused: " + err.name + " - " + err.message, true);
+    return false;
+  }
+}
+
+function flushPending() {
+  for (const rid of pendingReceivers) createPeerFor(rid);
+  pendingReceivers.clear();
+  reportState();
+}
+
+// The end-to-end test calls this to let audio start under headless autoplay rules.
+window.__open77Sender = {
+  resumeAudio() { if (window.__open77SenderAudio) window.__open77SenderAudio.resume(); },
+  trackSettings() {
+    const t = displayStream && displayStream.getVideoTracks()[0];
+    return t && t.getSettings ? t.getSettings() : {};
+  },
+  fps() { return FPS; },
+  viewerCount() { return peers.size; },
+  negotiatedCodecs() {
+    const out = [];
+    for (const pc of peers.values()) {
+      for (const tr of pc.getTransceivers()) {
+        const p = tr.sender && tr.sender.getParameters ? tr.sender.getParameters() : null;
+        if (p && p.codecs) for (const c of p.codecs) out.push(c.mimeType);
+      }
+    }
+    return out;
+  },
+};
+
+(async () => {
+  await fetchIce();
+  connect();
+  const ok = await startCapture();
+  if (ok) setInterval(reportState, 1000);
+})();
+</script>
+</body>
+</html>
