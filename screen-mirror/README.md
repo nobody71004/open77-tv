@@ -84,87 +84,104 @@ front. It prints the sender and receiver URLs with the token. Files:
 
 For the game box, which already has nginx on `xbuniverse.duckdns.org` instead of
 Caddy, the installers are `deploy/install-live-nginx.sh` (the shared relay) and
-`deploy/install-f2077.sh` (f2077's own — see the next section).
+`deploy/install-relay.sh` (one room's own — see the next section).
+`deploy/install-f2077.sh` is the bespoke script that did f2077's before
+`install-relay.sh` existed; both write the same thing.
 
-## The two relays on the game box
+## The relays on the game box
 
-The xbuniverse box runs **two** of these relays, one per game server, so that a
-link handed to one server's players cannot join the other server's channel. They
-are separate processes with their own port, path, token and channel — nothing is
-shared between them but the `mirror` user and the TURN/STUN settings:
+The xbuniverse box runs **three** of these relays, one per room that has a Mirror
+app, so that a link handed to one server's players cannot join another server's
+channel. They are separate processes with their own port, path, token and channel
+— nothing is shared between them but the `mirror` user and the TURN/STUN settings:
 
-| | shared (XyberRP) | f2077 |
-|---|---|---|
-| service | `open77-mirror.service` | `open77-mirror-f2077.service` |
-| code | `/opt/open77-screen-mirror` | `/opt/open77-screen-mirror-f2077` |
-| listens on | `127.0.0.1:8787` | `127.0.0.1:8788` |
-| public path | `https://xbuniverse.duckdns.org/screen-mirror/` | `https://xbuniverse.duckdns.org/screen-mirror-f2077/` |
-| channel | `WORK` | `F2077` |
-| token file (root-only) | `/root/.open77-mirror-token` | `/root/.open77-mirror-f2077-token` |
-| feeds the cinemas of | `open77-xbuniverse` (`/opt/open77-xbuniverse/.../opx_screenmirror/server/config.lua`) | `open77-f2077` (`/opt/open77-f2077/.../opx_screenmirror/server/config.lua`) |
-| installed by | `deploy/install-live-nginx.sh` | `deploy/install-f2077.sh` |
+| | shared (XyberRP) | f2077 | fr-us |
+|---|---|---|---|
+| service | `open77-mirror.service` | `open77-mirror-f2077.service` | `open77-mirror-fr-us.service` |
+| code | `/opt/open77-screen-mirror` | `/opt/open77-screen-mirror-f2077` | `/opt/open77-screen-mirror-fr-us` |
+| listens on | `127.0.0.1:8787` | `127.0.0.1:8788` | `127.0.0.1:8789` |
+| public path | `/screen-mirror/` | `/screen-mirror-f2077/` | `/screen-mirror-fr-us/` |
+| channel | `WORK` | `F2077` | `FRUS` |
+| token file (root-only) | `/root/.open77-mirror-token` | `/root/.open77-mirror-f2077-token` | `/root/.open77-mirror-fr-us-token` |
+| feeds the room of | `open77-xbuniverse` | `open77-f2077` | `open77-freeroamusa` |
+| installed by | `deploy/install-live-nginx.sh` | `deploy/install-f2077.sh` | `deploy/install-relay.sh fr-us 8789 /screen-mirror-fr-us FRUS /opt/open77-freeroamusa` |
+
+Each one writes that server's own `resources/opx_screenmirror/server/config.lua`
+(0600 root:root, previous file kept under `/opt/open77-backups`), which is the
+file the room service reads for its Mirror app.
 
 **Why the token has to be per server.** The token is the only thing that makes a
 channel unwatchable by everyone who merely knows its name. With one token for two
-servers on the same box, a player handed f2077's capture link could join XyberRP's
+servers on the same box, a player handed f2077's mirror link could join XyberRP's
 channel by guessing `WORK` — and the reverse. Each token lives in a root-only file
-in `/root` and never lands in this repository. `install-f2077.sh` prints its links
-with a placeholder for the token; `install-live-nginx.sh` prints the full sender
-and viewer URLs once, at install — treat that scrollback as a secret.
+in `/root` and never lands in this repository. `install-f2077.sh` and
+`install-relay.sh` print their links with a placeholder for the token;
+`install-live-nginx.sh` prints the full sender and viewer URLs once, at install —
+treat that scrollback as a secret.
 
-Both relays run as the unprivileged `mirror` user and read their TURN/STUN
-settings from `/etc/open77-mirror.env`; both are mounted in front of the same
-nginx site, additively, by inserting their `location` before its final 404. They
-differ in how far they go: `install-f2077.sh` backs the site up to
-`/opt/open77-backups`, puts it back if `nginx -t` refuses the new block, and then
-proves the new path answers through nginx; `install-live-nginx.sh` backs the site
-up beside itself, runs `nginx -t` and reloads, and proves only the relay's own
-loopback `/health` — so check `https://xbuniverse.duckdns.org/screen-mirror/health`
-after running it.
+All three run as the unprivileged `mirror` user and read their TURN/STUN settings
+from `/etc/open77-mirror.env`; each is mounted in front of the same nginx site,
+additively, by inserting its `location` before the final 404. They differ in how
+far they go: `install-f2077.sh` and `install-relay.sh` back the site up to
+`/opt/open77-backups`, put it back if `nginx -t` refuses the new block, and then
+prove the new path answers through nginx (and that the other paths still do);
+`install-live-nginx.sh` backs the site up beside itself, runs `nginx -t` and
+reloads, and proves only the relay's own loopback `/health` — so check
+`https://xbuniverse.duckdns.org/screen-mirror/health` after running it.
 
-Writing the game's side is the one thing the two installers do differently:
-`install-f2077.sh` writes f2077's `opx_screenmirror` config from its token itself
-(0600 root:root, previous file kept under `/opt/open77-backups`), while
-`install-live-nginx.sh` only installs the relay and prints the sender and viewer
-links — XyberRP's config was written from that token when the relay was first set
-up. Restarting the game server is what picks either up.
+Writing the game's side is the one thing they do differently: `install-f2077.sh`
+and `install-relay.sh` write their server's `opx_screenmirror` config from the
+token themselves, while `install-live-nginx.sh` only installs the relay and prints
+the sender and viewer links — XyberRP's config was written from that token when
+the relay was first set up. Restarting the game server is what picks it up (and,
+the first time, what starts `opx_screenmirror` at all: a server whose
+`resources.load` list does not name it will not discover it, which is why the
+resource has to be added to that list as well as installed).
 
-A difference worth knowing before re-running either: `install-f2077.sh` **reuses**
-its token file when one exists, while `install-live-nginx.sh` takes
-`MIRROR_TOKEN=` or generates a new one — re-running it as-is rotates the shared
-token, so XyberRP's config has to be written again from the new one (the f2077
-relay and its token are not touched either way).
+A difference worth knowing before re-running one: `install-f2077.sh` and
+`install-relay.sh` **reuse** their token file when one exists, while
+`install-live-nginx.sh` takes `MIRROR_TOKEN=` or generates a new one — re-running
+it as-is rotates the shared token, so XyberRP's config has to be written again
+from the new one (the other relays and their tokens are not touched either way).
 
-Health, one line each, from the box (both measured 200 on 2026-10-22, and
+Health, one line each, from the box (all three measured 200 on 2026-10-23, and
 `/healthz` still answering):
 
 ```bash
 curl --resolve xbuniverse.duckdns.org:443:127.0.0.1 https://xbuniverse.duckdns.org/screen-mirror/health
 curl --resolve xbuniverse.duckdns.org:443:127.0.0.1 https://xbuniverse.duckdns.org/screen-mirror-f2077/health
+curl --resolve xbuniverse.duckdns.org:443:127.0.0.1 https://xbuniverse.duckdns.org/screen-mirror-fr-us/health
 ```
 
-In game, the capture cinemas (`cinema.100ft.capture`, `cinema.150ft.capture`,
-`linkFrom = "opx_screenmirror"`) are put up with whichever server's config that
-server runs: `WORK` on XyberRP, `F2077` on f2077.
+In game, the mirror is an app on the room itself: open the room's home screen on
+the television (the `open77-TV-ROOM` records, `cinema.100ft` / `cinema.150ft`) and
+press **Mirror**. The room service reads whichever server's config that room
+belongs to — `WORK` on XyberRP, `F2077` on f2077, `FRUS` on fr-us — and opens the
+receiver inside the room, so the token is never in the page's HTML. Every room
+that has a config has the app; a room that has none (a new one, before its relay
+is installed) simply has no Mirror app. The capture cinema records are gone: the
+room is the screen.
 
 ## Using it
 
 1. On the **work PC**, open the sender URL in a browser and pick the screen:
    `https://<host>/?channel=WORK&token=<token>&source=screen`
-2. In the **game**, show the receiver at the TV:
+2. In the **game**, press **Mirror** on the room's home screen (spawn one of the
+   `open77-TV-ROOM` panels first) — or open the receiver directly:
    `https://<host>/receiver?channel=WORK&token=<token>`
 
 Both ends must share the same `channel` and `token`. One sender per channel; any
 number of viewers.
 
-## Game integration (the last mile)
+## Game integration
 
-The receiver page is deliberately shaped like the shared-browser client page the
-game already frames, so the wiring is small: teach the television to recognize a
-screen-mirror link and show it with `showSharedBrowser` (which frames a client
-page), pointed at the receiver URL. That touches `open77_media/web/ttv.js`
-(classify + show) and the server link handling, and needs a real in-game pass to
-verify — I've left it as the next step so this core could be proven first.
+Done, in the room. `shared-browser/room/server.mjs` reads the `url` out of this
+server's `opx_screenmirror/server/config.lua` and answers `/mirror?room=<role>`
+with a redirect to it; the room's **Mirror** app is that route. The room's own
+Chromium is the client, so the picture is on the television the same way the
+room's page is, and the room is the only thing that ever sees the link. Tested
+with `room/test/e2e-room.py`, which asserts the redirect (https, right channel)
+and that the app is absent where no config exists.
 
 ## Security & privacy
 

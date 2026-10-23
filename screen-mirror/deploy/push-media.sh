@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Pushes the open77_media updates (mirror wiring, admin lock, capture cinemas) and
-# the new opx_screenmirror resource to ONE game-server instance, then restarts it
-# and verifies it comes back clean. Run on the xbuniverse box as root:
+# Pushes the open77_media updates (the room records, admin lock) and the
+# opx_screenmirror resource to ONE game-server instance, then restarts it and
+# verifies it comes back clean. Run on the xbuniverse box as root:
 #
 #   bash push-media.sh open77-xbuniverse-staging      # staging first
 #   bash push-media.sh open77-xbuniverse              # then production
@@ -16,8 +16,8 @@ D="/opt/$INSTANCE"
 MEDIA="$D/resources/system/open77_media"
 RESDIR="$D/resources"
 CFG="$D/server.jsonc"
-# The screen-mirror viewer link the capture cinema shows (the channel the remote
-# PC publishes to). Server-side only; the token is the channel's shared secret.
+# The screen-mirror viewer link the room's Mirror app shows (the channel the
+# remote PC publishes to). Server-side only; the token is the channel's shared secret.
 URL="https://xbuniverse.duckdns.org/screen-mirror/receiver?channel=WORK&token=628ee81bd6dbff2d82cd2a2fdb16946b"
 
 [ -d "$MEDIA" ] || { echo "!! no $MEDIA"; exit 1; }
@@ -75,7 +75,7 @@ else:
 PY
 
 # 6. verify the capture record made it into records.lua on disk
-grep -q 'cinema.100ft.capture' "$MEDIA/shared/records.lua" && echo "-- records.lua has cinema.100ft.capture"
+grep -q 'open77-TV-ROOM' "$MEDIA/shared/records.lua" && echo "-- records.lua has the open77-TV-ROOM panels"
 grep -q 'MIRROR_MARK\|#open77-mirror' "$MEDIA/web/tv.js" && echo "-- tv.js has the mirror mark"
 
 echo "=== restarting $INSTANCE ==="

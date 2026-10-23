@@ -201,14 +201,13 @@ umask 077
   printf -- '-- opx_screenmirror -- server/config.lua\n'
   printf -- '--\n'
   printf -- '-- Written on the server at deploy (root-only) with the screen-mirror viewer\n'
-  printf -- '-- link. This copy is the placeholder a bundle carries: with no link, a capture\n'
-  printf -- '-- cinema says the capture is not set up here.\n'
+  printf -- '-- link. This copy is the placeholder a bundle carries: with no link, the\n'
+  printf -- '-- room Mirror app says the mirror is not set up here.\n'
   printf -- 'OpxScreenMirrorConfig = {\n'
   printf -- '    -- The relay viewer page for the channel the remote PC publishes to. A link\n'
   printf -- '    -- ending in the mirror mark, or one without it (the mark is added for you).\n'
+  printf -- '    -- The room service on this host reads this file for its Mirror app.\n'
   printf -- '    url = "%s",\n' "$LINK"
-  printf -- '    cinemaRecord = "cinema.150ft.capture",\n'
-  printf -- '    cinema100Record = "cinema.100ft.capture",\n'
   printf -- '}\n'
 } > "$CFG"
 chmod 600 "$CFG"; chown root:root "$CFG"
