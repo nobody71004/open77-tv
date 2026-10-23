@@ -102,18 +102,45 @@ if [ -z "$BOUNDS" ]; then echo "  FAIL Settings' search bar is not on the screen
   # a tap on the status bar and the notification shade opens. Measured
   # 2026-10-23 on both noVNC's vnc.html and screen.html, so the move is the test
   # being explicit about the pointer, not a workaround for one page.
-  x "xdotool mousemove $((SCREENW - 8)) $((SCREENH - 8)) sleep 0.3 mousemove $CX $CY sleep 0.3 click 1"
-  sleep 3
+  #
+  # The click and the typing are each asked for twice, the second time only when
+  # the first did not land. Measured on production 2026-10-23: the first press
+  # after that room's Chromium had sat on the splash for three hours was dropped,
+  # and the same gesture a second later opened Settings -- so one retry is the
+  # difference between a flake and a red suite. The retry is printed, never
+  # silent, so a run that needed it still says so.
+  click_screen() {
+    x "xdotool mousemove $((SCREENW - 8)) $((SCREENH - 8)) sleep 0.3 mousemove $CX $CY sleep 0.3 click 1"
+  }
   # Two images, two ways of saying "the search activity came up": AOSP 14 (the
   # emulator) reports it through the input method, LineageOS 20 (the native one)
   # focuses com.android.settings.intelligence …SearchActivity. Either is the
   # click having arrived; a miss leaves Settings' homepage focused.
-  check "a click on the screen opens Settings' search (the mouse reached Android)" \
+  search_open() {
     sh -c "adb -s '$DEVICE' shell dumpsys window 2>/dev/null | grep -qi SearchActivity || adb -s '$DEVICE' shell dumpsys input_method 2>/dev/null | grep -q open_search_view_edit_text"
-  x "xdotool type --delay 150 wifi"
-  sleep 3
-  check "the text typed at the keyboard is in Android's field, and it filtered the results" \
+  }
+  type_wifi() { x "xdotool type --delay 150 wifi"; }
+  wifi_typed() {
     sh -c "adb -s '$DEVICE' shell uiautomator dump /sdcard/ui.xml >/dev/null 2>&1; adb -s '$DEVICE' shell cat /sdcard/ui.xml | tr '>' '\n' | grep -q 'text=\"wifi\"' && adb -s '$DEVICE' shell cat /sdcard/ui.xml | tr '>' '\n' | grep -q 'text=\"Wi-Fi\"'"
+  }
+
+  click_screen
+  sleep 3
+  search_open || { echo "  .. the first click did not reach Android; asking again"; click_screen; sleep 3; }
+  check "a click on the screen opens Settings' search (the mouse reached Android)" search_open
+
+  type_wifi
+  sleep 3
+  wifi_typed || {
+    # Whatever the first attempt left in the field is cleared before the retry,
+    # so a partial "wif" cannot make the second attempt read "wifwifi" and fail
+    # a check the room actually got right.
+    echo "  .. the first keystrokes did not land; clearing the field and typing again"
+    for _ in 1 2 3 4 5 6 7 8 9 10; do adbRoot input keyevent KEYCODE_DEL >/dev/null 2>&1; done
+    type_wifi
+    sleep 3
+  }
+  check "the text typed at the keyboard is in Android's field, and it filtered the results" wifi_typed
 fi
 
 adbRoot input keyevent KEYCODE_BACK >/dev/null 2>&1
