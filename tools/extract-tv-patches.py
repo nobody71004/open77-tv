@@ -57,7 +57,10 @@ FEATURE = re.compile(
     r"|ScreenInput|PublishPointerOnScreen|screen input"
     # The scaled catalogue family: a 100 ft panel is a prop scale and a quad
     # written twice, and the stand-off that keeps it off the player.
-    r"|cinema|Cinema|StandOff|standoff",
+    r"|cinema|Cinema|StandOff|standoff"
+    # A world screen's raster density: the page is laid out for its rectangle and
+    # never rasterised above it, whatever the quad's projected size is.
+    r"|maxDeviceScale|EffectiveDeviceScale|device scale",
 )
 
 # The seam files. Three kinds are in here and each is treated differently:
@@ -94,6 +97,10 @@ SEAMS = [
     # The page policy and the host's own request gate are one decision in two
     # files: a directive in the header is a privilege the host has to grant.
     "webui/include/op77/WebUI/PagePolicy.hpp",
+    # Where a surface's device pixels are decided: the density a world screen
+    # caps, which is the difference between a 1165x728 frame and a 2561x1601 one
+    # for a quad that fills the viewport.
+    "webui/include/op77/WebUI/SurfaceSizing.hpp",
     "webui/include/op77/WebUI/Messages.hpp",
     "webui/include/op77/WebUI/Protocol.hpp",
     "webui/src/Messages.cpp",

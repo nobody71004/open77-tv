@@ -2,7 +2,7 @@
 # tools/extract-tv-patches.py. Apply by hand: this is not a patch
 # series, and the surrounding file has other unreleased work in it.
 diff --git a/scripting/src/ResourceHost.cpp b/scripting/src/ResourceHost.cpp
-index 7707d62f..6dc15111 100644
+index 7707d62f..0ed044bd 100644
 --- a/scripting/src/ResourceHost.cpp
 +++ b/scripting/src/ResourceHost.cpp
 @@ -7847,12 +7847,297 @@ public:
@@ -303,7 +303,201 @@ index 7707d62f..6dc15111 100644
      // anchor grants is exactly the capability `Open77.camera.project` already
      // grants ungated -- turning a world point into a screen point -- with the
      // sampling moved off the Lua tick. What an anchor *can* touch is bounded by
-@@ -10857,12 +11321,30 @@ public:
+@@ -9631,12 +9953,193 @@ public:
+         std::string error;
+         const bool ok = context->host->config.game.setRemoteWardrobe(
+             static_cast<uint64_t>(lua_tointeger(aState, 1)), wardrobe, error);
+         return PushPuppetResult(aState, ok, error);
+     }
+ 
++    /// `Open77.puppets.setModel(playerId, record)` -- the model this client draws
++    /// a remote player as: the record that player's own client published, or
++    /// nothing for the authored family proxy.
++    ///
++    /// Separate from `setBody`, which states the look worn on the family proxy,
++    /// for the same reason the owner's side needs both: a model is the body
++    /// itself, so stating one retires the live proxy and the placement path
++    /// spawns the record instead of the authored template. They travel together
++    /// in the publication, and both are gated on `puppets.present` -- this is
++    /// what another player is drawn as.
++    static int LuaPuppetsSetModel(lua_State* const aState)
++    {
++        auto* const context = GetContext(aState);
++        if (!CanPresentPuppets(aState)) return PushPuppetResult(aState, false, "permission_denied:puppets.present");
++        if (!context->host->config.game.setRemoteModel) return PushPuppetResult(aState, false, "puppets_unavailable_on_this_host");
++        if (!lua_isinteger(aState, 1) || lua_tointeger(aState, 1) <= 0)
++            return PushPuppetResult(aState, false, "invalid_player");
++        // No argument and `nil` both mean the authored family proxy. A caller that
++        // meant that and passed `false` gets a refusal instead of a statement that
++        // quietly did nothing: `setBody` takes false for a different meaning (no
++        // body in the world at all), and the two must not be confusable here.
++        std::optional<std::string> model;
++        if (lua_type(aState, 2) == LUA_TSTRING)
++        {
++            const char* const text = lua_tostring(aState, 2);
++            if (text == nullptr || *text == '\0' || std::strlen(text) > 255)
++                return PushPuppetResult(aState, false, "invalid_record");
++            model = std::string(text);
++        }
++        else if (lua_type(aState, 2) != LUA_TNONE && lua_type(aState, 2) != LUA_TNIL)
++        {
++            return PushPuppetResult(aState, false, "invalid_record");
++        }
++        std::string error;
++        const bool ok = context->host->config.game.setRemoteModel(
++            static_cast<uint64_t>(lua_tointeger(aState, 1)), model, error);
++        return PushPuppetResult(aState, ok, error);
++    }
++
++    // ---- The local player's own model, in the live world -------------------
++    //
++    // A fourth thing the `puppets` namespace offers, and the only one that is
++    // about THIS client's player rather than another player's proxy. The three
++    // above take a `playerId` and dress a representation; these spawn a body at
++    // the calling player, dress it with the player's own look, and hide the
++    // authored one underneath.
++    //
++    // The platform's own model change, `Open77.appearance.switchBodyFamily`, is
++    // a world reload: the body a player gets is an authored puppet (`pma`/
++    // `pwa`) chosen before the world loads, and an in-session snapshot for the
++    // other family is refused outright (`body_gender_switch_requires_reload`).
++    // So this spawns the chosen record instead of replacing that puppet. The
++    // authored body stays the authority -- physics, weapons and animation still
++    // refer to it -- and is hidden, not gone.
++    //
++    // `puppets.view`, not `puppets.present`: this changes what the caller sees
++    // of themselves, and a resource that only presents other players has no
++    // business spawning a body over the local player.
++    static bool CanViewBody(lua_State* const aState)
++    {
++        return HasPermission(*GetContext(aState)->instance, "puppets.view");
++    }
++
++    /// A record name, in the shape the engine accepts. The engine's own rule is
++    /// the authority (`Api::ViewBody::Supported`); this only rejects a value that
++    /// could not be a record at all, so a caller gets `invalid_record` for a
++    /// number or an over-long string instead of a spawn failure later.
++    static bool ReadViewBodyRecord(lua_State* const aState, const int aIndex, std::string_view& aOut)
++    {
++        if (lua_type(aState, aIndex) != LUA_TSTRING) return false;
++        const char* const text = lua_tostring(aState, aIndex);
++        if (text == nullptr) return false;
++        aOut = text;
++        return !aOut.empty() && aOut.size() <= 160;
++    }
++
++    static int LuaPuppetsSetViewBody(lua_State* const aState)
++    {
++        auto* const context = GetContext(aState);
++        if (!CanViewBody(aState)) return PushPuppetResult(aState, false, "permission_denied:puppets.view");
++        if (!context->host->config.game.setViewBody) return PushPuppetResult(aState, false, "view_body_unavailable_on_this_host");
++        std::string_view record;
++        if (!ReadViewBodyRecord(aState, 1, record)) return PushPuppetResult(aState, false, "invalid_record");
++        if (!lua_isnoneornil(aState, 2) && lua_type(aState, 2) != LUA_TBOOLEAN)
++            return PushPuppetResult(aState, false, "invalid_move_camera");
++        // Default true: a caller naming a model wants to look at it, and the
++        // authored body is hidden either way.
++        const bool moveCamera = lua_isnoneornil(aState, 2) || lua_toboolean(aState, 2) != 0;
++        std::string error;
++        const bool ok = context->host->config.game.setViewBody(record, moveCamera, error);
++        return PushPuppetResult(aState, ok, error);
++    }
++
++    static int LuaPuppetsClearViewBody(lua_State* const aState)
++    {
++        auto* const context = GetContext(aState);
++        if (!CanViewBody(aState)) return PushPuppetResult(aState, false, "permission_denied:puppets.view");
++        if (!context->host->config.game.clearViewBody) return PushPuppetResult(aState, false, "view_body_unavailable_on_this_host");
++        std::string error;
++        const bool ok = context->host->config.game.clearViewBody(error);
++        return PushPuppetResult(aState, ok, error);
++    }
++
++    /// The live state, or `nil, reason` when no model is up.
++    ///
++    /// `spawned` and `dressed` are separate on purpose: a spawn is asynchronous,
++    /// so a caller that wants to know the model is actually wearing their look
++    /// reads `dressed`, and a caller that only asked for the body to exist reads
++    /// `spawned`. Reporting one where the other belongs is how "it is up" gets
++    /// told about a body that is still building itself.
++    static int LuaPuppetsViewBody(lua_State* const aState)
++    {
++        auto* const context = GetContext(aState);
++        if (!CanViewBody(aState)) return PushCharacterFailure(aState, "permission_denied:puppets.view");
++        if (!context->host->config.game.viewBody) return PushCharacterFailure(aState, "view_body_unavailable_on_this_host");
++        GameBackend::ViewBodyState value;
++        if (!context->host->config.game.viewBody(value))
++            return PushCharacterFailure(aState, "view_body_not_active");
++        lua_newtable(aState);
++        SetBoolean(aState, "active", value.active);
++        SetBoolean(aState, "spawned", value.spawned);
++        SetBoolean(aState, "neutralised", value.neutralised);
++        SetBoolean(aState, "dressed", value.dressed);
++        SetBoolean(aState, "cameraMoved", value.cameraMoved);
++        lua_pushinteger(aState, static_cast<lua_Integer>(value.groups)); lua_setfield(aState, -2, "groups");
++        lua_pushinteger(aState, static_cast<lua_Integer>(value.slots)); lua_setfield(aState, -2, "slots");
++        lua_pushinteger(aState, static_cast<lua_Integer>(value.hiddenMeshes)); lua_setfield(aState, -2, "hiddenMeshes");
++        // The entity is a 64-bit id: a decimal string, the convention markers,
++        // props, blips and screens already use, because a Lua number would round
++        // it.
++        char entity[32];
++        std::snprintf(entity, sizeof(entity), "%llu", static_cast<unsigned long long>(value.entity));
++        SetString(aState, "entity", entity);
++        SetString(aState, "record", value.record);
++        SetString(aState, "family", value.family);
++        return 1;
++    }
++
++    /// Whether a name is a model the engine will take, and why not when it is
++    /// not. What a picker greys a row on, so a press is never a guess.
++    ///
++    /// A name this refuses and a name the engine refuses are deliberately the
++    /// same answer: both mean "do not press that". A world that is not up yet is
++    /// the one case that is not an answer, and it comes back `nil` so a caller
++    /// retries rather than caching a good record as bad.
++    static int LuaPuppetsViewBodySupported(lua_State* const aState)
++    {
++        auto* const context = GetContext(aState);
++        if (!CanViewBody(aState))
++        {
++            lua_pushnil(aState);
++            lua_pushstring(aState, "permission_denied:puppets.view");
++            return 2;
++        }
++        if (!context->host->config.game.viewBodySupported)
++        {
++            lua_pushnil(aState);
++            lua_pushstring(aState, "view_body_unavailable_on_this_host");
++            return 2;
++        }
++        std::string_view record;
++        if (!ReadViewBodyRecord(aState, 1, record))
++        {
++            lua_pushnil(aState);
++            lua_pushstring(aState, "invalid_record");
++            return 2;
++        }
++        bool supported = false;
++        std::string error;
++        if (!context->host->config.game.viewBodySupported(record, supported, error))
++        {
++            lua_pushnil(aState);
++            lua_pushlstring(aState, error.data(), error.size());
++            return 2;
++        }
++        lua_pushboolean(aState, supported ? 1 : 0);
++        if (error.empty()) lua_pushnil(aState);
++        else lua_pushlstring(aState, error.data(), error.size());
++        return 2;
++    }
++
+     static int LuaAppearanceTakeBodyFamilyTransition(lua_State* const aState)
+     {
+         auto* const context = GetContext(aState);
+         if (!CanEditAppearance(aState))
+         {
+             lua_pushnil(aState);
+@@ -10857,12 +11360,30 @@ public:
          if (layer == "system") return 3;
          if (layer == "debug") return 4;
          luaL_error(aState, "invalid WebUI layer");
@@ -334,7 +528,7 @@ index 7707d62f..6dc15111 100644
          auto& instance = *context->instance;
          const bool options = lua_istable(aState, 1);
          WebUiCreateRequest request;
-@@ -10870,12 +11352,13 @@ public:
+@@ -10870,12 +11391,13 @@ public:
          if (options)
          {
              lua_getfield(aState, 1, "entry");
@@ -348,7 +542,7 @@ index 7707d62f..6dc15111 100644
              const auto fps = luaL_optinteger(aState, -1, 30);
              lua_pop(aState, 1);
              if (fps <= 0)
-@@ -10884,12 +11367,13 @@ public:
+@@ -10884,12 +11406,24 @@ public:
              }
              request.framesPerSecond = static_cast<uint16_t>(std::min<lua_Integer>(fps, 60));
              lua_getfield(aState, 1, "zIndex"); request.zIndex = static_cast<int32_t>(luaL_optinteger(aState, -1, 0)); lua_pop(aState, 1);
@@ -356,13 +550,24 @@ index 7707d62f..6dc15111 100644
              lua_getfield(aState, 1, "visible"); request.visible = lua_isnil(aState, -1) || lua_toboolean(aState, -1) != 0; lua_pop(aState, 1);
              lua_getfield(aState, 1, "loadScreen"); request.loadScreen = lua_toboolean(aState, -1) != 0; lua_pop(aState, 1);
 +            lua_getfield(aState, 1, "hudSuppressed"); request.hudSuppressed = lua_toboolean(aState, -1) != 0; lua_pop(aState, 1);
++            lua_getfield(aState, 1, "maxDeviceScale");
++            const auto maxDeviceScale = luaL_optnumber(aState, -1, 0.0);
++            lua_pop(aState, 1);
++            // 0 means "no ceiling"; the upper bound is the clamp the layout scale
++            // itself uses, so a page cannot ask for a ring the rest of the
++            // pipeline would refuse.
++            if (!std::isfinite(maxDeviceScale) || maxDeviceScale < 0.0 || maxDeviceScale > 4.0)
++            {
++                lua_pushnil(aState); lua_pushstring(aState, "invalid_webui_options"); return 2;
++            }
++            request.maxDeviceScale = static_cast<float>(maxDeviceScale);
              lua_getfield(aState, 1, "drawBounds");
              if (!lua_isnil(aState, -1))
              {
                  bool validBounds = lua_istable(aState, -1);
                  std::array<float, 4> bounds{};
                  constexpr std::array<const char*, 4> names{"x", "y", "width", "height"};
-@@ -10948,12 +11432,133 @@ public:
+@@ -10948,12 +11482,133 @@ public:
              return 1;
          }
          PushWebPage(aState, instance.defaultWebPage, instance.generation);
@@ -496,7 +701,7 @@ index 7707d62f..6dc15111 100644
          return 1;
      }
  
-@@ -12141,12 +12746,16 @@ public:
+@@ -12141,12 +12796,16 @@ public:
          SetFunction(state, "call", &LuaCallExport);
          lua_setfield(state, -2, "exports");
  
@@ -513,7 +718,7 @@ index 7707d62f..6dc15111 100644
          lua_newtable(state); // Open77.animations
          for (const char* method : {"list", "get", "request", "sequence", "cancel", "state"})
          {
-@@ -12607,12 +13226,20 @@ public:
+@@ -12607,12 +13277,20 @@ public:
          SetFunction(state, "nearest", &LuaPropNearest);
          SetFunction(state, "project", &LuaPropProject);
          SetFunction(state, "unproject", &LuaPropUnproject);
@@ -534,7 +739,7 @@ index 7707d62f..6dc15111 100644
          SetFunction(state, "remove", &LuaAnchorRemove);
          SetFunction(state, "clear", &LuaAnchorClear);
          SetFunction(state, "list", &LuaAnchorList);
-@@ -12993,12 +13620,19 @@ public:
+@@ -12993,12 +13671,19 @@ public:
          // generation, and the only thing that ever collected the strays was
          // `Api::Props::ReleaseAll` at DLL unload. Stopping a resource must undo
          // everything that resource made; the six neighbours here are what that

@@ -5,21 +5,12 @@ diff --git a/webhost/src/WebHostApp.cpp b/webhost/src/WebHostApp.cpp
 index 814d1897..65f5a7ee 100644
 --- a/webhost/src/WebHostApp.cpp
 +++ b/webhost/src/WebHostApp.cpp
-@@ -60,12 +60,34 @@ WebHostApp::WebHostApp(std::shared_ptr<HostRuntime> aRuntime)
+@@ -60,13 +60,25 @@ WebHostApp::WebHostApp(std::shared_ptr<HostRuntime> aRuntime)
  void WebHostApp::OnBeforeCommandLineProcessing(const CefString&, CefRefPtr<CefCommandLine> aCommandLine)
  {
      aCommandLine->AppendSwitch("disable-extensions");
      aCommandLine->AppendSwitch("disable-pdf-extension");
-+    // The component updater is what delivers Google's official Widevine CDM
-+    // into the data root (CEF's global cache path). It stays off unless the
-+    // operator opted this host into DRM with --open77-widevine: only a
-+    // Widevine-capable CEF build (proprietary_codecs + ffmpeg_branding =
-+    // "Chrome" + enable_widevine, docs/widevine-cdm-integration.md) can load
-+    // the module, and the CDM itself is never shipped with the build -- it
-+    // arrives from Google, or from --widevine-cdm-path pointing at the copy
-+    // the operator's own Chrome installed.
-+    if (!aCommandLine->HasSwitch("open77-widevine"))
-+        aCommandLine->AppendSwitch("disable-component-update");
+     aCommandLine->AppendSwitch("disable-component-update");
      aCommandLine->AppendSwitch("disable-background-networking");
 -    aCommandLine->AppendSwitchWithValue("autoplay-policy", "user-gesture-required");
 +    // Media plays without a local gesture, and that is a requirement of the

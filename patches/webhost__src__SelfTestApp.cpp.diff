@@ -151,7 +151,7 @@ index e00d0f45..954a4142 100644
      m_written = true;
      if (aBrowser) aBrowser->GetHost()->CloseBrowser(true);
      else CefQuitMessageLoop();
-@@ -221,48 +372,64 @@ bool SelfTestClient::WriteBitmap(const void* const aBuffer, const int aWidth, co
+@@ -221,49 +372,60 @@ bool SelfTestClient::WriteBitmap(const void* const aBuffer, const int aWidth, co
          stream.write(reinterpret_cast<const char*>(rows + static_cast<size_t>(row) * aRowPitch),
                       static_cast<std::streamsize>(rowBytes));
      }
@@ -173,11 +173,7 @@ index e00d0f45..954a4142 100644
      // Same GPU switches as the production host, minus the adapter pin: the
      // test proves the path on whatever adapter Chromium picks by itself.
      aCommandLine->AppendSwitch("disable-extensions");
-+    // As in the production host: the updater stays off unless --open77-widevine
-+    // opted in, so the self-test probe measures the same configuration the
-+    // television ships -- and can measure the flip once the flag is passed.
-+    if (!aCommandLine->HasSwitch("open77-widevine"))
-+        aCommandLine->AppendSwitch("disable-component-update");
+     aCommandLine->AppendSwitch("disable-component-update");
      aCommandLine->AppendSwitch("disable-background-networking");
      aCommandLine->AppendSwitch("disable-direct-composition");
 +    if (m_probe)

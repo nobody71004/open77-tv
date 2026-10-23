@@ -113,6 +113,12 @@ local DEFAULT_REACH = 15.0
 -- Above this, the surface is created at a lower frame rate. A distant screen
 -- showing a menu is not worth 30 fps of a compositor this process shares with
 -- the game, and the page has no animation that matters at that size.
+--
+-- The near rate is also the rate the room's stream should be sent at: a
+-- television paints at most 30 frames a second, so a 60 fps WebRTC stream from
+-- the shared browser is decoded twice over for nothing -- and that decode runs
+-- on the player's machine, beside the game (shared-browser/README.md,
+-- `NEKO_STREAM_FPS`). Raising this without raising that only buys decode work.
 local NEAR_DISTANCE = 25.0
 
 -- mediaId -> { spec = <server payload>, page = <WebUI page or nil>,
@@ -553,6 +559,29 @@ local function materialisePage(entry)
         layer = "hud",
         width = surfaceWidth,
         height = surfaceHeight,
+        -- At most 1.5 device pixels per CSS pixel: about 1092 px tall for this
+        -- rectangle, i.e. 1080p, instead of whatever the quad's projected size
+        -- happens to be.
+        --
+        -- The surface's pixel size otherwise follows the quad's *projected*
+        -- size: a screen that fills the viewport is rasterised at the whole
+        -- viewport, whatever the page's own layout is. Measured in game on
+        -- 2026-10-23 -- a 100 ft cinema spawned 20.4 m away -- that was
+        -- `view=1165x728 pixels=2561x1601`: 4.1 megapixels of Chromium
+        -- compositing thirty times a second on the player's own GPU, and a
+        -- three-slot frame ring of the same size (49 MB), for a picture that is
+        -- a 1280x720 stream drawn onto the quad and re-sampled anyway. At 1.5
+        -- the page rasterises 1748x1092 (1.9 MP, ring 22 MB); at 1 it is
+        -- 1165x728 (0.85 MP, ring 10 MB), which is exactly the stream's own
+        -- resolution and the cheapest a screen of this size can be.
+        --
+        -- The layout is untouched either way -- the page still thinks it is
+        -- 1165x728, so text and controls are the size they were -- and the quad
+        -- stretches that picture over the screen. What is given up is sharpness
+        -- on a set the player is standing at, and only there: a screen whose
+        -- projected size is under its own layout is already below the cap and
+        -- rasterises exactly as it did before.
+        maxDeviceScale = 1.5,
         -- A television does not need the compositor's full rate. The screen is
         -- mapped 1:1 onto the quad and most of what it shows is static.
         fps = near and 30 or 15,

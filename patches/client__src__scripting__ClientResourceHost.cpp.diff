@@ -2,7 +2,7 @@
 # tools/extract-tv-patches.py. Apply by hand: this is not a patch
 # series, and the surrounding file has other unreleased work in it.
 diff --git a/client/src/scripting/ClientResourceHost.cpp b/client/src/scripting/ClientResourceHost.cpp
-index 8d714639..366baa5f 100644
+index 8d714639..10f74267 100644
 --- a/client/src/scripting/ClientResourceHost.cpp
 +++ b/client/src/scripting/ClientResourceHost.cpp
 @@ -18,22 +19,24 @@
@@ -30,7 +30,15 @@ index 8d714639..366baa5f 100644
  #include "api/Life.hpp"
  #include "debug/bridge/Command.hpp"
  #include "api/ScriptBridge.hpp"
-@@ -1550,12 +1553,16 @@ std::unique_ptr<Scripting::ResourceHost> CreateHost(
+@@ -1543,19 +1546,24 @@ std::unique_ptr<Scripting::ResourceHost> CreateHost(
+                     .generation = request.generation,
+                     .resourceRoot = request.resourceRoot,
+                     .allowedFiles = request.allowedFiles,
+                     .entry = request.entry,
+                     .width = request.width,
+                     .height = request.height,
++                    .maxDeviceScale = request.maxDeviceScale,
+                     .framesPerSecond = request.framesPerSecond,
                      .layer = static_cast<WebUI::SurfaceLayer>(request.layer),
                      .zIndex = request.zIndex,
                      .transparent = request.transparent,
@@ -47,7 +55,7 @@ index 8d714639..366baa5f 100644
                  {
                      s_webSurfaceOwners[surface] = aLayer;
                      if (aLayer == HostLayer::System && request.resource == "open77_blips")
-@@ -1575,12 +1582,31 @@ std::unique_ptr<Scripting::ResourceHost> CreateHost(
+@@ -1575,12 +1583,31 @@ std::unique_ptr<Scripting::ResourceHost> CreateHost(
              .drainEvents = [aLayer] { return DrainWebUiEvents(aLayer); },
              // The connected server's declared loading screen (resolved on the game
              // thread by RefreshLoadScreen). Only a webui.system holder -- the
@@ -79,7 +87,7 @@ index 8d714639..366baa5f 100644
              // reach the engine directly rather than queueing.
              .playAnimation = [](const uint64_t entity, const std::string_view animation,
                                  std::string& error) {
-@@ -2526,12 +2552,95 @@ std::unique_ptr<Scripting::ResourceHost> CreateHost(
+@@ -2526,12 +2553,95 @@ std::unique_ptr<Scripting::ResourceHost> CreateHost(
              .unprojectProp = [](const uint64_t serverId, std::string& error) {
                  const auto status = Api::Props::Unproject(serverId);
                  if (status == Api::Props::Status::Ok) return true;

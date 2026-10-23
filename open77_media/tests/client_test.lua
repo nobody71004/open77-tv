@@ -369,6 +369,19 @@ check(binds[1] ~= nil and binds[1].prop == "4242",
     "the binding names the set's own prop id")
 check(binds[1] ~= nil and binds[1].page == tvPage,
     "the binding names the page that was created for it")
+-- The density ceiling, asked for at creation.
+--
+-- The surface's pixel size otherwise follows the quad's projected size, so a set
+-- that fills the viewport is rasterised at the whole viewport -- measured in game
+-- as `view=1165x728 pixels=2561x1601` for a 1280x720 stream. It is an option and
+-- not the default because every other page in the runtime is authored for the
+-- viewport and wants the density. A page that does not ask is a runtime that
+-- silently stopped capping, which no other assertion here would notice.
+check(tvPage ~= nil and tvPage.options.maxDeviceScale == 1.5,
+    "a television caps how densely its page is rasterised")
+local remotePage = panelPage()
+check(remotePage ~= nil and remotePage.options.maxDeviceScale == nil,
+    "and the remote panel, which is a viewport page, is left at its own density")
 
 -- The rectangle reaches the native in the shape it reads, from the positional
 -- shape the catalogue and the server's `copyQuad` write.
@@ -1009,12 +1022,12 @@ local venueSpec = spawn(21, "prop-21", 4.0)
 venueSpec.quad = { offset = { 0.0, 0.0, 16.553793 }, right = { 1.0, 0.0, 0.0 },
     up = { 0.0, 0.0, 1.0 }, width = 45.72, height = 26.0131 }
 venueSpec.reach = 30.5612
-venueSpec.venue = "cinema.150ft.watchparty"
+venueSpec.venue = "cinema.150ft"
 handlers["open77:media:snapshot"]({ venueSpec })
 pcall(threads[1])
 local venueState = panel ~= nil and lastSent(panel, "remote:state") or nil
 check(venueState ~= nil and venueState.target ~= nil
-    and venueState.target.venue == "cinema.150ft.watchparty",
+    and venueState.target.venue == "cinema.150ft",
     "a venue screen is named to the panel, so the page can offer the pin")
 sent = {}
 panel.events["remote:action"]({ action = "pinHere" })
