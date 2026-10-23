@@ -112,6 +112,21 @@ if [ -z "$BOUNDS" ]; then echo "  FAIL Settings' search bar is not on the screen
   click_screen() {
     x "xdotool mousemove $((SCREENW - 8)) $((SCREENH - 8)) sleep 0.3 mousemove $CX $CY sleep 0.3 click 1"
   }
+  # A press that reaches the remote screen before the page has a pointer
+  # position is sent as a tap at the top-left, which opens the notification
+  # shade -- and the shade then covers whatever the next click was aimed at,
+  # so repeating the gesture without undoing it cannot work. Measured on
+  # staging 2026-10-23: the click became a top-left tap, the retry hit the
+  # shade, and the typing went to the shade too. So the retry first puts the
+  # screen back the way the check expects: collapse the shade, and make sure
+  # Settings is the window in front again.
+  reset_screen() {
+    adbRoot cmd statusbar collapse >/dev/null 2>&1
+    case "$(adbRoot dumpsys window 2>/dev/null | grep -i mCurrentFocus | head -1)" in
+      *Settings*) ;;
+      *) adbRoot am start -a android.settings.SETTINGS >/dev/null 2>&1; sleep 3 ;;
+    esac
+  }
   # Two images, two ways of saying "the search activity came up": AOSP 14 (the
   # emulator) reports it through the input method, LineageOS 20 (the native one)
   # focuses com.android.settings.intelligence …SearchActivity. Either is the
@@ -126,7 +141,12 @@ if [ -z "$BOUNDS" ]; then echo "  FAIL Settings' search bar is not on the screen
 
   click_screen
   sleep 3
-  search_open || { echo "  .. the first click did not reach Android; asking again"; click_screen; sleep 3; }
+  search_open || {
+    echo "  .. the first click did not reach Settings; putting the screen back and asking again"
+    reset_screen
+    click_screen
+    sleep 3
+  }
   check "a click on the screen opens Settings' search (the mouse reached Android)" search_open
 
   type_wifi
