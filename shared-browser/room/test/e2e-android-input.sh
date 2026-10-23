@@ -2,7 +2,7 @@
 # Mouse and keyboard, through the room's Chromium, into the Android screen.
 # Run on the game server as root:
 #
-#   ./e2e-android-input.sh [staging|production|f2077]
+#   ./e2e-android-input.sh [staging|production|f2077|fr-us]
 #
 # What it proves, and why it is not a unit test: the room's Chromium is showing
 # Android, and the input goes in at the X server -- which is exactly where neko
@@ -29,7 +29,8 @@ case "$ROLE" in
   staging)    CONTAINER=open77-tvbrowser-xbs ;;
   production) CONTAINER=open77-tvbrowser-xb ;;
   f2077)      CONTAINER=open77-tvbrowser-f2077 ;;
-  *) echo "usage: $(basename "$0") [staging|production|f2077]"; exit 2 ;;
+  fr-us)      CONTAINER=open77-tvbrowser-fr-us ;;
+  *) echo "usage: $(basename "$0") [staging|production|f2077|fr-us]"; exit 2 ;;
 esac
 ROOM=http://127.0.0.1:8002
 

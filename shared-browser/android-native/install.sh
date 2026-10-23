@@ -283,6 +283,10 @@ UNIT
 install -d -m 0755 "$NOVNC"
 install -m 0644 "$(dirname "$0")/screen.html" "$NOVNC/open77-screen.html"
 echo "-- page: $NOVNC/open77-screen.html (no toolbar, so a tap is where it looks)"
+# The half of Android's internet that belongs to this host (the firewall unit
+# runs it): Docker's nft FORWARD chain drops waydroid0's traffic otherwise.
+install -m 0755 "$(dirname "$0")/waydroid-internet.sh" "$NATIVE/waydroid-internet.sh"
+echo "-- Android's own internet: $NATIVE/waydroid-internet.sh (nft forward accept)"
 
 cat > /etc/systemd/system/open77-android-native-web.service <<UNIT
 [Unit]
@@ -318,6 +322,10 @@ Type=oneshot
 RemainAfterExit=yes
 ExecStart=/bin/sh -c 'iptables -C INPUT -i docker0 -p tcp --dport $PORT -j ACCEPT 2>/dev/null || iptables -I INPUT -i docker0 -p tcp --dport $PORT -j ACCEPT'
 ExecStartPost=/bin/sh -c 'iptables -C INPUT -i waydroid0 -j ACCEPT 2>/dev/null || iptables -I INPUT -i waydroid0 -j ACCEPT'
+# Android's OWN traffic: Docker's nft FORWARD chain ends with `policy drop`, which
+# dropped every packet from waydroid0 to the uplink -- Android showed "connect to
+# a network" with its lease, route and DNS all present (2026-10-23).
+ExecStartPost=/bin/sh $NATIVE/waydroid-internet.sh
 ExecStop=/bin/sh -c 'true'
 
 [Install]

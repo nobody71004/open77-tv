@@ -3,7 +3,7 @@
 # a keyboard: the game records the request, the room polls for it, and the room's
 # screen changes. Run on the game server as root:
 #
-#   ./e2e-game-request.sh [staging|production]
+#   ./e2e-game-request.sh [staging|production|fr-us]
 #
 # `POST /v1/android/selftest` on the game server's own lockback listener is the
 # same code path as the panel's button (it bumps the same request id, which is
@@ -17,7 +17,8 @@ ROLE="${1:-staging}"
 case "$ROLE" in
   staging)    GAMEPORT=11843; CONTAINER=open77-tvbrowser-xbs ;;
   production) GAMEPORT=11799; CONTAINER=open77-tvbrowser-xb ;;
-  *) echo "usage: $(basename "$0") [staging|production]"; exit 2 ;;
+  fr-us)      GAMEPORT=11833; CONTAINER=open77-tvbrowser-fr-us ;;
+  *) echo "usage: $(basename "$0") [staging|production|fr-us]"; exit 2 ;;
 esac
 GAME="http://127.0.0.1:$GAMEPORT/opx_watchparty"
 ROOM=http://127.0.0.1:8002

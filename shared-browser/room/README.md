@@ -6,10 +6,11 @@ change what it is showing:
 
 | | |
 |---|---|
-| `web/splash.html` | the sign-in splash: a tile per service (with whether this profile has a session), the channels, the profile switcher, the room's controls |
-| `web/profiles.html` | the profile library: create, use, rename, reset, delete, details |
+| `web/splash.html` | the home screen: a rail of app icons, a shelf describing the focused one, a clock, and the who's-watching sheet |
+| `web/profiles.html` | the settings screen: the profile list, the selected one's detail, its actions, and create |
+| `web/inter.woff2` | the typeface both pages are drawn in, served by this service |
 | `server.mjs` | the HTTP API those two pages call, the profile library on disk, and the room's own DevTools client |
-| `test/e2e-room.py` | the service end to end: state, pages, profile lifecycle, navigation, Android (`15 checks`) |
+| `test/e2e-room.py` | the service end to end: state, pages, profile lifecycle, navigation, Android, the mirror (`18 checks`) |
 | `test/e2e-game-request.sh` | a game-asked Android request reaching the room's screen (`5 checks`) |
 | `test/e2e-android-input.sh` | mouse and keyboard through the room into the emulator (`5 checks`) |
 | `test/e2e-profile-persistence.sh` | a profile, its cookies and Chromium itself survive `up.sh` recreating the container (`14 checks`) |
@@ -20,23 +21,38 @@ only; the host's firewall has no rule for it). The room's Chromium reaches it at
 (`build/policies.json`), so a cinema that is put up lands on the splash by itself
 -- nothing has to be injected into the page.
 
-## The splash
+## The home screen
 
-- **Sign in.** Seven services, each with a dot for signed in / not signed in on the
-  active profile, and a click that opens that service's sign-in page in the room.
-  A session made here is a session on the television: it lives in the profile's
-  Chromium directory on the host, so it survives the container being recreated.
-- **What's on.** Netflix, YouTube, Prime Video and Android, each one navigation in
-  the room's own tab.
-- **Android.** Opens the emulator's stream (ws-scrcpy). If the emulator is stopped,
-  the tile starts it (`open77-android-emulator.service`) and shows a "starting"
-  page that reloads itself; there is also a **Start Android** button for when
-  nobody wants to open it yet.
-- **Controls.** The profile chip switches the profile in place (the page comes
-  back on the new one), **Manage profiles** opens the library, **Reload the room**
-  restarts the room's Chromium, **Back to this page** brings the splash back.
-  The footer says which room this is, what it is showing and whether the emulator
-  is running.
+It is drawn as a television's home screen, because that is what it is: the first
+thing a browser cinema shows, and the thing a player stands in front of. One rail
+of large app icons, a wide shelf under it that describes whatever is focused, a
+clock, and the profile picker behind the avatar. There are no image assets -- each
+icon is a brand colour, a wordmark or an inline SVG -- and no blur, because the
+room's Chromium paints on a GPU-less host.
+
+- **The rail.** **Chrome** first -- the web, on the room's own browser, in a
+  window with no address bar; then one icon per service, with a green dot when this
+  profile has a session on it; then **Mirror** where the room's server has one;
+  then Android; then Settings. Signing in from here is signing in on the
+  television: the session lives in the profile's Chromium directory on the host,
+  so it survives the container being recreated.
+- **The mirror.** The room service reads the `url` out of that game server's
+  `opx_screenmirror` config (relay page, channel and token) and `/mirror` answers
+  with a redirect to it, so the room shows a remote PC's screen with the token
+  never in its HTML. All four rooms have one: production and staging share the
+  XyberRP relay (`WORK`), f2077 has `F2077`, fr-us has `FRUS`. A room whose server
+  has no mirror config simply has no Mirror app.
+- **The shelf.** The focused icon's colour washes the shelf, which says what it is
+  and what state it is in ("Signed in on this profile", "Not signed in on this
+  profile", "Running · <device>", "Stopped"), with **Open** / **Sign in** /
+  **Start Android** as one pill. Android starts the emulator if it is stopped.
+- **The remote.** Arrows move focus and move the rail under it, Enter opens, Escape
+  closes the sheet. The mouse works too (hover is focus); F8 gives the mouse and
+  keyboard to the page underneath.
+- **Who's watching.** The avatar (or **Manage profiles**) opens the profile sheet:
+  one face per profile, the current one marked *Watching*, a click switches the
+  room to it. **Manage profiles** goes to the settings page, **Reload the room**
+  restarts the room's Chromium.
 
 ## Profiles
 
@@ -47,12 +63,15 @@ that link and restarting Chromium, so the sign-ins follow the profile and a
 recreated container keeps them. `up.sh` seeds `house` on first run and makes the
 link `active -> house`.
 
-The library page shows each profile's directory, cookies, size, when it was last
-used, which services are signed in, what the room is showing and whether the
-emulator is up. **Use** switches to it, **Rename** renames the directory (the
-active link follows, so the room keeps running on the same sign-ins), **Reset**
-clears the sign-ins and keeps the old directory as a hidden `.name.reset-<stamp>`
-backup, **Delete** removes it. The active profile cannot be reset or deleted.
+The library page is drawn as the same television's settings screen: the profiles
+on the left with a dot per service and whether it has a session, the selected one's
+detail on the right (directory, cookies, size, when it was last used, which
+services are signed in, what the room is showing and whether Android is up), and
+the actions at the bottom of that detail. **Use** switches to it, **Rename**
+renames the directory (the active link follows, so the room keeps running on the
+same sign-ins), **Reset** clears the sign-ins and keeps the old directory as a
+hidden `.name.reset-<stamp>` backup, **Delete** removes it. The active profile
+cannot be reset or deleted; the create field sits under the list.
 
 That the library really is the browser's state, and not a copy of it, is what
 `test/e2e-profile-persistence.sh` proves: it writes into the active profile from
@@ -131,14 +150,15 @@ bash ./install.sh          # /opt/open77-room, the systemd unit, `ws`, then rest
 service runs:
 
 ```bash
-python3 /opt/open77-room/test/e2e-room.py staging            # 15 checks: the service and its pages
+python3 /opt/open77-room/test/e2e-room.py staging            # 18 checks: the service and its pages
 bash /opt/open77-room/test/e2e-game-request.sh staging       # 5 checks: the game asks, the room shows
 bash /opt/open77-room/test/e2e-android-input.sh staging      # 5 checks, needs the emulator
 bash /opt/open77-room/test/e2e-profile-persistence.sh staging # 14 checks, recreates the container
 ```
 
-All four take `staging` (default), `production` or `f2077`, and each one's room is
-that role's container (`open77-tvbrowser-xbs`, `-xb`, `-f2077`). The input test
+All four take `staging` (default), `production`, `f2077` or `fr-us`, and each
+one's room is that role's container (`open77-tvbrowser-xbs`, `-xb`, `-f2077`,
+`-fr-us`). The input test
 leaves the emulator on Settings' search page; the room is put back on its splash
 by the first test's last step. The persistence test recreates that role's
 container (`up.sh <role>`: stop, rm, run from the same image and mounts) and

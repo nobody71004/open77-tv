@@ -16,7 +16,9 @@ mkdir -p "$D/web"
 # Install only what is not already the same file: this script is also run from
 # the install directory after a copy, and `install` refuses src == dst.
 for f in server.mjs; do [ "$SRC/$f" -ef "$D/$f" ] || install -m 0644 "$SRC/$f" "$D/$f"; done
-for f in splash.html profiles.html; do [ "$SRC/web/$f" -ef "$D/web/$f" ] || install -m 0644 "$SRC/web/$f" "$D/web/$f"; done
+# inter.woff2 is the typeface both pages are drawn in; the service serves it
+# itself so the room never waits on a font CDN it cannot reach.
+for f in splash.html profiles.html inter.woff2; do [ "$SRC/web/$f" -ef "$D/web/$f" ] || install -m 0644 "$SRC/web/$f" "$D/web/$f"; done
 # The end-to-end tests ship with the service so the thing that is running can be
 # checked where it runs (test/e2e-room.py, test/e2e-android-input.sh, and the
 # profile persistence test that recreates a container).

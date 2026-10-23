@@ -3,7 +3,7 @@
 
 Run on the game server as root:
 
-    python3 room/test/e2e-room.py [staging|production|f2077]
+    python3 room/test/e2e-room.py [staging|production|f2077|fr-us]
 
 It talks to the service on loopback (port 8002), so it sees exactly what the
 room's Chromium sees, and reads the room's own DevTools socket to check that a
@@ -30,10 +30,11 @@ CONTAINERS = {
     "staging": "open77-tvbrowser-xbs",
     "production": "open77-tvbrowser-xb",
     "f2077": "open77-tvbrowser-f2077",
+    "fr-us": "open77-tvbrowser-fr-us",
 }
 CONTAINER = CONTAINERS.get(ROLE)
 if CONTAINER is None:
-    sys.exit("usage: e2e-room.py [staging|production|f2077]")
+    sys.exit("usage: e2e-room.py [staging|production|f2077|fr-us]")
 
 checks = 0
 failures = 0
@@ -67,6 +68,23 @@ def post(body, timeout=30):
 
 def state():
     return json.loads(get(f"/api/state?room={ROLE}")[1])
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Keep a 302 a 302: the mirror route's Location is the point of the check."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def redirect(path):
+    """(status, Location) without following the redirect."""
+    opener = urllib.request.build_opener(_NoRedirect)
+    try:
+        with opener.open(BASE + path, timeout=10) as response:
+            return response.status, response.headers.get("Location", "")
+    except urllib.error.HTTPError as error:
+        return error.code, error.headers.get("Location", "")
 
 
 def sh(*args):
@@ -146,13 +164,33 @@ check("the Android tile is the screen the service is configured for (native VNC 
 
 splash_status, splash = get(f"/?room={ROLE}")
 profiles_status, profiles_page = get("/profiles")
-check("the splash is a sign-in screen: a tile per service and the profile control",
-      splash_status == 200 and "Sign in" in splash and 'id="signins"' in splash
-      and 'id="channels"' in splash and 'id="profile"' in splash
-      and "Manage profiles" in splash and "Start Android" in splash)
-check("the profile library page lists profiles, details and the controls",
+with urllib.request.urlopen(BASE + "/inter.woff2", timeout=10) as response:
+    font_status = response.status
+    font_type = response.headers.get("Content-Type", "")
+check("the splash is a television home screen: an app rail, a shelf, a clock and the profile sheet",
+      splash_status == 200 and 'id="apps"' in splash and 'id="shelf"' in splash
+      and 'id="shelf-action"' in splash and 'id="clock"' in splash
+      and 'id="sheet"' in splash and 'id="profile"' in splash
+      and "Who's watching?" in splash and "Manage profiles" in splash)
+check("the home screen is drawn in Inter, served from the room itself",
+      font_status == 200 and "font/woff2" in font_type and '/inter.woff2' in splash,
+      (font_status, font_type))
+check("the rail has Chrome for the web, and the Mirror app where this room has one",
+      "Chrome" in splash and "The web, on this room's own browser" in splash
+      and "Show mirror" in splash and "kind === \"mirror\"" in splash)
+mirror_status, mirror_location = redirect(f"/mirror?room={ROLE}")
+if before.get("mirror"):
+    check("the Mirror app redirects to this room's relay page, token and all, without caching it",
+          mirror_status == 302 and mirror_location.startswith("https://")
+          and "channel=" in mirror_location, (mirror_status, mirror_location[:40]))
+else:
+    check("a room with no mirror configured says so instead of redirecting",
+          mirror_status == 404, mirror_status)
+check("the settings page is the profile library: the list, the detail and the controls",
       profiles_status == 200 and "Rename" in profiles_page and "Reset" in profiles_page
-      and "Delete" in profiles_page and "Details" in profiles_page)
+      and "Delete" in profiles_page and "Details" in profiles_page
+      and 'id="rows"' in profiles_page and 'id="facts"' in profiles_page
+      and 'id="acts"' in profiles_page)
 
 name = "e2e" + time.strftime("%H%M%S")
 code, value = post({"room": ROLE, "action": "create", "profile": name})

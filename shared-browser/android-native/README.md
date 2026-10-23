@@ -89,10 +89,34 @@ accuracy.
 | `open77-android-native-vnc` | wayvnc on 127.0.0.1:5900 |
 | `open77-android-native-web` | websockify + noVNC on 0.0.0.0:8001 |
 | `open77-android-native-adb` + `.timer` | keeps adb connected to the device (every 30 s) |
-| `open77-android-native-firewall` | admits `docker0` to 8001, nothing else |
+| `open77-android-native-firewall` | admits `docker0` to 8001, and `waydroid0`'s forward traffic |
 
 Port 8001 is no more open to the world than 8000 is: the host's INPUT policy is
 `drop`, and the one rule lets the neko rooms on `docker0` in.
+
+## The device's own internet
+
+Android inside Waydroid is a third network: `waydroid0` is its bridge, dnsmasq
+leases it `192.168.240.112` with `192.168.240.1` as DNS and gateway, and Android's
+own `ConnectivityService` reports an Ethernet network `CONNECTED` with `INTERNET`.
+None of that was the problem. **Docker's nft `FORWARD` chain ends `policy drop`**,
+and Waydroid's MASQUERADE lives in `iptables-legacy`, so every packet from
+`waydroid0` to the uplink was dropped at the host while Android sat on "Connect to
+a network to continue" with its lease, route and DNS all in place. Measured
+2026-10-23.
+
+`waydroid-internet.sh` inserts the two accepts that belong to this host (in and
+out of `waydroid0`, `ip filter FORWARD`), and
+`open77-android-native-firewall.service` runs it after `docker.service` — so the
+rules come back with docker on every boot, and running it again is a no-op. It
+has to be the nft chain and not `iptables-legacy`: an ACCEPT in the legacy table
+does not save a packet from the nft table's policy.
+
+```bash
+nft list chain ip filter FORWARD | grep waydroid0     # the two accepts, with counters
+sh /opt/open77-android-native/waydroid-internet.sh    # idempotent re-check
+adb -s 192.168.240.112:5555 shell 'curl -s -o /dev/null -w "%{http_code}\n" https://www.google.com'
+```
 
 ## Switching the rooms
 
@@ -125,6 +149,18 @@ encoding), there because this box has no image tooling installed.
   i.e. the room's Chromium attached to the framebuffer.
 - The emulator still answers exactly as before when the rooms are switched back
   (`8000`, `emulator-5554`, the same scrcpy link).
+
+2026-10-23, the device's internet:
+
+- Before the forward accepts: `ping` and DNS from inside Android timed out, Play
+  Store said "No connection", and the host's `FORWARD` chain had no `waydroid0`
+  rule at all — the packets hit `policy drop`.
+- After: `dumpsys connectivity` reports the Ethernet network `CONNECTED` with
+  `IS_VALIDATED` and the `INTERNET` capability, `curl https://www.google.com` from
+  the device answers `200`, and the two rules had carried ~275 MB out and ~1.8 MB
+  in.
+- The Android browser (Jelly) on the room's screen loaded `google.com` — the
+  trending list, not an error page.
 
 2026-10-23, the page and the rooms, with the rooms on this screen:
 

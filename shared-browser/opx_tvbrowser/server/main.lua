@@ -8,8 +8,8 @@
 local VERSION = "1.0.3"
 local config = type(OpxTvBrowserConfig) == "table" and OpxTvBrowserConfig or {}
 local LINK, linkReason = OpxTvBrowserLink.accept(config.url)
-local CINEMA = type(config.cinemaRecord) == "string" and config.cinemaRecord or "cinema.150ft.browser"
-local CINEMA_100 = type(config.cinema100Record) == "string" and config.cinema100Record or "cinema.100ft.browser"
+local CINEMA = type(config.cinemaRecord) == "string" and config.cinemaRecord or "cinema.150ft"
+local CINEMA_100 = type(config.cinema100Record) == "string" and config.cinema100Record or "cinema.100ft"
 
 local HELP = "/browser -- the shared browser on the TV in front of you. /browser cinema -- a 150 ft cinema " ..
     "showing it (/browser cinema 100 -- a 100 ft one). /browser off -- take it off this TV. " ..
@@ -90,9 +90,10 @@ RegisterCommand("browser", function(source, args, raw)
     end
 end, false)
 
--- The browser cinemas in the TV menu (open77_media's `cinema.100ft.browser` and
--- `cinema.150ft.browser`, `linkFrom = "opx_tvbrowser"`) ask for the link when the
--- set is put up. Only open77_media is answered: the link carries the viewer password.
+-- The room's two panels in the TV menu (open77_media's `cinema.100ft` and
+-- `cinema.150ft`, `linkFrom = "opx_tvbrowser"`) ask for the link when the set is
+-- put up, because the room's home screen is what those records show. Only
+-- open77_media is answered: the link carries the viewer password.
 local function publish(name, fn)
     -- A host without cross-resource exports still runs the commands.
     if exports == nil then return false end

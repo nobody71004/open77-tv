@@ -24,7 +24,7 @@ What that means, and what was done about it (2026-10-16):
 - `/browser` is ADMIN-ONLY. It was the one path that handed the link to any player
   who typed it; it now needs `command.media.lock` (`server/config.lua`,
   `adminAce`), and a player without it is told so instead of being handed the
-  credentials. The browser cinemas are unaffected: they get the link from this
+  credentials. The room's panels are unaffected: they get the link from this
   resource's `link` export, which answers `open77_media` and nothing else.
 - The page the television loads is the room's own desktop, so a player who is at a
   television can still see it, and the link is in that page's address. Treat it as
@@ -44,9 +44,9 @@ What that means, and what was done about it (2026-10-16):
 
 ```
 opx_tvbrowser/   the resource: /browser (admin-only) puts it on the TV in front of
-                 you, /browser cinema puts up a 150 ft cinema showing it (/browser
+                 you, /browser cinema puts up a 150 ft panel showing it (/browser
                  cinema 100: a 100 ft one), /browser off; and the link the TV
-                 menu's two browser cinemas are put up with
+                 menu's two open77-TV-ROOM panels are put up with
 server/          the container beside the game server -- one instance per role,
                  staging and production (see "On the server"): neko's Chromium
                  image without Widevine, its browser policies, the four scripts
@@ -57,14 +57,15 @@ server/          the container beside the game server -- one instance per role,
 
 ## On a television
 
-- **The TV menu** has two browser cinemas, "Browser cinema, 100 ft" and "Browser
-  cinema, 150 ft" (open77_media's `cinema.100ft.browser` and
-  `cinema.150ft.browser`). Each is its cinema's own panel -- the same scale, quad,
-  reach and collider, which `records_test.lua` checks -- put up already showing
-  the browser: the record names `linkFrom = "opx_tvbrowser"`, and open77_media
-  asks that resource's `link` export for the link when the set is put up
-  (`linkedUrl` in `open77_media/server/main.lua`). Only open77_media is answered,
-  because the link carries the viewer password. A server without the resource
+- **The TV menu** has two panels, "open77-TV-ROOM (100 ft)" and "open77-TV-ROOM
+  (150 ft)" (open77_media's `cinema.100ft` and `cinema.150ft`) -- the room at two
+  sizes, and the only cinema records there are. Each is the 16:9 panel -- the
+  same scale, quad, reach and collider, which `records_test.lua` checks -- put up
+  already showing the room's home screen: the record names
+  `linkFrom = "opx_tvbrowser"`, and open77_media asks that resource's `link`
+  export for the link when the set is put up (`linkedUrl` in
+  `open77_media/server/main.lua`). Only open77_media is answered, because the
+  link carries the viewer password. A server without the resource
   refuses the spawn by name instead of putting up a blank screen.
 - **The page** frames a link ending in `#open77-shared-browser` as this browser
   (`SHARED_BROWSER_MARK` in `open77_media/web/tv.js`): no probe, no frame check,
@@ -338,15 +339,17 @@ honest fallback stays the watch party (`watch-party/`).
 
 ## On the server
 
-Two instances, one per role, on the same machine. They are the same image and the
-same `build/`; they differ in where they live, what they are called, and which
-three numbers they take:
+One instance per role, on the same machine (staging, production, f2077 and
+Freeroam USA -- `fr-us`). They are the same image and the same `build/`; they
+differ in where they live, what they are called, and which three numbers they
+take:
 
 | role | install dir | container | prefix | client | WebRTC |
 | --- | --- | --- | --- | --- | --- |
 | staging | `/opt/open77-tvbrowser` | `open77-tvbrowser-xbs` | `/tv-browser-xb-staging` | `127.0.0.1:18080` | `59100` |
 | production | `/opt/open77-tvbrowser-xb` | `open77-tvbrowser-xb` | `/tv-browser-xb` | `127.0.0.1:18081` | `59101` |
 | f2077 | `/opt/open77-tvbrowser-f2077` | `open77-tvbrowser-f2077` | `/tv-browser-f2077` | `127.0.0.1:18082` | `59102` |
+| fr-us | `/opt/open77-tvbrowser-fr-us` | `open77-tvbrowser-fr-us` | `/tv-browser-fr-us` | `127.0.0.1:18083` | `59103` |
 
 Each instance generates its OWN `neko.env` (viewer and admin passwords, API token)
 and its own television link `tv-url.secret`, both root-only, so the two links --
@@ -356,7 +359,13 @@ wipes that browser's own state (sessions, history) and does not touch the other'
 1. Copy `server/` to that role's install dir (root, 700) and run
    `./up.sh [staging|production]` (default staging). The first run generates
    `neko.env` and `tv-url.secret`; later runs reuse them, so the link does not
-   change. It builds `open77/tvbrowser-chromium:9`, checks the image (the four
+   change. **`neko.env` must carry `NEKO_WEBRTC_UDPMUX=<that role's port>`** --
+   neko's variable is `UDPMUX`, not `UDMUX`. With the name misspelt neko starts
+   with `udpmux=0` (only `tcpmux`), advertises no UDP candidate at all, and every
+   client silently falls back to WebRTC over TCP: the picture still plays, at
+   low frame rate, with seconds of input lag (measured on all four rooms until
+   2026-10-23). `up.sh` prints `tcpmux=... udpmux=...` in the container log; both
+   must be the role's port. It builds `open77/tvbrowser-chromium:9`, checks the image (the four
    scripts in the client page, the policy, kiosk and the window manager, the
    profile library and the DevTools forwarder, no Widevine baked in) and the host CDM,
    and runs the container capped at 4 cores, 4 GB and 2 GB of shared memory, with
@@ -440,13 +449,53 @@ unintelligible -- had the room to move. The script was copied into the running
 container (`docker cp`, so the page a player had open stayed up) and the image tag
 rebuilt from `build/`; a recreate keeps it.
 
-The picture is 1280x720 at 30 fps (`NEKO_DESKTOP_SCREEN`); each viewer is one
-WebRTC stream from the server.
+The picture is 1280x720 at 60 fps; each viewer is one WebRTC stream from the
+server. The screen is not enough on its own: neko builds its capture pipeline
+with a fixed `framerate=2500/100` caps filter (25 fps measured on a television,
+whatever `NEKO_DESKTOP_SCREEN` said, until 2026-10-23), so `up.sh` also writes
+`NEKO_CAPTURE_VIDEO_PIPELINE` -- neko's own VP8 pipeline with `videorate` (a
+regular 60 Hz clock; ximagesrc's own pacing makes clients discard the frames), a
+leaky two-buffer queue (a slow encoder cannot build latency) and 4.5 Mbit/s.
+Measured on the room in a desktop Chromium: 60 fps arriving, about 51 presented,
+where 25 was the ceiling before.
 
-## The room's page: sign-in splash, profiles, Android (image 9, 2026-10-22)
+The rate is a per-room setting, because the two audiences are not the same:
 
-Image 9 makes the room a *screen* and gives it a page of its own. It is documented
-where it lives, in `room/README.md`, and in short:
+| who is watching | what they can present | the stream should be |
+| --- | --- | --- |
+| a desktop browser (a browser cinema) | 60 | 60 |
+| the game's own TV surface | 30 near, 15 far (`NEAR_DISTANCE` in `open77_media/client/main.lua`) | 30 |
+
+At 60 a television in the game decodes **every** frame and shows half of them:
+measured 2026-10-23 in a desktop Chromium on this network, 60 fps decoded and 60
+dropped per second while the page presented at 30. That decode happens in the
+player's own client, next to the game, which is the frame rate the player feels
+going to the television. So:
+
+```bash
+NEKO_STREAM_FPS=30 ./up.sh fr-us    # the room the televisions show: decode halved
+NEKO_STREAM_FPS=60 ./up.sh staging  # a room a desktop cinema watches
+```
+
+The bitrate follows at 75 kbit/s per frame per second (30 fps = 2.25 Mbit/s, 60
+fps = 4.5). `NEKO_STREAM_FPS` is written into that room's `neko.env` on every run,
+so the value in the command is the value the room runs, and leaving it out puts
+60 back.
+
+**H.264 was tried for the same reason and does not work here** (2026-10-23): the
+case for it is that Windows GPUs decode H.264 in hardware while VP8 is software,
+so it would have taken the decode cost to nearly nothing. A room was recreated on
+an `x264enc` pipeline -- neko's own syntax check passed, the encoder ran -- and
+then neither a desktop Chromium on this network nor a headless one on the host
+ever got a picture: both logged `connection timeout`. It was rolled back within
+the hour. A codec change here has to be proven end to end on a real client before
+a room is recreated on it.
+
+## The room's page: a television home screen, profiles, Android (2026-10-23)
+
+Image 9 made the room a *screen* and gave it a page of its own; the page was then
+redrawn as the television it stands in, with the sign-in tiles becoming a home
+screen. It is documented where it lives, in `room/README.md`, and in short:
 
 - **Kiosk, full screen.** Chromium runs `--kiosk`, so a cinema shows the page and
   nothing else -- no tab strip, no address bar. Full screen is the window manager's
@@ -458,9 +507,11 @@ where it lives, in `room/README.md`, and in short:
   sign-ins survive a recreated container -- `room/test/e2e-profile-persistence.sh`
   recreates one with `up.sh` and proves it. Managed at `<room>/profiles`.
 - **The room page** (`open77-room` on the game server, port 8002): the start page
-  every cinema lands on. Sign-in tiles for seven services (with whether the profile
-  has a session), the channels, the profile switcher, the room controls, and
-  **Android** -- the emulator's ws-scrcpy stream, started on demand.
+  every cinema lands on, drawn as a television's home screen -- a rail of app icons
+  (one per service, dot when the profile has a session), a shelf describing the
+  focused one, a clock, the who's-watching sheet behind the avatar, and Android --
+  the emulator's ws-scrcpy stream, started on demand. Its settings screen, at
+  `<room>/profiles`, is the profile library.
 - **Android with a mouse and a keyboard.** The stream URL carries
   `captureKeyboard=true`; without it ws-scrcpy leaves keyboard capture off and only
   the pointer works (measured: Settings' search stayed empty however much was typed).
@@ -476,13 +527,20 @@ where it lives, in `room/README.md`, and in short:
   picture. It runs beside the emulator, not instead of it;
   `android-native/switch-room.sh native|emulator` decides which one the
   televisions show, as environment for the room service rather than a patch.
+- **Its own internet** (2026-10-23). Docker's nft `FORWARD` chain ends
+  `policy drop`, so everything Android sent out from `waydroid0` was dropped at
+  the host while Android's own `ConnectivityService` reported CONNECTED: no Play
+  Store, no browser. `android-native/waydroid-internet.sh` adds the two accepts
+  that belong here, and the screen's firewall unit runs it after docker, so they
+  come back with docker on every boot.
 
 Which Android a room shows is environment on `open77-room`, not code:
 `ANDROID_PORT`, `ANDROID_PAGE_PATH`, `ANDROID_UDID`, `ANDROID_SERVICES` and
 `ANDROID_LABEL` (defaults: the emulator, `8000`, `emulator-5554`).
 
 The room service is `room/` (server, pages, unit, install script, tests); it is
-installed per host, not per role, and serves all three rooms.
+installed per host, not per role, and serves all four rooms (`?room=staging`,
+`production`, `f2077`, `fr-us`).
 
 ## Tests
 

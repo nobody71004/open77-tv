@@ -34,6 +34,7 @@ const ROOMS = {
   production: { container: "open77-tvbrowser-xb",    dir: "/opt/open77-tvbrowser-xb",    label: "Production" },
   staging:    { container: "open77-tvbrowser-xbs",   dir: "/opt/open77-tvbrowser",       label: "Staging" },
   f2077:      { container: "open77-tvbrowser-f2077", dir: "/opt/open77-tvbrowser-f2077", label: "F2077" },
+  "fr-us":    { container: "open77-tvbrowser-fr-us", dir: "/opt/open77-tvbrowser-fr-us", label: "Freeroam USA" },
 };
 
 // The game's watch-party API for each role, polled for "someone pressed
@@ -42,6 +43,7 @@ const GAME = {
   production: "https://xbuniverse.duckdns.org/opx-watch-xb",
   staging:    "https://xbuniverse.duckdns.org/opx-watch-xb-staging",
   f2077:      "",
+  "fr-us":    "https://xbuniverse.duckdns.org/opx-watch-fr-us",
 };
 
 // Where the Android screen is served, and which device it is. Two stacks run
@@ -66,6 +68,30 @@ const ANDROID_SERVICES = (process.env.ANDROID_SERVICES || "open77-android-web.se
 const ANDROID_LABEL = process.env.ANDROID_LABEL || "Android emulator";
 const ANDROID_PAGE = `http://172.17.0.1:${ANDROID_PORT}/`;
 
+// The screen mirror each room can show. The link -- relay page, channel and
+// token -- is the game server's own opx_screenmirror config on this host, which
+// is also the file the installers write, so the secret has one home. Read per
+// request (tiny, and it changes only at deploy): a room whose server has no
+// config simply has no mirror. The page never holds the link -- `/mirror`
+// answers with a redirect -- so the token stays out of the room's HTML.
+const MIRROR = {
+  production: "/opt/open77-xbuniverse/resources/opx_screenmirror/server/config.lua",
+  staging:    "/opt/open77-xbuniverse-staging/resources/opx_screenmirror/server/config.lua",
+  f2077:      "/opt/open77-f2077/resources/opx_screenmirror/server/config.lua",
+  "fr-us":    "/opt/open77-freeroamusa/resources/opx_screenmirror/server/config.lua",
+};
+
+function mirrorUrl(role) {
+  const file = MIRROR[role];
+  if (!file) return null;
+  try {
+    const found = /url\s*=\s*"([^"]+)"/.exec(fs.readFileSync(file, "utf8"));
+    const link = found && found[1];
+    if (!link || !/^https:\/\//.test(link) || /\s/.test(link)) return null;
+    return link;
+  } catch { return null; }
+}
+
 const SIGNIN_DOMAINS = {
   "Netflix": ["netflix.com"],
   "YouTube": ["youtube.com", "google.com"],
@@ -77,6 +103,7 @@ const SIGNIN_DOMAINS = {
 };
 
 const CHANNELS = [
+  { id: "chrome",  label: "Chrome",  url: "https://www.google.com/",           hint: "Browse the web" },
   { id: "netflix", label: "Netflix", url: "https://www.netflix.com/browse",  hint: "Films and series" },
   { id: "youtube", label: "YouTube", url: "https://www.youtube.com/",        hint: "Anything on the web" },
   { id: "prime",   label: "Prime Video", url: "https://www.primevideo.com/", hint: "Films and series" },
@@ -640,6 +667,7 @@ async function state(role) {
     androidLabel: ANDROID_LABEL,
     androidPort: ANDROID_PORT,
     androidStarting: androidStarting !== null,
+    mirror: mirrorUrl(role) !== null,
     roomUrl: await roomUrl(role),
     uptime: Math.round((Date.now() - started) / 1000),
     now: Date.now(),
@@ -651,8 +679,28 @@ const server = http.createServer(async (req, res) => {
   const role = ROOMS[url.searchParams.get("room")] ? url.searchParams.get("room") : "production";
 
   try {
+    // The television's face is set in Inter; the room's Chromium has no such
+    // family and falls back to DejaVu Sans, which reads nothing like a TV. One
+    // small file, served from this directory, cached for a week.
+    if (req.method === "GET" && url.pathname === "/inter.woff2") {
+      res.writeHead(200, { "Content-Type": "font/woff2", "Cache-Control": "public, max-age=604800" });
+      const stream = fs.createReadStream(path.join(WEB, "inter.woff2"));
+      stream.on("error", () => res.end());
+      return stream.pipe(res);
+    }
+
     if (req.method === "GET" && (url.pathname === "/" || url.pathname === "/splash")) return page(res, "splash.html");
     if (req.method === "GET" && url.pathname === "/profiles") return page(res, "profiles.html");
+
+    // The Mirror app: a redirect to the relay's viewer page for this room's
+    // server. Nothing is cached and nothing is logged, because the location
+    // carries the channel's token.
+    if (req.method === "GET" && url.pathname === "/mirror") {
+      const target = mirrorUrl(role);
+      if (!target) return send(res, 404, "no screen mirror is configured for this room");
+      res.writeHead(302, { Location: target, "Cache-Control": "no-store" });
+      return res.end();
+    }
 
     if (req.method === "GET" && url.pathname === "/android") {
       if (!androidDevice()) {

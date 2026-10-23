@@ -5,8 +5,8 @@
 -- a bundle carries: with no link, /browser says the browser is not set up here.
 OpxTvBrowserConfig = {
     url = nil,
-    cinemaRecord = "cinema.150ft.browser",
-    cinema100Record = "cinema.100ft.browser",
+    cinemaRecord = "cinema.150ft",
+    cinema100Record = "cinema.100ft",
 
     -- WHO MAY PUT THE SHARED BROWSER ON A SCREEN, and who may be handed its link.
     --
@@ -17,9 +17,9 @@ OpxTvBrowserConfig = {
     -- `adminOnlyControl` use, `command.media.lock`, which an admin has anyway. A
     -- player who is not an admin is told so instead of being given the link.
     --
-    -- The television's own path is unaffected: the browser cinemas (`cinema.*.browser`)
-    -- get the link from this resource's `link` export, which answers open77_media and
-    -- nobody else. The screens still work; what is gone is a chat command that handed
-    -- the credentials to whoever typed it.
+    -- The television's own path is unaffected: the room's panels (`cinema.100ft`,
+    -- `cinema.150ft`) get the link from this resource's `link` export, which answers
+    -- open77_media and nobody else. The screens still work; what is gone is a chat
+    -- command that handed the credentials to whoever typed it.
     adminAce = "command.media.lock",
 }

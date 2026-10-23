@@ -13,9 +13,10 @@
 -- it is seen by everyone watching, and recreating the container wipes it.
 --
 -- USING IT. /browser at a television puts the browser on it; /browser cinema puts
--- up a 150 ft cinema in front of you showing it (/browser cinema 100: a 100 ft
--- one); /browser off takes it off the set in front of you. The TV menu has both
--- browser cinemas too (open77_media's cinema.100ft.browser, cinema.150ft.browser).
+-- up a 150 ft panel in front of you showing it (/browser cinema 100: a 100 ft
+-- one); /browser off takes it off the set in front of you. The TV menu's two
+-- open77-TV-ROOM records (open77_media's cinema.100ft, cinema.150ft) are these
+-- same panels: this resource's home screen is what they show.
 -- The link (with the viewer password) lives in
 -- server/config.lua, written on the server at deploy and never shipped to clients
 -- as a file -- though a client whose television shows it holds the link, which is

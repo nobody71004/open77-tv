@@ -54,7 +54,7 @@ local function loadServer(url, admin, acl)
     else
         _G.Open77 = {}
     end
-    OpxTvBrowserConfig = { url = url, cinemaRecord = "cinema.150ft.browser", cinema100Record = "cinema.100ft.browser" }
+    OpxTvBrowserConfig = { url = url, cinemaRecord = "cinema.150ft", cinema100Record = "cinema.100ft" }
     assert(loadfile("server/main.lua"))()
     return sent, commands, handlers, printed
 end
@@ -66,10 +66,10 @@ check(#sent == 1 and sent[1].name == "opx:tvbrowser:put" and sent[1].target == 7
     "/browser hands the link to the player who asked, and only to them")
 sent[1] = nil
 commands.browser(7, { "cinema" }, "browser cinema")
-check(sent[1] and sent[1].name == "opx:tvbrowser:cinema" and sent[1].args[1].record == "cinema.150ft.browser", "/browser cinema asks for the 150 ft cinema")
+check(sent[1] and sent[1].name == "opx:tvbrowser:cinema" and sent[1].args[1].record == "cinema.150ft", "/browser cinema asks for the 150 ft cinema")
 sent[1] = nil
 commands.browser(7, { "cinema", "100" }, "browser cinema 100")
-check(sent[1] and sent[1].name == "opx:tvbrowser:cinema" and sent[1].args[1].record == "cinema.100ft.browser"
+check(sent[1] and sent[1].name == "opx:tvbrowser:cinema" and sent[1].args[1].record == "cinema.100ft"
     and sent[1].args[1].url == GOOD, "/browser cinema 100 asks for the 100 ft browser cinema")
 sent[1] = nil
 commands.browser(7, { "cinema", "7" }, "browser cinema 7")
@@ -177,17 +177,17 @@ control = lastServer("open77:media:control")
 check(control and control.args[2].id == 2 and control.args[2].url == "", "off clears a set that shows it")
 
 toServer = {}
-net["opx:tvbrowser:cinema"]({ url = GOOD, record = "cinema.150ft.browser" })
+net["opx:tvbrowser:cinema"]({ url = GOOD, record = "cinema.150ft" })
 local spawn = lastServer("open77:media:spawn")
-check(spawn and spawn.args[1].record == "cinema.150ft.browser" and spawn.args[1].url == GOOD and spawn.args[1].yaw == 90,
+check(spawn and spawn.args[1].record == "cinema.150ft" and spawn.args[1].url == GOOD and spawn.args[1].yaw == 90,
     "cinema spawns the 150 ft record with the link and the player's facing")
 said = lastServer("opx:tvbrowser:report")
 check(said and said.args[1].text:find("150 ft", 1, true), "and says 150 ft")
 toServer = {}
-net["opx:tvbrowser:cinema"]({ url = GOOD, record = "cinema.100ft.browser" })
+net["opx:tvbrowser:cinema"]({ url = GOOD, record = "cinema.100ft" })
 spawn = lastServer("open77:media:spawn")
 said = lastServer("opx:tvbrowser:report")
-check(spawn and spawn.args[1].record == "cinema.100ft.browser" and said and said.args[1].text:find("100 ft", 1, true),
+check(spawn and spawn.args[1].record == "cinema.100ft" and said and said.args[1].text:find("100 ft", 1, true),
     "the 100 ft one spawns its own record and says 100 ft")
 toServer = {}
 net["opx:tvbrowser:put"]({ url = "https://evil.example/" })

@@ -10,8 +10,9 @@
 #   staging      /tv-browser-xb-staging/    127.0.0.1:18080
 #   production   /tv-browser-xb/            127.0.0.1:18081
 #   f2077        /tv-browser-f2077/         127.0.0.1:18082
+#   fr-us        /tv-browser-fr-us/         127.0.0.1:18083
 #
-# USAGE  ./nginx.sh [staging|production|f2077]       (default: staging)
+# USAGE  ./nginx.sh [staging|production|f2077|fr-us]       (default: staging)
 set -euo pipefail
 
 ROLE="${1:-staging}"
@@ -19,7 +20,8 @@ case "$ROLE" in
   staging)    PREFIX=/tv-browser-xb-staging; PORT=18080; ANCHOR='location /opx-watch-xb-staging/' ;;
   production) PREFIX=/tv-browser-xb;         PORT=18081; ANCHOR='location /tv-browser-xb-staging/' ;;
   f2077)      PREFIX=/tv-browser-f2077;      PORT=18082; ANCHOR='location /tv-browser-xb/' ;;
-  *) echo "usage: $(basename "$0") [staging|production|f2077]"; exit 2 ;;
+  fr-us)      PREFIX=/tv-browser-fr-us;      PORT=18083; ANCHOR='location /tv-browser-f2077/' ;;
+  *) echo "usage: $(basename "$0") [staging|production|f2077|fr-us]"; exit 2 ;;
 esac
 
 F=/etc/nginx/sites-enabled/redsync-cdn; A=/etc/nginx/sites-available/redsync-cdn

@@ -4,7 +4,7 @@
 # comes back on it -- after the container has been thrown away and made again.
 # Run on the game server as root:
 #
-#   ./e2e-profile-persistence.sh [staging|production|f2077]
+#   ./e2e-profile-persistence.sh [staging|production|f2077|fr-us]
 #
 # The recreation is ../server/up.sh <role>, which is also how a room is upgraded:
 # stop, rm, run from the same image with the same mounts. It is deliberately the
@@ -26,7 +26,9 @@ case "$ROLE" in
     CONTAINER=open77-tvbrowser-xb;  DIR=/opt/open77-tvbrowser-xb ;;
   f2077)
     CONTAINER=open77-tvbrowser-f2077; DIR=/opt/open77-tvbrowser-f2077 ;;
-  *) echo "usage: $(basename "$0") [staging|production|f2077]"; exit 2 ;;
+  fr-us)
+    CONTAINER=open77-tvbrowser-fr-us; DIR=/opt/open77-tvbrowser-fr-us ;;
+  *) echo "usage: $(basename "$0") [staging|production|f2077|fr-us]"; exit 2 ;;
 esac
 ROOM=http://127.0.0.1:8002
 # up.sh lives in the room's install directory (it is what created the container),

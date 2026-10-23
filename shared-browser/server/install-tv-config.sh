@@ -10,8 +10,9 @@
 #   staging      /opt/open77-tvbrowser          /opt/open77-xbuniverse-staging
 #   production   /opt/open77-tvbrowser-xb       /opt/open77-xbuniverse
 #   f2077        /opt/open77-tvbrowser-f2077    /opt/open77-f2077
+#   fr-us        /opt/open77-tvbrowser-fr-us    /opt/open77-freeroamusa
 #
-# USAGE  ./install-tv-config.sh [staging|production|f2077]       (default: staging)
+# USAGE  ./install-tv-config.sh [staging|production|f2077|fr-us]       (default: staging)
 set -euo pipefail
 
 ROLE="${1:-staging}"
@@ -19,7 +20,8 @@ case "$ROLE" in
   staging)    D=/opt/open77-tvbrowser;        SRV=/opt/open77-xbuniverse-staging ;;
   production) D=/opt/open77-tvbrowser-xb;     SRV=/opt/open77-xbuniverse ;;
   f2077)      D=/opt/open77-tvbrowser-f2077;  SRV=/opt/open77-f2077 ;;
-  *) echo "usage: $(basename "$0") [staging|production|f2077]"; exit 2 ;;
+  fr-us)      D=/opt/open77-tvbrowser-fr-us;  SRV=/opt/open77-freeroamusa ;;
+  *) echo "usage: $(basename "$0") [staging|production|f2077|fr-us]"; exit 2 ;;
 esac
 
 SEC="$D/tv-url.secret"
@@ -35,8 +37,8 @@ umask 077
   printf -- '-- opx_tvbrowser -- server/config.lua (written at deploy from %s)\n' "$SEC"
   printf -- 'OpxTvBrowserConfig = {\n'
   printf -- '    url = "%s",\n' "$(tr -d '\r\n' < "$SEC")"
-  printf -- '    cinemaRecord = "cinema.150ft.browser",\n'
-  printf -- '    cinema100Record = "cinema.100ft.browser",\n'
+  printf -- '    cinemaRecord = "cinema.150ft",\n'
+  printf -- '    cinema100Record = "cinema.100ft",\n'
   printf -- '    adminAce = "command.media.lock",\n'
   printf -- '}\n'
 } > "$CFG"
