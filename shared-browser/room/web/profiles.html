@@ -228,7 +228,7 @@
       ["Size", p.size],
       ["Last used", p.updated],
       ["Showing now", state.roomUrl || "nothing yet"],
-      ["Android emulator", state.androidDevice ? "running · " + state.androidDevice : "stopped"],
+      [state.androidLabel || "Android", state.androidDevice ? "running · " + state.androidDevice : "stopped"],
     ];
     var dl = el("details-body");
     dl.innerHTML = "";

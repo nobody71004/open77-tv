@@ -44,6 +44,17 @@ wait_for() { # fragment, seconds
 
 echo "== a game-asked Android request reaching $ROLE's room"
 
+# Which screen the room is configured for: the emulator's ws-scrcpy stream, or
+# the native screen's noVNC page (see ../../android-native/). Both are "Android
+# on the room's screen"; they are different pages, and this test asserts the one
+# the service says it would open.
+ANDROID_URL=$(curl -s --max-time 5 "$ROOM/api/state?room=$ROLE" \
+  | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next((c["url"] for c in d.get("channels",[]) if c["id"]=="android"), ""))')
+case "$ANDROID_URL" in
+  *open77-screen.html*) EXPECT=open77-screen.html; KIND="native Android (noVNC)" ;;
+  *)                    EXPECT=action=stream; KIND="the emulator (ws-scrcpy stream)" ;;
+esac
+
 check "the game server answers on its own listener" \
   sh -c "curl -sf --max-time 5 '$GAME/v1/health' >/dev/null"
 BEFORE=$(curl -s --max-time 5 "$GAME/v1/pending" | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
@@ -55,11 +66,20 @@ ASK=$(curl -s --max-time 5 -X POST "$GAME/v1/android/selftest")
 AFTER=$(curl -s --max-time 5 "$GAME/v1/pending" | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
 check "the request is taken, from this machine only, and the id goes up" \
   sh -c "[ $AFTER -gt $BEFORE ] && echo '$ASK' | grep -q 'self-test'"
-check "the room notices it within its two-second poll and puts the emulator on the screen" \
-  wait_for "action=stream" 30
+check "the room notices it within its two-second poll and puts $KIND on the screen" \
+  wait_for "$EXPECT" 30
 URL=$(room_url)
-check "and the stream it opened captures the keyboard, not just the mouse" \
-  test "${URL#*captureKeyboard=true}" != "$URL"
+if [ "$EXPECT" = "action=stream" ]; then
+  check "and the stream it opened captures the keyboard, not just the mouse" \
+    test "${URL#*captureKeyboard=true}" != "$URL"
+else
+  # noVNC's RFB session carries pointer and keys, and the page it is opened on is
+  # this repository's own: a canvas that fills the window, with none of noVNC's
+  # control bar taking its height off the picture (see
+  # ../../android-native/screen.html).
+  check "and the page it opened is the screen page, not noVNC's vnc.html" \
+    test "${URL#*open77-screen.html}" != "$URL"
+fi
 
 curl -s --max-time 30 -X POST "$ROOM/api/action" -H 'Content-Type: application/json' \
   -d "{\"room\":\"$ROLE\",\"action\":\"open\",\"url\":\"http://172.17.0.1:8002/?room=$ROLE\"}" >/dev/null

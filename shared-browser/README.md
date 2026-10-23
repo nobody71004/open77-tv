@@ -467,6 +467,19 @@ where it lives, in `room/README.md`, and in short:
   A host presses **Android screen** in the `/watch` panel or types `/watch android`,
   and the room -- polling that game server's `GET /v1/pending` -- starts the
   emulator if needed and puts its stream on the cinema screen.
+- **A second Android that is not emulated** (`android-native/`, 2026-10-22):
+  Waydroid -- the Android system image as a container on the host's own kernel,
+  no qemu guest -- served to the room as a VNC framebuffer (headless sway +
+  wayvnc + noVNC on port 8001) because this GPU-less VM cannot encode scrcpy's
+  H.264. The rooms open `android-native/screen.html` there rather than noVNC's
+  own page: a canvas that fills the window, with no control bar in front of the
+  picture. It runs beside the emulator, not instead of it;
+  `android-native/switch-room.sh native|emulator` decides which one the
+  televisions show, as environment for the room service rather than a patch.
+
+Which Android a room shows is environment on `open77-room`, not code:
+`ANDROID_PORT`, `ANDROID_PAGE_PATH`, `ANDROID_UDID`, `ANDROID_SERVICES` and
+`ANDROID_LABEL` (defaults: the emulator, `8000`, `emulator-5554`).
 
 The room service is `room/` (server, pages, unit, install script, tests); it is
 installed per host, not per role, and serves all three rooms.

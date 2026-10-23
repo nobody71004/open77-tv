@@ -44,8 +44,27 @@ const GAME = {
   f2077:      "",
 };
 
-// Where the Android screen is served (the emulator stack next to this one).
-const ANDROID_PAGE = "http://172.17.0.1:8000/";
+// Where the Android screen is served, and which device it is. Two stacks run
+// next to each other on this host and a room can be moved between them -- and
+// back -- without a patch, because all of it is environment. The defaults are
+// the emulator (Android 14 under qemu, port 8000, scrcpy's H.264 on ws-scrcpy);
+// the native screen is Waydroid (Android 13 on this host's kernel, port 8001),
+// which serves a VNC framebuffer through noVNC because this GPU-less VM cannot
+// encode H.264 at all.
+//   ANDROID_PORT      8000 | 8001
+//   ANDROID_PAGE_PATH the page to show, when it is not ws-scrcpy's stream link
+//                     (native: /open77-screen.html -- a canvas and nothing else,
+//                     see ../../android-native/)
+//   ANDROID_UDID      emulator-5554 | 192.168.240.112:5555
+//   ANDROID_SERVICES  which units "put Android up" starts
+//   ANDROID_LABEL     what the pages call it
+const ANDROID_PORT = Number(process.env.ANDROID_PORT || 8000);
+const ANDROID_PAGE_PATH = process.env.ANDROID_PAGE_PATH || "";
+const ANDROID_UDID = process.env.ANDROID_UDID || "emulator-5554";
+const ANDROID_SERVICES = (process.env.ANDROID_SERVICES || "open77-android-web.service open77-android-emulator.service")
+  .split(/\s+/).filter(Boolean);
+const ANDROID_LABEL = process.env.ANDROID_LABEL || "Android emulator";
+const ANDROID_PAGE = `http://172.17.0.1:${ANDROID_PORT}/`;
 
 const SIGNIN_DOMAINS = {
   "Netflix": ["netflix.com"],
@@ -392,9 +411,13 @@ function deleteProfile(role, name) {
 // filter. The player also has a Capture-keyboard button in its side bar for when
 // someone lands on it some other way.
 function androidStreamUrl() {
-  const udid = process.env.ANDROID_UDID || "emulator-5554";
-  const proxy = "ws://172.17.0.1:8000/?action=proxy-adb&remote=tcp%3A8886&udid=" + udid;
-  return "http://172.17.0.1:8000/#!action=stream&udid=" + udid +
+  const base = "172.17.0.1:" + ANDROID_PORT;
+  // A stack that serves its own page (the native screen's noVNC) needs no link
+  // built here: the page takes the pointer and the keyboard itself.
+  if (ANDROID_PAGE_PATH) return "http://" + base + ANDROID_PAGE_PATH;
+  const udid = ANDROID_UDID;
+  const proxy = "ws://" + base + "/?action=proxy-adb&remote=tcp%3A8886&udid=" + udid;
+  return "http://" + base + "/#!action=stream&udid=" + udid +
     "&player=broadway&fitToScreen=true&captureKeyboard=true&ws=" + encodeURIComponent(proxy);
 }
 
@@ -415,17 +438,39 @@ async function androidUp() {
   return httpOk(ANDROID_PAGE);
 }
 
-// Whether the emulator is actually booted, not just whether the screen's web
-// server answers: ws-scrcpy is up before the device is, and a stream opened at
-// that moment is a black rectangle.
-function androidDevice() {
+// Whether the configured device is actually booted, not just whether the
+// screen's web server answers: ws-scrcpy is up before the device is, and a
+// stream opened at that moment is a black rectangle. It is asked for by name --
+// this host can have two Android devices on adb at once (the emulator and the
+// native one), and "the first device adb lists" would put the wrong one on the
+// television the moment both are running.
+function androidDevices() {
   try {
-    const line = run("adb", ["devices"], 6000).split("\n")
-      .map((l) => l.trim()).find((l) => l && !l.startsWith("List of devices"));
-    if (!line) return null;
-    const [id, status] = line.split(/\s+/);
-    return status === "device" ? id : null;
-  } catch { return null; }
+    const rows = run("adb", ["devices"], 6000).split("\n")
+      .map((l) => l.trim()).filter((l) => l && !l.startsWith("List of devices"));
+    const seen = {};
+    for (const row of rows) {
+      const [id, status] = row.split(/\s+/);
+      if (id) seen[id] = status;
+    }
+    return seen;
+  } catch { return {}; }
+}
+
+function androidDevice() {
+  const seen = androidDevices();
+  if (seen[ANDROID_UDID]) return seen[ANDROID_UDID] === "device" ? ANDROID_UDID : null;
+  // A device that lives on the network (Waydroid at host:port, not the
+  // emulator's local one) is forgotten by adb whenever anything restarts the
+  // adb server -- and the emulator's own stack starts one. Asking again is what
+  // `adb connect` is for; without it the room calls a running Android down for
+  // as long as nobody reconnects it.
+  if (/^[\w.-]+:\d+$/.test(ANDROID_UDID)) {
+    try { run("adb", ["connect", ANDROID_UDID], 8000); } catch { /* no adb server */ }
+    const again = androidDevices();
+    return again[ANDROID_UDID] === "device" ? ANDROID_UDID : null;
+  }
+  return null;
 }
 
 // "Run the Android emulator" is a control, not an assumption: the game can ask
@@ -437,13 +482,13 @@ function startAndroid(timeoutMs = 150000) {
   androidStarting = (async () => {
     try {
       if (androidDevice() && await androidUp()) return { ok: true, already: true, device: androidDevice() };
-      run("systemctl", ["start", "open77-android-web.service", "open77-android-emulator.service"], 60000);
+      run("systemctl", ["start", ...ANDROID_SERVICES], 60000);
       const until = Date.now() + timeoutMs;
       while (Date.now() < until) {
         if (androidDevice() && await androidUp()) return { ok: true, device: androidDevice(), waited: Math.round((timeoutMs - (until - Date.now())) / 1000) };
         await new Promise((r) => setTimeout(r, 3000));
       }
-      return { ok: false, error: "the emulator did not come up in " + Math.round(timeoutMs / 1000) + " s" };
+      return { ok: false, error: "the Android screen did not come up in " + Math.round(timeoutMs / 1000) + " s" };
     } catch (error) {
       return { ok: false, error: error.message };
     } finally {
@@ -458,9 +503,16 @@ function startAndroid(timeoutMs = 150000) {
 // ---------------------------------------------------------------------------
 
 // The game answers GET /v1/pending with the newest Android request it has taken
-// ({ id, by, at }): id only ever goes up, so a room that restarts does not
-// replay an old one, and the first answer after a restart is adopted as "seen"
-// rather than acted on. Polling is two seconds: a person waiting for a screen.
+// ({ id, by, at }). The first answer after the room starts is adopted as "seen"
+// rather than acted on, so a restart does not replay an old request. Polling is
+// two seconds: a person waiting for a screen.
+//
+// Requests are ordered by their own `at`, not by `id`. The game numbers them
+// from a counter it keeps for the life of *its* process, so the id can go
+// backwards when the game restarts -- and a room that compared ids alone then
+// ignored every press until the counter caught up. Measured 2026-10-23: the game
+// back at 2, the room holding 3, and a press doing nothing on the television.
+// `at` is the request's timestamp, so it orders them across that restart too.
 const lastPoll = {};
 const seenAndroid = {};
 const androidBusy = {};
@@ -491,9 +543,16 @@ async function pollGame(role) {
     const want = await getText(base + "/v1/pending");
     const parsed = JSON.parse(want || "{}");
     const id = Number(parsed && parsed.id) || 0;
-    if (seenAndroid[role] === undefined) { seenAndroid[role] = id; return; }
-    if (id <= seenAndroid[role] || androidBusy[role]) return;
-    seenAndroid[role] = id;
+    const at = Number(parsed && parsed.at) || 0;
+    const seen = seenAndroid[role];
+    if (seen === undefined) { seenAndroid[role] = { id, at }; return; }
+    // `at` when the game gives one (it does); id alone when it does not, which
+    // is the same rule an older game server could offer.
+    const newer = (at && seen.at)
+      ? (at > seen.at || (at === seen.at && id > seen.id))
+      : id > seen.id;
+    if (!newer || androidBusy[role]) return;
+    seenAndroid[role] = { id, at };
     androidBusy[role] = true;
     try {
       if (!androidDevice()) {
@@ -578,6 +637,8 @@ async function state(role) {
     })),
     androidUp: up,
     androidDevice: device,
+    androidLabel: ANDROID_LABEL,
+    androidPort: ANDROID_PORT,
     androidStarting: androidStarting !== null,
     roomUrl: await roomUrl(role),
     uptime: Math.round((Date.now() - started) / 1000),
@@ -600,7 +661,7 @@ const server = http.createServer(async (req, res) => {
         startAndroid();
         return send(res, 202, "<!doctype html><meta charset=utf-8><meta http-equiv=refresh content=10>" +
           "<body style=\"background:#0a0d13;color:#e8eef7;font:16px system-ui;padding:40px\">" +
-          "<h1 style=\"font-size:22px\">Starting the Android emulator</h1>" +
+          "<h1 style=\"font-size:22px\">Starting Android</h1>" +
           "<p>This page reloads itself until the screen is up. A cold boot takes about a minute.</p>" +
           "<p><a style=\"color:#19dfeb\" href=\"/?room=" + role + "\">Back to the room</a></p></body>");
       }
@@ -619,6 +680,8 @@ const server = http.createServer(async (req, res) => {
         }])),
         androidUp: await androidUp(),
         androidDevice: androidDevice(),
+        androidLabel: ANDROID_LABEL,
+        androidPort: ANDROID_PORT,
       });
     }
 

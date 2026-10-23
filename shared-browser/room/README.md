@@ -86,6 +86,28 @@ the emulator's field takes the text and filters. `test/e2e-android-input.sh` pro
 both through the X server -- the same place neko puts a player's mouse and
 keyboard -- and asserts on the emulator's own UI, not on the browser's opinion.
 
+**Which Android.** The service does not hard-code the emulator. Everything it
+needs is environment, so a room can be pointed at another stack -- the native one
+in `../android-native/` -- without a patch, and pointed back the same way:
+
+| variable | emulator (default) | native |
+|---|---|---|
+| `ANDROID_PORT` | `8000` | `8001` |
+| `ANDROID_PAGE_PATH` | -- (a scrcpy link is built) | `/open77-screen.html` |
+| `ANDROID_UDID` | `emulator-5554` | `192.168.240.112:5555` |
+| `ANDROID_SERVICES` | `open77-android-web.service open77-android-emulator.service` | the four native units + `open77-android-native-adb.service` |
+| `ANDROID_LABEL` | `Android emulator` | `Android (native)` |
+
+The device is asked for **by name**, not "the first thing adb lists", because
+this host can have two Android devices connected at once. A device on the network
+is re-connected before the room calls it down: an adb server restart (the
+emulator's stack starts one) makes adb forget `host:port` devices, and that is
+not the same as Android being off.
+
+The native side's `ANDROID_PAGE_PATH` is `/open77-screen.html`, which is
+`../android-native/screen.html`: noVNC's RFB client with no control bar, so the
+canvas is the whole window instead of the window minus a toolbar.
+
 ## The room's own browser, over CDP
 
 The image runs Chromium with a loopback DevTools socket and a `socat` forwarder

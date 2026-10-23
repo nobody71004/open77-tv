@@ -11,8 +11,8 @@ room's Chromium sees, and reads the room's own DevTools socket to check that a
 deletes a temporary profile (never the active one), and leaves the room on its
 splash page.
 
-What it does not do is press keys: that is e2e-android-input.sh, which needs the
-emulator.
+What it does not do is press keys: that is e2e-android-input.sh, which needs
+Android running and is written for whichever screen the room is showing.
 """
 
 import glob
@@ -128,10 +128,21 @@ check("the state carries everything a screen draws: channels, services, sign-ins
       and all(s.get("url", "").startswith("https://") for s in before["signin"])
       and "androidDevice" in before and "androidUp" in before)
 android_channel = next(c for c in before["channels"] if c["id"] == "android")
-check("the Android tile is the emulator's stream when it is up (keyboard capture included)",
-      ("captureKeyboard=true" in android_channel["url"] and "action=stream" in android_channel["url"])
-      if before.get("androidDevice") else android_channel["url"] == "/android",
-      android_channel["url"][:120])
+android_url = android_channel["url"]
+# Two screens exist on this host (../../android-native/): the emulator's ws-scrcpy
+# stream, and the native one's VNC page. The service says which it is set for
+# with ANDROID_PAGE_PATH; both are "the Android tile", and the test asserts the
+# shape that matches. The native page is open77-screen.html, not noVNC's own
+# vnc.html: a canvas that fills the window, with no control bar taking its height
+# off the picture.
+native_screen = "open77-screen.html" in android_url
+if before.get("androidDevice"):
+    shape_ok = android_url.endswith("/open77-screen.html") if native_screen else \
+               ("captureKeyboard=true" in android_url and "action=stream" in android_url)
+else:
+    shape_ok = android_url == "/android"
+check("the Android tile is the screen the service is configured for (native VNC or scrcpy)",
+      shape_ok, android_url[:120])
 
 splash_status, splash = get(f"/?room={ROLE}")
 profiles_status, profiles_page = get("/profiles")
@@ -182,9 +193,10 @@ check("opening a page puts it on the room's screen (a tab swap the television se
       value)
 
 code, value = post({"room": ROLE, "action": "open", "url": "android"}, timeout=180)
-url = wait_for_url("action=stream", seconds=40)
-check("opening Android starts the emulator if needed and puts its stream on the screen",
-      code == 200 and url is not None and "captureKeyboard=true" in url, (value, url))
+url = wait_for_url("open77-screen.html" if native_screen else "action=stream", seconds=40)
+want = "open77-screen.html" if native_screen else "captureKeyboard=true"
+check("opening Android starts it if needed and puts its screen on the screen",
+      code == 200 and url is not None and want in url, (value, url))
 
 post({"room": ROLE, "action": "open", "url": splash_url})
 check("and the splash comes back on the same tab",

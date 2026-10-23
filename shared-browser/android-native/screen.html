@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Android</title>
+<!--
+  The native Android's screen, with nothing around it.
+
+  noVNC's own pages (vnc.html, vnc_lite.html) are pages for a desktop browser: a
+  control bar above the canvas with the connection status, a "Send CtrlAltDel"
+  button and a settings panel, and "Connecting" text over the canvas while it
+  dials. On a television that is wrong: the bar is browser furniture in front of
+  a player who asked for Android, and it takes its height off the picture, so
+  Android is not the whole screen. Android is a screen, not a page with a
+  toolbar, so this page is only a canvas.
+
+  What it keeps from noVNC's pages: the RFB client itself (../core/rfb.js), the
+  keyboard and pointer that go with it, scaling the framebuffer to the window
+  (1280x720 in, 1280x720 out here, so a device coordinate is a screen
+  coordinate), and reconnecting when the VNC server restarts. What it drops: the
+  bar, the buttons, and the "Connecting" text -- on a TV the screen simply comes
+  up when it is ready.
+
+  Coordinates are not what the bar costs. Measured 2026-10-23 on both pages: a
+  tap computed from Settings' own search-bar bounds opens Settings' search on
+  either one, because noVNC maps the pointer through the canvas's own rect.
+  What the bar costs is the picture -- on vnc.html the canvas is that much
+  shorter than the screen.
+
+  Installed next to noVNC's own pages by install.sh, and what the rooms open:
+    http://172.17.0.1:8001/open77-screen.html
+-->
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #000;
+    overflow: hidden;
+  }
+  /* The whole window, so the framebuffer is mapped 1:1 onto the television. */
+  #screen {
+    width: 100vw;
+    height: 100vh;
+    display: block;
+    outline: none;
+  }
+</style>
+<script type="module" crossorigin="anonymous">
+  import RFB from './core/rfb.js';
+
+  const RETRY_MS = 1000;
+
+  function param(name, fallback) {
+    const match = (document.location.href + window.location.hash)
+      .match(new RegExp('.*[?&]' + name + '=([^&#]*)'));
+    return match ? decodeURIComponent(match[1]) : fallback;
+  }
+
+  const host = param('host', window.location.hostname);
+  const port = param('port', window.location.port);
+  const path = param('path', 'websockify');
+
+  let rfb = null;
+  let retry = null;
+
+  function connect() {
+    retry = null;
+    const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
+    const url = scheme + '://' + host + (port ? ':' + port : '') + '/' + path;
+    const target = document.getElementById('screen');
+
+    rfb = new RFB(target, url, { wsProtocols: ['binary'] });
+    // Scale the framebuffer to the window instead of clipping it: at 1:1 (the
+    // usual case here) this is a no-op, and on a smaller window it is the whole
+    // screen rather than the top-left corner of it.
+    rfb.scaleViewport = true;
+    rfb.clipViewport = false;
+    // The room is the player's only keyboard and mouse, so both are live.
+    rfb.viewOnly = false;
+    rfb.background = '#000';
+    // A television has no window manager to give the page focus after a
+    // restart; noVNC needs the canvas focused to take the keyboard.
+    rfb.focus();
+
+    rfb.addEventListener('connect', () => {
+      // A blank screen after a re-connect is a stale canvas, not a black
+      // picture: keep the focus where the keys are going.
+      rfb.focus();
+    });
+    rfb.addEventListener('disconnect', () => {
+      // The VNC server restarts with the display unit (and Waydroid with the
+      // session); coming back on our own is what keeps the wall showing Android
+      // instead of a dead canvas someone has to walk over and reload.
+      if (retry) return;
+      try { rfb.disconnect(); } catch {}
+      rfb = null;
+      retry = setTimeout(connect, RETRY_MS);
+    });
+  }
+
+  connect();
+</script>
+</head>
+<body>
+  <div id="screen"></div>
+</body>
+</html>

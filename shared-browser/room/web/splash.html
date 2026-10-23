@@ -233,7 +233,7 @@
     (state.channels || []).forEach(function (channel) {
       var android = channel.id === "android";
       var text = android
-        ? (state.androidStarting ? "starting the emulator…" : (state.androidDevice ? "running · " + state.androidDevice : "stopped"))
+        ? (state.androidStarting ? "starting…" : (state.androidDevice ? "running · " + state.androidDevice : "stopped"))
         : channel.hint;
       var b = tile("play" + (android ? " primary" : ""), channel.label,
         android ? "Games · mouse and keyboard" : "",
@@ -242,7 +242,7 @@
         if (android) {
           b.disabled = true;
           var s = b.querySelector(".state");
-          s.textContent = "starting the emulator…";
+          s.textContent = "starting…";
           call("open", { url: "android" }).then(function (value) {
             if (value && value.ok) location.href = "/android";
             else { b.disabled = false; load(); }
@@ -254,9 +254,13 @@
       channels.appendChild(b);
     });
 
+    // What the screen is called comes from the service: the emulator and the
+    // native Android are both "the Android screen" to the room, and this box
+    // can be running either.
+    var androidLabel = state.androidLabel || "Android";
     el("android-line").textContent = state.androidStarting
-      ? "Android emulator: starting"
-      : state.androidDevice ? "Android emulator: " + state.androidDevice : "Android emulator: stopped";
+      ? androidLabel + ": starting"
+      : state.androidDevice ? androidLabel + ": " + state.androidDevice : androidLabel + ": stopped";
   }
 
   function load() {
@@ -279,7 +283,7 @@
 
   if (params.get("android") === "down") {
     el("notice").className = "notice show";
-    el("notice").textContent = "The Android screen is not running: Start Android here brings the emulator up (about a minute on a cold boot).";
+    el("notice").textContent = "The Android screen is not running: Start Android here brings it up (about a minute on a cold boot).";
   }
 
   clock();
