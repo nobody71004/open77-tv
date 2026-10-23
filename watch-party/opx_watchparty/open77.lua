@@ -28,10 +28,10 @@
 -- with the extension installed. Chat: /watch netflix <link> [title], /watch
 -- play | pause | seek 1:02:03 | +30 | -10 | join <code> | leave | stop | link | status.
 --
--- ITS OWN CINEMA. /watch cinema puts the player's party on a 150 ft watch-party
+-- ITS OWN CINEMA. /watch cinema puts the player's party on the room's 150 ft
 -- panel (100 ft with "100", and a Cinema screen button in the panel) -- the
--- `cinema.150ft.watchparty` / `cinema.100ft.watchparty` records in open77_media,
--- which show the party's screen through `linkFrom = "opx_watchparty"`.
+-- `cinema.150ft` / `cinema.100ft` records in open77_media, whose `linkClaimFrom`
+-- lets this resource vouch for the party's page on that spawn.
 --
 -- SIGNING IN, SECURELY. Nobody signs in anywhere shared: each viewer signs in to
 -- their OWN Netflix account in their OWN browser on their OWN machine, and the

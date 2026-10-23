@@ -792,22 +792,45 @@ local records = {
     -- about DVD), because the surface is sized by `Open77MediaSurfaceFor` and
     -- capped there; and the client stops drawing a screen past 150 m, so the far
     -- end of a big lot sees nothing. Both are named rather than discovered.
+    -- -------------------------------------------------------------------------
+    -- The room
+    -- -------------------------------------------------------------------------
+    -- Two panels, one room. `open77-TV-ROOM` is the shared browser's home
+    -- screen (opx_tvbrowser): Chrome for the web, the services, the mirror and
+    -- the profiles -- the whole television in one page. There used to be four
+    -- families of near-identical records here -- a bare screen, a browser one, a
+    -- capture one and a watch-party one, at each size -- and with the room
+    -- carrying all of it they were four names for one thing. The catalogue is
+    -- just these two.
+    --
+    -- The picture is another resource's, so each record names it rather than a
+    -- link: `linkFrom` is asked for the link when the set is put up (`linkedUrl`
+    -- in server/main.lua), and a server without it says so instead of putting up
+    -- a blank screen.
+    --
+    -- `linkClaimFrom` is how a spawner's own page still reaches the same panel:
+    -- /watch cinema brings the player's party page, opx_watchparty vouches for it
+    -- (`claim`), and a vouched page wins over the room's own link. A page nobody
+    -- vouches for is refused, exactly as it was when the party had a record of
+    -- its own.
     {
         id = "cinema.100ft",
-        label = "Cinema screen, 100 ft",
+        label = "open77-TV-ROOM (100 ft)",
         model = "electronics.tv.screen.16x9",
-        blurb = "A 100 ft (30.5 m) 16:9 picture. Spawn it where the audience is.",
+        blurb = "The 100 ft (30.5 m) television: the room's own home screen -- Chrome, the apps, the mirror. F8 at the screen to use it.",
         scale = 26.2758621,
         -- Replicated further than the prop default: a screen this size is
         -- watched from across a lot, and a prop that stops streaming at 120 m
         -- takes the picture with it for everyone past that line.
         streamingRadius = 300.0,
         -- The two things that make a panel this size a *set* rather than a
-        -- television: a red borderline so its edges are readable in the dark,
+        -- television: a blue borderline so its edges are readable in the dark,
         -- and a collider so the audience stands in front of it instead of
-        -- inside it. Both are declared here and nowhere else in this catalogue.
-        border = "#c8102e",
+        -- inside it.
+        border = "#3fb6ff",
         collision = true,
+        linkFrom = "opx_tvbrowser",
+        linkClaimFrom = { "opx_watchparty" },
         quad = {
             -- 1.16 m x 26.2758621, and the offset (0, 0.115394, 0.42) by the same
             -- factor -- the panel keeps the origin of the set it came from, and
@@ -822,160 +845,15 @@ local records = {
     },
     {
         id = "cinema.150ft",
-        label = "Cinema screen, 150 ft",
+        label = "open77-TV-ROOM (150 ft)",
         model = "electronics.tv.screen.16x9",
-        blurb = "A 150 ft (45.7 m) 16:9 picture. Half again the 100 ft panel.",
-        scale = 39.4137931,
-        streamingRadius = 400.0,
-        border = "#c8102e",
-        collision = true,
-        quad = {
-            offset = { 0.0, 4.548115, 16.553793 },
-            right = { 1.0, 0.0, 0.0 },
-            up = { 0.0, 0.0, 1.0 },
-            width = 45.72,
-            height = 26.0131,
-            faces = { 0.0, 1.0, 0.0 },
-        },
-    },
-    -- The 100 ft and 150 ft panels again, put up showing the shared browser: a
-    -- real Chromium on the server, streamed to the screen, the same for everyone
-    -- in front of it (opx_tvbrowser). Their picture is another resource's, so the
-    -- records name that resource rather than a link: `linkFrom` is asked for the
-    -- link when the set is put up (`linkedUrl` in server/main.lua), and a server
-    -- without it says so instead of putting up a blank screen. Each is its
-    -- cinema's panel exactly: the same scale, quad, reach and collider.
-    {
-        id = "cinema.100ft.browser",
-        label = "Browser cinema, 100 ft",
-        model = "electronics.tv.screen.16x9",
-        blurb = "The 100 ft panel showing the shared browser -- a real Chromium on the server, the same for everyone. F8 at the screen to use it.",
-        scale = 26.2758621,
-        streamingRadius = 300.0,
-        border = "#3fb6ff",
-        collision = true,
-        linkFrom = "opx_tvbrowser",
-        quad = {
-            offset = { 0.0, 3.032077, 11.035862 },
-            right = { 1.0, 0.0, 0.0 },
-            up = { 0.0, 0.0, 1.0 },
-            width = 30.48,
-            height = 17.3421,
-            faces = { 0.0, 1.0, 0.0 },
-        },
-    },
-    {
-        id = "cinema.150ft.browser",
-        label = "Browser cinema, 150 ft",
-        model = "electronics.tv.screen.16x9",
-        blurb = "The 150 ft panel showing the shared browser -- a real Chromium on the server, the same for everyone. F8 at the screen to use it.",
+        blurb = "The 150 ft (45.7 m) television: the same room, half again the 100 ft panel.",
         scale = 39.4137931,
         streamingRadius = 400.0,
         border = "#3fb6ff",
         collision = true,
         linkFrom = "opx_tvbrowser",
-        quad = {
-            offset = { 0.0, 4.548115, 16.553793 },
-            right = { 1.0, 0.0, 0.0 },
-            up = { 0.0, 0.0, 1.0 },
-            width = 45.72,
-            height = 26.0131,
-            faces = { 0.0, 1.0, 0.0 },
-        },
-    },
-
-    -- -------------------------------------------------------------------------
-    -- The 100 ft and 150 ft panels again, put up showing the remote screen
-    -- capture (opx_screenmirror): a live, view-only picture of a remote PC's
-    -- desktop, the same for everyone in front of it. Their picture is another
-    -- resource's, so the records name that resource rather than a link: linkFrom
-    -- is asked for the link when the set is put up (linkedUrl in server/main.lua).
-    -- Each is its cinema's panel exactly: the same scale, quad, reach and
-    -- collider. No DRM: protected video on the remote PC comes through black by
-    -- design, and nothing is sent back to that PC -- view-only.
-    {
-        id = "cinema.100ft.capture",
-        label = "Capture cinema, 100 ft",
-        model = "electronics.tv.screen.16x9",
-        blurb = "The 100 ft panel showing a remote PC's screen -- a live, view-only capture, the same for everyone.",
-        scale = 26.2758621,
-        streamingRadius = 300.0,
-        border = "#3fd98a",
-        collision = true,
-        linkFrom = "opx_screenmirror",
-        quad = {
-            offset = { 0.0, 3.032077, 11.035862 },
-            right = { 1.0, 0.0, 0.0 },
-            up = { 0.0, 0.0, 1.0 },
-            width = 30.48,
-            height = 17.3421,
-            faces = { 0.0, 1.0, 0.0 },
-        },
-    },
-    {
-        id = "cinema.150ft.capture",
-        label = "Capture cinema, 150 ft",
-        model = "electronics.tv.screen.16x9",
-        blurb = "The 150 ft panel showing a remote PC's screen -- a live, view-only capture, the same for everyone. Half again the 100 ft panel.",
-        scale = 39.4137931,
-        streamingRadius = 400.0,
-        border = "#3fd98a",
-        collision = true,
-        linkFrom = "opx_screenmirror",
-        quad = {
-            offset = { 0.0, 4.548115, 16.553793 },
-            right = { 1.0, 0.0, 0.0 },
-            up = { 0.0, 0.0, 1.0 },
-            width = 45.72,
-            height = 26.0131,
-            faces = { 0.0, 1.0, 0.0 },
-        },
-    },
-
-    -- -------------------------------------------------------------------------
-    -- The 100 ft and 150 ft panels again, put up showing a Netflix watch party
-    -- (opx_watchparty): the party's screen -- what is playing, where the film
-    -- is, how many browsers are in step -- the same for everyone in front of
-    -- it. Their picture is another resource's, so the records name that
-    -- resource rather than a link: linkFrom is asked for the link when the set
-    -- is put up (linkedUrl in server/main.lua). With no party to show they fall
-    -- back to the shared browser (linkFallback): the menu spawn always lands
-    -- somewhere usable -- a full browser to paste a link into and sign in on.
-    -- Each is its cinema's panel exactly: the same scale, quad, reach and
-    -- collider. The film itself never appears here: every viewer plays it in
-    -- their own browser, on their own Netflix account -- which is why this
-    -- screen can exist at all.
-    {
-        id = "cinema.100ft.watchparty",
-        label = "Netflix watch party, 100 ft",
-        model = "electronics.tv.screen.16x9",
-        blurb = "The 100 ft panel showing a Netflix watch party's screen -- what is playing and where the film is, the same for everyone. Start one with /watch; each viewer watches on their own Netflix account.",
-        scale = 26.2758621,
-        streamingRadius = 300.0,
-        border = "#e50914",
-        collision = true,
-        linkFrom = "opx_watchparty",
-        linkFallback = "opx_tvbrowser",
-        quad = {
-            offset = { 0.0, 3.032077, 11.035862 },
-            right = { 1.0, 0.0, 0.0 },
-            up = { 0.0, 0.0, 1.0 },
-            width = 30.48,
-            height = 17.3421,
-            faces = { 0.0, 1.0, 0.0 },
-        },
-    },
-    {
-        id = "cinema.150ft.watchparty",
-        label = "Netflix watch party, 150 ft",
-        model = "electronics.tv.screen.16x9",
-        blurb = "The 150 ft panel showing a Netflix watch party's screen -- what is playing and where the film is, the same for everyone. Half again the 100 ft panel.",
-        scale = 39.4137931,
-        streamingRadius = 400.0,
-        border = "#e50914",
-        collision = true,
-        linkFrom = "opx_watchparty",
-        linkFallback = "opx_tvbrowser",
+        linkClaimFrom = { "opx_watchparty" },
         quad = {
             offset = { 0.0, 4.548115, 16.553793 },
             right = { 1.0, 0.0, 0.0 },

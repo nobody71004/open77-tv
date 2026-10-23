@@ -114,126 +114,102 @@ local function findRecord(snapshot, record)
     end
 end
 
--- 1. The browser cinema takes opx_tvbrowser's link, whatever the panel's field held.
+-- 1. The room's 150 ft panel takes opx_tvbrowser's link, whatever the panel's
+-- field held: the room's home screen is what the record is for.
 providers.opx_tvbrowser = function() return LINK end
-local result, snapshot = spawnAs(7, { record = "cinema.150ft.browser", url = "https://typed.example/", yaw = 90 })
-check(result ~= nil and result[1] == true, "the browser cinema is put up: " .. tostring(result and result[2]))
-local set = findRecord(snapshot, "cinema.150ft.browser")
-check(set ~= nil and set.url == LINK, "it shows the shared browser's link, not the typed one: " .. tostring(set and set.url))
-check(set ~= nil and set.label == "Browser cinema, 150 ft", "it carries its own label")
+local result, snapshot = spawnAs(7, { record = "cinema.150ft", url = "https://typed.example/", yaw = 90 })
+check(result ~= nil and result[1] == true, "the room's 150 ft panel is put up: " .. tostring(result and result[2]))
+local set = findRecord(snapshot, "cinema.150ft")
+check(set ~= nil and set.url == LINK, "it shows the room's link, not the typed one: " .. tostring(set and set.url))
+check(set ~= nil and set.label == "open77-TV-ROOM (150 ft)", "it carries its own label")
 check(#created == 1 and created[1].scale == 39.4137931 and created[1].collision == true,
-    "on the same 150 ft panel as the cinema screen")
+    "on the 150 ft panel, the same one the cinema screen was")
 
--- 1b. The 100 ft browser cinema the same way, on its own panel.
+-- 1b. The 100 ft panel the same way.
 created = {}
-result, snapshot = spawnAs(7, { record = "cinema.100ft.browser", yaw = 90 })
-check(result ~= nil and result[1] == true, "the 100 ft browser cinema is put up: " .. tostring(result and result[2]))
-set = findRecord(snapshot, "cinema.100ft.browser")
-check(set ~= nil and set.url == LINK and set.label == "Browser cinema, 100 ft", "showing the shared browser's link, with its own label")
+result, snapshot = spawnAs(7, { record = "cinema.100ft", yaw = 90 })
+check(result ~= nil and result[1] == true, "the 100 ft panel is put up: " .. tostring(result and result[2]))
+set = findRecord(snapshot, "cinema.100ft")
+check(set ~= nil and set.url == LINK and set.label == "open77-TV-ROOM (100 ft)",
+    "showing the room's link, with its own label")
 check(#created == 1 and created[1].scale == 26.2758621 and created[1].collision == true, "on the 100 ft panel")
 
 -- 2. Without the resource, it says so and puts up nothing.
 providers.opx_tvbrowser = nil
 local createdBefore = #created
-result = spawnAs(7, { record = "cinema.150ft.browser" })
+result = spawnAs(7, { record = "cinema.150ft" })
 check(result ~= nil and result[1] == false and result[2] == "linked_resource_unavailable:opx_tvbrowser",
     "no opx_tvbrowser: refused by name (" .. tostring(result and result[2]) .. ")")
 check(#created == createdBefore, "and no prop is created for it")
 
 -- 2b. `/browser cinema` brings the link itself (from the server that holds it):
 -- when the export cannot be asked, a shared-browser link in the request is used.
-result, snapshot = spawnAs(7, { record = "cinema.150ft.browser", url = LINK })
+result, snapshot = spawnAs(7, { record = "cinema.150ft", url = LINK })
 check(result ~= nil and result[1] == true, "no export, a shared-browser link in the request: put up (" ..
     tostring(result and result[2]) .. ")")
 set = nil
 for _, spec in ipairs(snapshot or {}) do
-    if spec.record == "cinema.150ft.browser" and spec.url == LINK then set = spec end
+    if spec.record == "cinema.150ft" and spec.url == LINK then set = spec end
 end
 check(set ~= nil, "showing the link the request brought")
 
 -- 2c. Any other link in the request is not the browser: still refused.
 createdBefore = #created
-result = spawnAs(7, { record = "cinema.150ft.browser", url = "https://typed.example/" })
+result = spawnAs(7, { record = "cinema.150ft", url = "https://typed.example/" })
 check(result ~= nil and result[1] == false and result[2] == "linked_resource_unavailable:opx_tvbrowser",
     "no export, an ordinary link in the request: refused (" .. tostring(result and result[2]) .. ")")
 check(#created == createdBefore, "and nothing is put up for it")
-result = spawnAs(7, { record = "cinema.150ft.browser", url = "#open77-shared-browser" })
+result = spawnAs(7, { record = "cinema.150ft", url = "#open77-shared-browser" })
 check(result ~= nil and result[1] == false, "the bare mark is not a link")
 
 -- 3. A resource with no link configured is the same refusal.
 providers.opx_tvbrowser = function() return nil end
-result = spawnAs(7, { record = "cinema.150ft.browser" })
+result = spawnAs(7, { record = "cinema.150ft" })
 check(result ~= nil and result[1] == false, "a provider with no link is refused too")
 
--- 5. A provider vouches for a link the spawner brought: the watch-party cinema
--- goes up for a live party page even when the shared link cannot choose.
+-- 5. A provider vouches for a link the spawner brought: /watch cinema puts the
+-- player's own party page on the same room panel, over the room's own link.
+-- `linkClaimFrom` on the record is what makes opx_watchparty's `claim` asked.
 local WPARTY = "https://xbuniverse.duckdns.org/opx-watch-xb-staging/v1/tv/ABC234"
+providers.opx_tvbrowser = function() return LINK end
 providers.opx_watchparty = function() return nil end
 claimers.opx_watchparty = function(url) if url == WPARTY then return url end return nil end
 whys.opx_watchparty = function() return "too_many_watch_parties" end
+-- `live` is reset with `created`: the snapshot lists every set in the world, and
+-- this test's panel has the same record id as the ones put up above.
 created = {}
-result, snapshot = spawnAs(7, { record = "cinema.150ft.watchparty", url = WPARTY, yaw = 90 })
+live = {}
+result, snapshot = spawnAs(7, { record = "cinema.150ft", url = WPARTY, yaw = 90 })
 check(result ~= nil and result[1] == true, "a vouched party page is put up: " .. tostring(result and result[2]))
-set = findRecord(snapshot, "cinema.150ft.watchparty")
-check(set ~= nil and set.url == WPARTY, "showing the vouched page")
+set = findRecord(snapshot, "cinema.150ft")
+check(set ~= nil and set.url == WPARTY, "showing the vouched page, not the room's link")
 check(#created == 1 and created[1].scale == 39.4137931, "on the 150 ft panel")
 
--- 5b. An unvouched link is refused, and the menu is told why in the player's
--- words instead of the resource's name.
-createdBefore = #created
-result = spawnAs(7, { record = "cinema.150ft.watchparty", url = "https://evil.test/" })
-check(result ~= nil and result[1] == false and result[2] == "too_many_watch_parties",
-    "an unvouched link is refused with the reason (" .. tostring(result and result[2]) .. ")")
-check(#created == createdBefore, "and nothing is put up for it")
-
--- 5c. A provider without linkWhy keeps the old naming refusal.
-whys.opx_watchparty = nil
-result = spawnAs(7, { record = "cinema.150ft.watchparty", url = "https://evil.test/" })
-check(result ~= nil and result[1] == false and result[2] == "linked_resource_unavailable:opx_watchparty",
-    "no linkWhy: refused by name (" .. tostring(result and result[2]) .. ")")
-
--- 6. A linked record with a fallback lands on the fallback's link when the
--- provider has nothing: the watch-party cinema is a full browser with no party.
-local ROOM = "https://browser.example/room/?usr=open77&pwd=x&embed=1#open77-shared-browser"
-providers.opx_watchparty = function() return nil end
-claimers.opx_watchparty = nil
-providers.opx_tvbrowser = function() return ROOM end
-whys.opx_watchparty = function() return "no_watch_party_running" end
+-- 5b. A page nobody vouches for does not displace the room: the spawn lands on
+-- the room's own link, which is what the record is for.
 created = {}
 live = {}
-result, snapshot = spawnAs(7, { record = "cinema.150ft.watchparty", yaw = 90 })
-check(result ~= nil and result[1] == true, "no party: put up (" .. tostring(result and result[2]) .. ")")
-set = findRecord(snapshot, "cinema.150ft.watchparty")
-check(set ~= nil and set.url == ROOM, "showing the shared browser, to paste a link into")
-check(#created == 1 and created[1].scale == 39.4137931, "on the 150 ft panel")
+result, snapshot = spawnAs(7, { record = "cinema.150ft", url = "https://evil.test/" })
+check(result ~= nil and result[1] == true, "an unvouched page: still put up (" .. tostring(result and result[2]) .. ")")
+set = findRecord(snapshot, "cinema.150ft")
+check(set ~= nil and set.url == LINK, "showing the room's link, never the unvouched one")
 
--- 6b. A live party still wins over the fallback.
-providers.opx_watchparty = function() return WPARTY end
-created = {}
-live = {}
-result, snapshot = spawnAs(7, { record = "cinema.150ft.watchparty", yaw = 90 })
-check(result ~= nil and result[1] == true, "one party: put up")
-set = findRecord(snapshot, "cinema.150ft.watchparty")
-check(set ~= nil and set.url == WPARTY, "showing the party's screen, not the browser")
-
--- 6c. With neither, the menu is told why.
-providers.opx_watchparty = function() return nil end
+-- 5c. With the room's link gone too, the unvouched page is refused rather than
+-- shown: a record's picture is still its provider's to choose.
 providers.opx_tvbrowser = function() return nil end
 createdBefore = #created
-result = spawnAs(7, { record = "cinema.150ft.watchparty", yaw = 90 })
-check(result ~= nil and result[1] == false and result[2] == "no_watch_party_running",
-    "nothing anywhere: refused with the reason (" .. tostring(result and result[2]) .. ")")
+result = spawnAs(7, { record = "cinema.150ft", url = "https://evil.test/" })
+check(result ~= nil and result[1] == false, "no room link, an unvouched page: refused")
 check(#created == createdBefore, "and nothing is put up for it")
 
 -- 4. A record without linkFrom keeps the link it was given.
-providers.opx_tvbrowser = function() return LINK end
-result, snapshot = spawnAs(7, { record = "cinema.150ft", url = "https://www.youtube.com/watch?v=abc" })
-check(result ~= nil and result[1] == true, "the plain cinema is put up")
+result, snapshot = spawnAs(7, { record = "tv.16x9", url = "https://www.youtube.com/watch?v=abc" })
+check(result ~= nil and result[1] == true, "a plain television is put up")
 local plain = nil
 for _, spec in ipairs(snapshot or {}) do
-    if spec.record == "cinema.150ft" then plain = spec end
+    if spec.record == "tv.16x9" then plain = spec end
 end
-check(plain ~= nil and plain.url == "https://www.youtube.com/watch?v=abc", "the plain cinema keeps the link it was given")
+check(plain ~= nil and plain.url == "https://www.youtube.com/watch?v=abc", "the plain television keeps the link it was given")
 
 for _, name in ipairs(STUBBED) do rawset(_G, name, saved[name]) end
 _G.print = realPrint

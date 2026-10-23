@@ -862,24 +862,40 @@ end
 ---A provider vouches for a link the spawner brought: `exports[provider]:claim(url)`
 ---answers it back when it is one of the provider's live pages, nil otherwise.
 ---Lets a spawner put up their own screen -- the /watch cinema command names the
----player's own party -- when the shared `link` export cannot choose (no party,
----or several). A provider without `claim` vouches for nothing.
+---player's own party -- when the record's `link` would otherwise win.
+---
+---Asked of the record's `linkFrom` provider and of every provider named in its
+---`linkClaimFrom` list. The list is what lets one record serve both: the room's
+---two panels take the room's own page from opx_tvbrowser, and a watch party
+---vouches for its own page in the same spawn. A provider without `claim`
+---vouches for nothing, and a page nobody vouches for is still refused.
 local function claimedUrl(record, url)
-    local provider = record and record.linkFrom
-    if type(provider) ~= "string" or provider == "" then return nil end
     if type(url) ~= "string" or url == "" then return nil end
     if type(exports) ~= "table" and type(exports) ~= "userdata" then return nil end
-    local ok, answer = pcall(function() return exports[provider]:claim(url) end)
-    if ok and type(answer) == "string" and answer ~= "" then return answer end
+    local providers = {}
+    if record and type(record.linkFrom) == "string" and record.linkFrom ~= "" then
+        providers[#providers + 1] = record.linkFrom
+    end
+    if record and type(record.linkClaimFrom) == "table" then
+        for _, provider in ipairs(record.linkClaimFrom) do
+            if type(provider) == "string" and provider ~= "" then
+                providers[#providers + 1] = provider
+            end
+        end
+    end
+    for _, provider in ipairs(providers) do
+        local ok, answer = pcall(function() return exports[provider]:claim(url) end)
+        if ok and type(answer) == "string" and answer ~= "" then return answer end
+    end
     return nil
 end
 
----The shared browser behind a linked record that names one: a record's optional
----`linkFallback` is a second provider asked when the first has nothing -- the
----watch-party cinemas fall back to the shared browser, so spawning one from the
----menu always lands somewhere usable: the party's screen while exactly one runs,
----a full browser to paste a link into and sign in on otherwise. nil when no
----fallback is named, or it has nothing either.
+---A second provider behind a linked record that names one: a record's optional
+---`linkFallback` is asked when the first has nothing, so a spawn from the menu
+---can land somewhere usable instead of being refused. No record in the current
+---catalogue declares one -- the room is always the picture -- but the field is
+---kept for a deployment whose panel has a second home. nil when no fallback is
+---named, or it has nothing either.
 local function fallbackUrl(record)
     local fallback = type(record) == "table" and record.linkFallback or nil
     if type(fallback) ~= "string" or fallback == "" then return nil end
@@ -1754,10 +1770,13 @@ RegisterNetEvent("open77:media:spawn", function(payload)
     -- created through them. See `facingPlacement`.
     local placed, facing = facingPlacement(definition, position, acceptYaw(payload.yaw))
     -- A set whose picture is another resource's takes that resource's link,
-    -- whatever the panel's link field held: it is what the record is for.
+    -- whatever the panel's link field held: it is what the record is for. The
+    -- one exception is a page a provider vouches for -- /watch cinema brings the
+    -- player's own party -- which is asked FIRST so it is not overridden by the
+    -- room's link on the same panel.
     local url = payload.url
     if definition.linkFrom ~= nil then
-        url = linkedUrl(definition) or claimedUrl(definition, payload.url)
+        url = claimedUrl(definition, payload.url) or linkedUrl(definition)
             or (isSharedBrowserLink(payload.url) and payload.url or nil)
             or fallbackUrl(definition)
         if url == nil then

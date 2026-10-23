@@ -337,12 +337,12 @@ Host.clientEvents = {}
 Host.commands.watch.fn(7, { "cinema" }, "watch cinema")
 local cine = lastClient("opx:watch:cinema", 7)
 check("/watch cinema puts this party on its own 150 ft screen",
-    cine ~= nil and cine.args[1].record == "cinema.150ft.watchparty"
+    cine ~= nil and cine.args[1].record == "cinema.150ft"
         and cine.args[1].url == cbase .. "/v1/tv/" .. ccode)
 Host.clientEvents = {}
 Host.commands.watch.fn(7, { "cinema", "100" }, "watch cinema 100")
 check("/watch cinema 100 takes the 100 ft one",
-    lastClient("opx:watch:cinema", 7).args[1].record == "cinema.100ft.watchparty")
+    lastClient("opx:watch:cinema", 7).args[1].record == "cinema.100ft")
 Host.clientEvents = {}
 Host.commands.watch.fn(7, { "cinema", "50" }, "watch cinema 50")
 local badsize = lastClient("open77:command:result", 7)
@@ -355,7 +355,7 @@ check("a player with no party gets no cinema screen",
 Host.clientEvents = {}
 Host.events["opx:watch:cinema"]({})
 check("the panel's Cinema button reaches the same screen",
-    lastClient("opx:watch:cinema", 7).args[1].record == "cinema.150ft.watchparty")
+    lastClient("opx:watch:cinema", 7).args[1].record == "cinema.150ft")
 
 -- Android on the room's screen. The room service on this host polls
 -- /v1/pending, so what the game records is exactly what goes on the screen, and
@@ -439,7 +439,7 @@ local csaid = lastClient("open77:command:result", 8)
 local cscreen = lastClient("opx:watch:cinema", 8)
 check("/watch cinema with a link starts the party and puts up its screen",
     csaid ~= nil and csaid.args[2] == true and cscreen ~= nil
-        and cscreen.args[1].record == "cinema.150ft.watchparty"
+        and cscreen.args[1].record == "cinema.150ft"
         and Host.exports.claim(cscreen.args[1].url) == cscreen.args[1].url
         and cscreen.args[1].url ~= cbase .. "/v1/tv/" .. dcode)
 Host.clientEvents = {}
@@ -447,7 +447,7 @@ Host.commands.watch.fn(8, { "cinema", "100", "https://www.netflix.com/watch/8105
     "watch cinema 100 https://www.netflix.com/watch/81056740")
 cscreen = lastClient("opx:watch:cinema", 8)
 check("size and link work in either order",
-    cscreen ~= nil and cscreen.args[1].record == "cinema.100ft.watchparty"
+    cscreen ~= nil and cscreen.args[1].record == "cinema.100ft"
         and Host.exports.claim(cscreen.args[1].url) == cscreen.args[1].url)
 Host.clientEvents = {}
 Host.commands.watch.fn(8, { "cinema", "popcorn" }, "watch cinema popcorn")
@@ -513,17 +513,17 @@ check("Copy browser link puts the title, the time and the player's own code and 
 local savedServer = C.server
 C.server = {}
 C.events["opx:watch:cinema"]({ url = "https://xbuniverse.duckdns.org/opx-watch-xb-staging/v1/tv/ABC234",
-    record = "cinema.150ft.watchparty" })
+    record = "cinema.150ft" })
 local spawn = lastServer("open77:media:spawn")
-check("the cinema event puts this party on its own screen record",
-    spawn ~= nil and spawn.args[1].record == "cinema.150ft.watchparty"
+check("the cinema event puts this party on the room's panel",
+    spawn ~= nil and spawn.args[1].record == "cinema.150ft"
         and spawn.args[1].url:find("ABC234", 1, true) ~= nil)
 C.server = {}
-C.events["opx:watch:cinema"]({ url = "https://evil.test/v1/tv/ABC234", record = "cinema.150ft.watchparty" })
+C.events["opx:watch:cinema"]({ url = "https://evil.test/v1/tv/ABC234", record = "cinema.150ft" })
 check("a page that is not this party's is not spawned", lastServer("open77:media:spawn") == nil)
 C.server = {}
 C.events["opx:watch:cinema"]({ url = "https://xbuniverse.duckdns.org/opx-watch-xb-staging/v1/tv/ABC234",
-    record = "cinema.150ft.browser" })
+    record = "tv.16x9" })
 check("and neither is another record", lastServer("open77:media:spawn") == nil)
 C.pageEvents["watch:action"]({ action = "cinema" })
 check("the panel's Cinema screen button asks the server",

@@ -39,7 +39,7 @@ end
 local Store = assert(MediaVenueSetsStore, "server/venuesets.lua was not preloaded")
 
 -- ── the pure store ──────────────────────────────────────────────────────────
-local VENUE = "cinema.150ft.watchparty"
+local VENUE = "cinema.150ft"
 
 local cleaned, why = Store.Placement({ x = 1.5, y = -2.25, z = 10, yaw = 400 })
 check(cleaned ~= nil and cleaned.x == 1.5 and cleaned.z == 10 and cleaned.bucket == 0,

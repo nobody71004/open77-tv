@@ -20,7 +20,7 @@
 -- because those are not things a position capture can change.
 --
 -- KEYED BY RECORD, and that is the one design choice worth stating. A venue set
--- is identified by its record (`cinema.150ft.watchparty`), so `pinHere` does not
+-- is identified by its record (`cinema.150ft`), so `pinHere` does not
 -- have to trust an index the panel sent: the server reads the record off the
 -- entry it already holds. Two venue rows with the same record would share a
 -- saved placement -- the load says so out loud rather than pretending otherwise.

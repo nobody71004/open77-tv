@@ -238,7 +238,7 @@ RegisterNetEvent("opx:watch:joinnear", function() joinNear() end)
 -- this player's own party page: the server is trusted, but any resource can
 -- speak to a client, so the shape, the code and (when known) the base are
 -- checked here rather than believed.
-local WATCH_CINEMAS = { ["cinema.100ft.watchparty"] = true, ["cinema.150ft.watchparty"] = true }
+local WATCH_CINEMAS = { ["cinema.100ft"] = true, ["cinema.150ft"] = true }
 
 RegisterNetEvent("opx:watch:cinema", function(payload)
     if type(payload) ~= "table" then return end

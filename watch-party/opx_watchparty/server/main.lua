@@ -30,8 +30,12 @@ end
 local registry = WatchParty.new({ clock = nowMs, random = function(n) return math.random(n) end })
 local httpRoute, httpReason = nil, nil
 
-local CINEMA = "cinema.150ft.watchparty"
-local CINEMA_100 = "cinema.100ft.watchparty"
+-- The room's own two panels (open77_media's `cinema.100ft` and `cinema.150ft`,
+-- which put up opx_tvbrowser's home screen). A party goes on the same panel by
+-- being vouched for: the record lists this resource in `linkClaimFrom`, so the
+-- party's page wins over the room's link for that one spawn.
+local CINEMA = "cinema.150ft"
+local CINEMA_100 = "cinema.100ft"
 
 -- "Put the Android emulator on the room's screen": the newest request, and the
 -- only state the room service keeps an eye on (GET /v1/pending, below). A
@@ -283,11 +287,12 @@ RegisterNetEvent("opx:watch:stop", function()
         text = party and ("ended watch party " .. party.code) or why(reason) })
 end)
 
----Puts the player's party on its own cinema screen: a 150 ft watch-party panel
----(100 ft with "100") in front of them, showing the party's page. The client
----spawns it through open77_media, the same way /browser cinema does. With a
----link (`/watch cinema <netflix-link> [100]`) it starts the party first, so one
----command goes from a link to a screen -- no party needed beforehand.
+---Puts the player's party on the room's screen: the 150 ft open77-TV-ROOM panel
+---(100 ft with "100") in front of them, showing the party's page instead of the
+---room's home screen. The client spawns it through open77_media, the same way
+---/browser cinema does. With a link (`/watch cinema <netflix-link> [100]`) it
+---starts the party first, so one command goes from a link to a screen -- no
+---party needed beforehand.
 local function cinemaFor(source, raw, size, link)
     if size ~= "100" and size ~= "150" then
         TriggerClientEvent("opx:watch:result", source, { ok = false,
@@ -344,12 +349,12 @@ RegisterNetEvent("opx:watch:android", function()
     androidFor(source, nil)
 end)
 
--- The watch-party cinemas in the TV menu (open77_media's
--- `cinema.100ft.watchparty` and `cinema.150ft.watchparty`,
--- `linkFrom = "opx_watchparty"`) ask for the link when the set is put up. Only
--- open77_media is answered, and only when exactly one real party is running:
--- with none there is no page, and with two or more the menu cannot know which
--- one is meant (the /watch cinema command names the player's own).
+-- A watch party reaches the room's panels (open77_media's `cinema.100ft` and
+-- `cinema.150ft`) through `claim`: the party's page is vouched for on the spawn
+-- that brings it. The `link` export below is the older way in -- a spawner with
+-- no page of its own, when exactly one real party runs -- and is still answered
+-- only when there is exactly one party, because with two or more the menu cannot
+-- know which is meant (the /watch cinema command names the player's own).
 local function publish(name, fn)
     if exports == nil then return false end
     return (pcall(exports, name, fn))

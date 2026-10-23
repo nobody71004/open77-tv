@@ -20,9 +20,9 @@ open77_media/          the resource -- this is the television
                          which sets are worth materialising, releases pages on exit
   shared/records.lua     the catalogue: 40 records -- the game's real televisions,
                          monitors, panels, frames, a security monitor, and a
-                         scaled cinema family (a 100 ft and a 150 ft 16:9 panel,
-                         each also as a browser cinema that comes up showing the
-                         shared browser) -- each with a quad measured from its
+                         scaled pair of room panels (a 100 ft and a 150 ft 16:9
+                         screen, both named open77-TV-ROOM and put up showing the
+                         room -- the shared browser's home screen) -- each with a quad measured from its
                          own mesh (see below)
   shared/placement.lua   where "nudge it left" points, as arithmetic
   web/tv.html|css|js     the page one television shows: YouTube's own player, a
@@ -196,9 +196,10 @@ which is our own arithmetic. Write one of them wrong and a 1.16 m picture hangs 
 the middle of a 30 m panel. `records_test.lua` therefore *derives* each scaled
 record's expected quad from the same model's record at scale 1, so an edit to
 either half fails in the suite instead of on a cinema screen in front of an
-audience. The two browser cinemas (`cinema.100ft.browser`, `cinema.150ft.browser`)
-are those panels again, and the suite holds them to it: same scale, quad, reach
-and collider, and `linkFrom = "opx_tvbrowser"` on them and nothing else.
+audience. The two room panels (`cinema.100ft`, `cinema.150ft`) are those records,
+and the suite holds them to it: same scale, quad, reach and collider,
+`linkFrom = "opx_tvbrowser"` on them and nothing else, and their label
+(`open77-TV-ROOM (100 ft)` / `(150 ft)`) spelled out there too.
 
 The other half is where it lands. The spawn stand-off used to be a flat 1.1 m in
 front of the player, which for the 100 ft panel puts its centre almost 2 m

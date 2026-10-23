@@ -162,7 +162,7 @@ MediaVenueSets = {
     -- The numbers below are still the SURVEY: what a fresh install -- or one
     -- whose `data/venue-sets.json` was deleted -- starts from.
     {
-        record = "cinema.150ft.watchparty",
+        record = "cinema.150ft",
         x = -74.41, y = 1984.64, z = 101.22,
         yaw = 321.3,
     },
