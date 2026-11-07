@@ -1,0 +1,77 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Android</title>
+<!--
+  open77-screen.html (TV kit, 2026-11-07): the native Android's screen on a room's television. noVNC's RFB client and
+  nothing else -- no control bar -- so the picture is the whole window. websockify (open77-android-native-web) serves
+  it from noVNC's own folder, beside core/, and carries its connection on to wayvnc (Android's display).
+
+  Alt+Home and Alt+Left/Right belong to the room's browser, not to Android: its home page is the room's home screen
+  (by policy), so the TV's Home button (Alt+Home) brings the room home from here too. They are seen first, kept from
+  the VNC client (which would send them to Android and stop the browser from acting on them), and left to the browser.
+-->
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  #screen { position: fixed; inset: 0; }
+  #status { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); color: #e8eef7; text-align: center;
+            font: 600 22px/1.5 system-ui, sans-serif; text-shadow: 0 1px 3px #000; }
+</style>
+</head>
+<body>
+<div id="screen"></div>
+<div id="status">Connecting to Android...</div>
+<script>
+(function () {
+  "use strict";
+  var theBrowsers = {};      // keys whose press was left to the browser: their release is too
+  function forTheBrowser(e) {
+    return e.altKey && (e.key === "Home" || e.key === "ArrowLeft" || e.key === "ArrowRight" ||
+                        e.key === "BrowserHome" || e.key === "BrowserBack");
+  }
+  window.addEventListener("keydown", function (e) {
+    if (forTheBrowser(e)) { theBrowsers[e.code] = true; e.stopImmediatePropagation(); }
+  }, true);
+  window.addEventListener("keyup", function (e) {
+    if (theBrowsers[e.code]) { delete theBrowsers[e.code]; e.stopImmediatePropagation(); }
+  }, true);
+})();
+</script>
+<script type="module">
+import RFB from "./core/rfb.js";
+
+const status = document.getElementById("status");
+const url = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/websockify";
+let tries = 0;
+
+function say(text) {
+  status.textContent = text;
+  status.style.display = text ? "" : "none";
+}
+
+function connect() {
+  tries++;
+  const rfb = new RFB(document.getElementById("screen"), url);
+  rfb.scaleViewport = true;      // the whole picture in the window, whatever the window's size
+  rfb.resizeSession = false;     // Android's display keeps its own size
+  rfb.focusOnClick = true;
+  rfb.background = "#000";
+  window.__open77Screen = { rfb, tries };
+  rfb.addEventListener("connect", () => {
+    tries = 0;
+    say("");
+    rfb.focus();
+  });
+  rfb.addEventListener("credentialsrequired", () => say("Android's screen asks for a password"));
+  rfb.addEventListener("disconnect", (e) => {
+    say((e.detail && e.detail.clean ? "Android's screen closed" : "Android's screen is not answering") + " -- trying again...");
+    setTimeout(connect, Math.min(10000, 1000 * tries));
+  });
+}
+
+connect();
+</script>
+</body>
+</html>

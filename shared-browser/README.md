@@ -380,8 +380,9 @@ with it), where it was older it is not (`install-tv-config.sh` still writes the
    client silently falls back to WebRTC over TCP: the picture still plays, at
    low frame rate, with seconds of input lag (measured on all four rooms until
    2026-10-23). `up.sh` prints `tcpmux=... udpmux=...` in the container log; both
-   must be the role's port. It builds `open77/tvbrowser-chromium:9`, checks the image (the four
-   scripts in the client page, the policy, kiosk and the window manager, the
+   must be the role's port. It builds `open77/tvbrowser-chromium:10`, checks the image (the five
+   scripts in the client page, the input guard first; the policies, Netflix's
+   among them; kiosk and the window manager, with no keys of its own; the
    profile library and the DevTools forwarder, no Widevine baked in) and the host CDM,
    and runs the container capped at 4 cores, 4 GB and 2 GB of shared memory, with
    the client on that role's loopback port and WebRTC on that role's port (UDP and
@@ -557,6 +558,52 @@ The room service is `room/` (server, pages, unit, install script, tests); it is
 installed per host, not per role, and serves all four rooms (`?room=staging`,
 `production`, `f2077`, `fr-us`).
 
+## The fixes of 2026-11-07, and image 10
+
+The four rooms on rl31 were fixed in place on 2026-11-06/07 by `tools/tvkit`
+(each change kept first, each with a put-back), and image 10 builds the same
+changes in, so a recreated room keeps them. The rooms ran 9 with those changes
+made in their containers; `up.sh` builds 10.
+
+- **Two cursors.** A player saw the game's cursor and a second one, drawn into
+  the picture, trailing it. neko 3's legacy client asks for a second capture
+  pipeline, and neko makes it from the main one by replacing the text
+  `show-pointer=false` with `show-pointer=true` -- so the main pipeline's
+  `show-pointer=true` (and even `false`) put a cursor into exactly the stream the
+  legacy client plays. `show-pointer=0` is the same setting to GStreamer and does
+  not match that replacement: `up.sh`'s pipeline says `0`, and
+  `test/image-local.sh` reads neko's own log to check that no pipeline says
+  `true`.
+- **Keys that took the television away.** openbox's stock configuration binds 26
+  keys and opens four desktops: Super+D showed an empty desktop, Ctrl+Alt+arrows
+  went to one, Shift+Alt+arrows sent the browser to another, Alt+F4 closed it.
+  The rooms' openbox now has no keys of its own and one desktop
+  (`build/openbox-rc.xml`, the stock file with exactly those taken out).
+- **The browser's own shortcuts.** F1-F12, Ctrl+T/N/W/Tab/1-9/H/J/P,
+  Alt+Space/Esc/Tab, Shift+Esc and Super would act on the room's Chromium
+  (reload, new tab, close, full screen...) instead of the page shown. The input
+  guard (`build/open77-input.js`, first in the client page) keeps them from the
+  room, says what it kept, and reports the stream's own numbers to the game log:
+  frame rate, round trip, how long frames wait to be smoothed and decoded.
+- **The room service answered nothing.** Every answer it gave was worked out by
+  synchronous child processes on the request path (adb, du over the profiles,
+  sqlite3 over the cookie jars, docker for every room), and four televisions ask
+  for the state every five seconds, so a tile's click was never served.
+  `room/server.mjs` now keeps those answers fresh in the background.
+- **Android's tile answered 404**: the room asked noVNC's folder for
+  `/open77-screen.html`, which was never installed there. It is now
+  (`android-native/screen.html`, which also leaves the room's own keys to the
+  room).
+- **Netflix's "Something went wrong".** uBlock Origin Lite is told to leave
+  netflix.com alone (`build/open77-netflix.json`, its managed `noFiltering`
+  setting). A content blocker cutting one of Netflix's own requests is a known
+  cause of that page; that it was the cause here is not proven.
+
+`server/test/image-local.sh` checks all of the image's part on any machine with
+Docker: it builds `build/`, runs a throwaway room, and types through a real
+WebRTC session into the room's own Chromium (measured on 2026-11-07: every check
+passes on image 10; image 9 fails the guard, the desktops and the keys).
+
 ## Tests
 
 ```bash
@@ -570,7 +617,9 @@ node tests/tv-page/run.mjs                  # from the repository root: the page
 
 `server/test/e2e*.sh` run on the server against one role's real container
 (`[staging|production]`, default staging); `e2e-fit.sh` reads the bars in pixels on
-the real page, with the script and without it.
+the real page, with the script and without it. `server/test/image-local.sh`
+builds the image and checks it end to end on any machine with Docker, without
+touching a room (18 checks).
 
 The room service has its own four, run on the server where it runs (see
 `room/README.md`):

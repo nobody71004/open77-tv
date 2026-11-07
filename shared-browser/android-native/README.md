@@ -69,6 +69,19 @@ from Settings' own search-bar bounds opens Settings' search on either one, becau
 noVNC maps the pointer through the canvas's own rect. The bar costs picture, not
 accuracy.
 
+Since 2026-11-07 `screen.html` is the page the rooms on rl31 actually serve. The
+tile asked for `/open77-screen.html` and got 404 there -- the page had never been
+installed on that machine -- until `tools/tvkit` (T7) put this one in. It is the
+same canvas, and two things more: the room's own keys stay the room's (Alt+Home --
+the browser's home page is the room's home screen -- Alt+Left/Right, BrowserHome
+and BrowserBack are seen first and kept from the VNC client, which would send them
+to Android and leave the browser deaf to them), and a line in the middle says
+"Connecting to Android..." or why it is trying again, until the picture comes.
+The machine's own `/opt/open77-android-native/screen.html` is still the first
+version, and its own `install.sh` would put that one back: re-run this folder's
+installer, not the machine's copy (or run `tools/tvkit/remote/tv_native.py fix
+--screen` again afterwards).
+
 ## What is installed where
 
 | piece | what it is |

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The shared browser for Open77 televisions: neko's Chromium with the host's own
-# Widevine, streamed over WebRTC (build/, run as image 7). One instance per server
+# Widevine, streamed over WebRTC (build/, run as image 10). One instance per server
 # ROLE -- the same image and the same build; they differ only in where they live,
 # what they are called, and which three numbers they take:
 #
@@ -40,7 +40,7 @@ case "$ROLE" in
   fr-us)      D=/opt/open77-tvbrowser-fr-us; NAME=open77-tvbrowser-fr-us; PREFIX=/tv-browser-fr-us;      HTTP=18083; RTC=59103 ;;
   *) echo "usage: $(basename "$0") [staging|production|f2077|fr-us]"; exit 2 ;;
 esac
-IMAGE=open77/tvbrowser-chromium:9
+IMAGE=open77/tvbrowser-chromium:10
 PUBLIC_HOST=xyberrp.duckdns.org
 PUBLIC_IP=192.34.102.143
 
@@ -76,7 +76,7 @@ umask 077
 FPS="${NEKO_STREAM_FPS:-60}"
 case "$FPS" in 24|30|50|60) ;; *) echo "NEKO_STREAM_FPS must be 24, 30, 50 or 60"; exit 2 ;; esac
 BITRATE=$((FPS * 75 * 1000))
-PIPELINE="ximagesrc display-name=:99.0 show-pointer=true use-damage=false ! videorate ! capsfilter caps=video/x-raw,framerate=${FPS}/1 name=framerate ! videoconvert ! queue max-size-buffers=2 leaky=downstream ! vp8enc name=encoder cpu-used=4 undershoot=95 buffer-size=12288 buffer-optimal-size=9216 keyframe-max-dist=${FPS} min-quantizer=4 max-quantizer=20 target-bitrate=${BITRATE} end-usage=cbr threads=4 deadline=1 buffer-initial-size=6144 ! appsink name=appsink"
+PIPELINE="ximagesrc display-name=:99.0 show-pointer=0 use-damage=false ! videorate ! capsfilter caps=video/x-raw,framerate=${FPS}/1 name=framerate ! videoconvert ! queue max-size-buffers=2 leaky=downstream ! vp8enc name=encoder cpu-used=4 undershoot=95 buffer-size=12288 buffer-optimal-size=9216 keyframe-max-dist=${FPS} min-quantizer=4 max-quantizer=20 target-bitrate=${BITRATE} end-usage=cbr threads=4 deadline=1 buffer-initial-size=6144 ! appsink name=appsink"
 
 if [ ! -f neko.env ]; then
   {
@@ -150,13 +150,13 @@ CDM_SRC=/opt/google/chrome/WidevineCdm
 [ -f "$CDM_SRC/manifest.json" ] || { echo "no host CDM at $CDM_SRC: not recreating"; exit 1; }
 echo "== host CDM: $(grep -o '"version": *"[^"]*"' "$CDM_SRC/manifest.json" | head -1)"
 docker run --rm --entrypoint sh "$IMAGE" -c \
-  'grep -q "src=\"open77-ice.js\"></script><script src=\"open77-paste.js\"></script><script src=\"open77-volume.js\"></script><script src=\"open77-fit.js?v=3\"" /var/www/index.html && test -s /var/www/open77-ice.js && test -s /var/www/open77-paste.js && test -s /var/www/open77-volume.js && test -s /var/www/open77-fit.js && grep -q "\"NewTabPageLocation\"" /etc/chromium/policies/managed/policies.json && ! find / -xdev -iname "*widevine*" 2>/dev/null | grep -q .' \
-  || { echo "the image is missing its scripts or its policy, or has a DRM module baked in: not recreating"; exit 1; }
-docker run --rm --entrypoint sh "$IMAGE" -c 'for f in /etc/chromium/policies/managed/policies.json /etc/neko/supervisord/chromium.conf /var/www/open77-ice.js /var/www/open77-paste.js /var/www/open77-volume.js /var/www/open77-fit.js; do [ "$(stat -c %a "$f")" = 644 ] || exit 1; done' \
+  'grep -q "src=\"open77-input.js?v=3\"></script><script src=\"open77-ice.js\"></script><script src=\"open77-paste.js\"></script><script src=\"open77-volume.js\"></script><script src=\"open77-fit.js?v=3\"" /var/www/index.html && test -s /var/www/open77-input.js && test -s /var/www/open77-ice.js && test -s /var/www/open77-paste.js && test -s /var/www/open77-volume.js && test -s /var/www/open77-fit.js && grep -q "\"NewTabPageLocation\"" /etc/chromium/policies/managed/policies.json && grep -q "\"noFiltering\"" /etc/chromium/policies/managed/open77-netflix.json && grep -q "open77 tv kit" /etc/xdg/openbox/rc.xml && ! grep -q "<keybind " /etc/xdg/openbox/rc.xml && ! find / -xdev -iname "*widevine*" 2>/dev/null | grep -q .' \
+  || { echo "the image is missing its scripts, its policies or its quiet window manager, or has a DRM module baked in: not recreating"; exit 1; }
+docker run --rm --entrypoint sh "$IMAGE" -c 'for f in /etc/chromium/policies/managed/policies.json /etc/chromium/policies/managed/open77-netflix.json /etc/xdg/openbox/rc.xml /etc/neko/supervisord/chromium.conf /var/www/open77-input.js /var/www/open77-ice.js /var/www/open77-paste.js /var/www/open77-volume.js /var/www/open77-fit.js; do [ "$(stat -c %a "$f")" = 644 ] || exit 1; done' \
   || { echo "the image's policy or scripts are not readable by the browser: not recreating"; exit 1; }
 docker run --rm --entrypoint sh "$IMAGE" -c 'grep -q -- "--user-data-dir=/profiles/active" /etc/neko/supervisord/chromium.conf && grep -q -- "--kiosk" /etc/neko/supervisord/chromium.conf && grep -q "program:cdp" /etc/neko/supervisord/chromium.conf && command -v socat' \
   || { echo "the image has no profile library, no kiosk screen or no DevTools forwarder: not recreating"; exit 1; }
-echo "== image checked: client page loads open77-ice.js, open77-paste.js, open77-volume.js and open77-fit.js, all readable; policies in place; no Widevine baked in (it is mounted at run)"
+echo "== image checked: client page loads open77-input.js (first), open77-ice.js, open77-paste.js, open77-volume.js and open77-fit.js, all readable; policies in place (Netflix unfiltered); openbox with no keys of its own; no Widevine baked in (it is mounted at run)"
 
 if docker ps -a --format '{{.Names}}' | grep -qx "$NAME"; then
   # A stop first, not rm -f: Chromium is the only writer in /profiles and a

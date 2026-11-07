@@ -121,16 +121,89 @@ function run(cmd, args, timeout = 20000) {
 }
 
 function runAsync(cmd, args, timeout = 20000) {
+  const began = Date.now();
   return new Promise((resolve) => {
     execFile(cmd, args, { encoding: "utf8", timeout }, (err, stdout, stderr) => {
+      const took = Date.now() - began;
+      if (took >= 3000) console.log(`[room] slow: ${cmd} ${args.slice(0, 3).join(" ")} took ${took} ms${err ? " and failed" : ""}`);
       resolve({ ok: !err, out: (stdout || "").trim(), err: (err && (stderr || err.message)) || "" });
     });
   });
 }
 
+// The same, for a step that must not go on when it fails.
+async function runChecked(cmd, args, timeout = 20000) {
+  const result = await runAsync(cmd, args, timeout);
+  if (!result.ok) throw new Error((result.err || cmd + " failed").trim().split("\n").pop());
+  return result.out;
+}
+
+// ---------------------------------------------------------------------------
+// what the room asks the host, without stopping to wait for it (2026-11-07)
+// ---------------------------------------------------------------------------
+// Every answer below used to be a synchronous child process (execFileSync) on
+// the request path: `adb devices` and `adb connect` (eight seconds whenever the
+// native Android is down), `du` over every profile, `sqlite3` over every cookie
+// jar, `docker inspect` and `docker exec ... supervisorctl status` for every room.
+// Four televisions ask /api/state every five seconds, and while one answer was
+// being worked out nothing else was served -- not the splash, not a tile's
+// /api/action. With Waydroid down the line never emptied: measured on rl31 on
+// 2026-11-07, GET / unanswered for minutes, and a restart did not help, because
+// the televisions filled the line again at once. Now each answer is kept fresh in
+// the background, one child at a time per question, by execFile, and a request
+// reads what is known.
+function kept(ttlMs, compute) {
+  const values = new Map();   // key -> { value, at }
+  const running = new Map();  // key -> the promise working it out
+  const turns = new Map();    // key -> how often it was forgotten: an answer begun before a forget() is not kept
+  function refresh(key) {
+    if (running.has(key)) return running.get(key);
+    const turn = turns.get(key) || 0;
+    const promise = (async () => {
+      await null;  // what follows runs once this promise is filed under its key
+      let value;
+      let worked = false;
+      try {
+        value = await compute(key);
+        worked = true;
+        if ((turns.get(key) || 0) === turn) values.set(key, { value, at: Date.now() });
+      } catch { /* the last answer stands */ }
+      finally { if (running.get(key) === promise) running.delete(key); }
+      if (worked) return value;
+      const hit = values.get(key);
+      return hit ? hit.value : undefined;
+    })();
+    running.set(key, promise);
+    return promise;
+  }
+  return {
+    // What is known now (a stale answer starts a fresh one in the background).
+    get(key, fallback) {
+      const hit = values.get(key);
+      if (!hit || Date.now() - hit.at > ttlMs) refresh(key);
+      return hit ? hit.value : fallback;
+    },
+    // A fresh answer, waited for without blocking anything else.
+    async fresh(key, fallback) {
+      const hit = values.get(key);
+      if (hit && Date.now() - hit.at <= ttlMs) return hit.value;
+      const value = await refresh(key);
+      return value === undefined ? fallback : value;
+    },
+    forget(key) {
+      values.delete(key);
+      running.delete(key);
+      turns.set(key, (turns.get(key) || 0) + 1);
+    },
+  };
+}
+
+const sizes = kept(5 * 60 * 1000, async (dir) => {
+  return Number((await runChecked("du", ["-sm", dir], 120000)).split(/\s+/)[0]) * 1024 * 1024;
+});
+
 function dirSize(dir) {
-  try { return Number(run("du", ["-sm", dir]).split(/\s+/)[0]) * 1024 * 1024; }
-  catch { return 0; }
+  return sizes.get(dir, 0);
 }
 
 function duHuman(bytes) {
@@ -199,13 +272,13 @@ function listProfiles(role) {
 // Which services have cookies in a profile. The Cookies database belongs to the
 // running browser, so it is copied first and read from the copy -- opening the
 // live one read-only still takes a lock the browser can trip over.
-function signedIn(profileDir) {
+const jars = kept(60 * 1000, async (profileDir) => {
   const db = path.join(profileDir, "Default", "Cookies");
   if (!fs.existsSync(db)) return { services: [], cookies: 0 };
   const tmp = path.join(os.tmpdir(), "open77-cookies-" + process.pid + "-" + Math.random().toString(36).slice(2) + ".db");
   try {
-    fs.copyFileSync(db, tmp);
-    const rows = run("sqlite3", [tmp, "select host_key from cookies;"], 8000)
+    await fs.promises.copyFile(db, tmp);
+    const rows = (await runChecked("sqlite3", [tmp, "select host_key from cookies;"], 8000))
       .split("\n").map((h) => h.trim().toLowerCase()).filter(Boolean);
     return {
       cookies: rows.length,
@@ -218,27 +291,40 @@ function signedIn(profileDir) {
   } finally {
     try { fs.unlinkSync(tmp); } catch {}
   }
+});
+
+function signedIn(profileDir) {
+  return jars.get(profileDir, { services: [], cookies: 0 });
 }
 
-function containerIp(container) {
-  try {
-    return run("docker", ["inspect", "-f",
-      "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}", container], 8000);
-  } catch { return null; }
+const ips = kept(60 * 1000, async (container) => {
+  const ip = await runChecked("docker", ["inspect", "-f",
+    "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}", container], 8000);
+  if (!ip) throw new Error("no address");
+  return ip;
+});
+
+const ups = kept(5000, async (container) => {
+  const result = await runAsync("docker", ["inspect", "-f", "{{.State.Running}}", container], 8000);
+  return result.ok && result.out === "true";
+});
+
+const chromes = kept(5000, async (role) => {
+  if (!(await ups.fresh(ROOMS[role].container, false))) return "room down";
+  const result = await runAsync("docker", ["exec", ROOMS[role].container, "supervisorctl", "status", "chromium"], 8000);
+  return result.ok ? result.out.replace(/\s+/g, " ").trim() : "unknown";
+});
+
+async function containerIp(container) {
+  return ips.fresh(container, null);
 }
 
 function containerUp(container) {
-  try {
-    return run("docker", ["inspect", "-f", "{{.State.Running}}", container], 8000) === "true";
-  } catch { return false; }
+  return ups.get(container, false);
 }
 
 function chromiumState(role) {
-  if (!containerUp(ROOMS[role].container)) return "room down";
-  try {
-    const line = run("docker", ["exec", ROOMS[role].container, "supervisorctl", "status", "chromium"], 8000);
-    return line.replace(/\s+/g, " ").trim();
-  } catch { return "unknown"; }
+  return chromes.get(role, "unknown");
 }
 
 // ---------------------------------------------------------------------------
@@ -249,8 +335,8 @@ function chromiumState(role) {
 // used: list targets, open one, activate it, close the others. (puppeteer's
 // connect() against the socat-forwarded endpoint reports no page targets at
 // all, so the small client below is also the one that works.)
-function devtoolsBase(role) {
-  const ip = containerIp(ROOMS[role].container);
+async function devtoolsBase(role) {
+  const ip = await containerIp(ROOMS[role].container);
   if (!ip) throw new Error("room has no address");
   return `http://${ip}:9222`;
 }
@@ -270,7 +356,7 @@ function httpJson(url, timeout = 5000) {
 }
 
 async function roomTargets(role) {
-  const list = await httpJson(devtoolsBase(role) + "/json/list");
+  const list = await httpJson((await devtoolsBase(role)) + "/json/list");
   return Array.isArray(list) ? list : [];
 }
 
@@ -287,7 +373,7 @@ async function currentTarget(role) {
 // window the television shows), and the tab it replaces is closed. One tab at a
 // time keeps the stream on what was asked for and the profile's tab strip clean.
 async function cdpSession(role, fn) {
-  const version = await httpJson(devtoolsBase(role) + "/json/version");
+  const version = await httpJson((await devtoolsBase(role)) + "/json/version");
   if (!version || !version.webSocketDebuggerUrl) throw new Error("the room has no DevTools socket");
   const socket = new WebSocket(version.webSocketDebuggerUrl, { handshakeTimeout: 8000 });
   await new Promise((resolve, reject) => {
@@ -348,7 +434,7 @@ async function openInRoom(role, url) {
 // profiles
 // ---------------------------------------------------------------------------
 
-function switchProfile(role, name) {
+async function switchProfile(role, name) {
   const root = profileRoot(role);
   if (!root) throw new Error("no such room");
   const dir = path.join(root, name);
@@ -358,25 +444,26 @@ function switchProfile(role, name) {
   try { fs.unlinkSync(tmp); } catch {}
   fs.symlinkSync(name, tmp, "dir");
   fs.renameSync(tmp, link);                 // atomic: the browser never sees no profile
-  try { run("chown", ["-h", "1000:1000", link], 8000); } catch {}
+  await runAsync("chown", ["-h", "1000:1000", link], 8000);
   // Chromium reads --user-data-dir once, at start: the restart is the switch.
-  run("docker", ["exec", ROOMS[role].container, "supervisorctl", "restart", "chromium"], 30000);
+  await runChecked("docker", ["exec", ROOMS[role].container, "supervisorctl", "restart", "chromium"], 30000);
+  chromes.forget(role);
   return activeProfile(role);
 }
 
-function createProfile(role, name) {
+async function createProfile(role, name) {
   const root = profileRoot(role);
   if (!root) throw new Error("no such room");
   const dir = path.join(root, name);
   if (fs.existsSync(dir)) throw new Error("that profile already exists");
   fs.mkdirSync(dir, { recursive: true });
-  run("chown", ["-R", "1000:1000", dir], 8000);
+  await runChecked("chown", ["-R", "1000:1000", dir], 8000);
   return name;
 }
 
 // Renaming is a rename of the directory: the profile is the directory, and the
 // active link follows it so the room keeps running on the same sign-ins.
-function renameProfile(role, from, to) {
+async function renameProfile(role, from, to) {
   const root = profileRoot(role);
   if (!root) throw new Error("no such room");
   const src = path.join(root, from);
@@ -384,22 +471,23 @@ function renameProfile(role, from, to) {
   if (!fs.existsSync(src)) throw new Error("no profile called " + from);
   if (fs.existsSync(dst)) throw new Error("there is already a profile called " + to);
   const wasActive = activeProfile(role) === from;
-  if (wasActive) run("docker", ["exec", ROOMS[role].container, "supervisorctl", "stop", "chromium"], 40000);
+  if (wasActive) await runChecked("docker", ["exec", ROOMS[role].container, "supervisorctl", "stop", "chromium"], 40000);
   fs.renameSync(src, dst);
-  run("chown", ["-R", "1000:1000", dst], 8000);
+  await runChecked("chown", ["-R", "1000:1000", dst], 8000);
   if (wasActive) {
     const link = path.join(root, "active");
     const tmp = link + ".new";
     try { fs.unlinkSync(tmp); } catch {}
     fs.symlinkSync(to, tmp, "dir");
     fs.renameSync(tmp, link);
-    try { run("chown", ["-h", "1000:1000", link], 8000); } catch {}
-    run("docker", ["exec", ROOMS[role].container, "supervisorctl", "start", "chromium"], 40000);
+    await runAsync("chown", ["-h", "1000:1000", link], 8000);
+    await runChecked("docker", ["exec", ROOMS[role].container, "supervisorctl", "start", "chromium"], 40000);
+    chromes.forget(role);
   }
   return { renamed: to };
 }
 
-function resetProfile(role, name) {
+async function resetProfile(role, name) {
   const root = profileRoot(role);
   if (!root) throw new Error("no such room");
   if (activeProfile(role) === name) throw new Error("that profile is in use: switch to another first");
@@ -409,17 +497,22 @@ function resetProfile(role, name) {
   const bak = path.join(root, "." + name + ".reset-" + stamp);
   fs.renameSync(dir, bak);
   fs.mkdirSync(dir);
-  run("chown", ["-R", "1000:1000", dir], 8000);
+  await runChecked("chown", ["-R", "1000:1000", dir], 8000);
+  sizes.forget(dir);
+  jars.forget(dir);
   return { kept: path.basename(bak) };
 }
 
-function deleteProfile(role, name) {
+async function deleteProfile(role, name) {
   const root = profileRoot(role);
   if (!root) throw new Error("no such room");
   if (activeProfile(role) === name) throw new Error("that profile is in use: switch to another first");
   const dir = path.join(root, name);
   if (!fs.existsSync(dir)) throw new Error("no profile called " + name);
-  fs.rmSync(dir, { recursive: true, force: true });
+  // A Chromium profile is thousands of files: removed without holding up the screens.
+  await fs.promises.rm(dir, { recursive: true, force: true });
+  sizes.forget(dir);
+  jars.forget(dir);
   return name;
 }
 
@@ -471,33 +564,61 @@ async function androidUp() {
 // this host can have two Android devices on adb at once (the emulator and the
 // native one), and "the first device adb lists" would put the wrong one on the
 // television the moment both are running.
-function androidDevices() {
-  try {
-    const rows = run("adb", ["devices"], 6000).split("\n")
-      .map((l) => l.trim()).filter((l) => l && !l.startsWith("List of devices"));
-    const seen = {};
-    for (const row of rows) {
-      const [id, status] = row.split(/\s+/);
-      if (id) seen[id] = status;
+async function adbDevices() {
+  const result = await runAsync("adb", ["devices"], 6000);
+  if (!result.ok) return {};
+  const rows = result.out.split("\n")
+    .map((l) => l.trim()).filter((l) => l && !l.startsWith("List of devices"));
+  const seen = {};
+  for (const row of rows) {
+    const [id, status] = row.split(/\s+/);
+    if (id) seen[id] = status;
+  }
+  return seen;
+}
+
+// adb's answer, kept: asked again in the background when it is five seconds old.
+// A device that lives on the network (Waydroid at host:port, not the emulator's
+// local one) is forgotten by adb whenever anything restarts the adb server -- and
+// the emulator's own stack starts one. Asking again is what `adb connect` is for;
+// without it the room calls a running Android down for as long as nobody
+// reconnects it. While that device is down a connect waits for its timeout, so it
+// is tried at most every thirty seconds, and never on a request's own time --
+// except while a start is waiting for it, when it is every five.
+const adbKnown = { seen: {}, at: 0, connectAt: 0 };
+let adbAsking = null;
+function refreshAndroid(connectEveryMs = 30000) {
+  if (adbAsking) return adbAsking;
+  adbAsking = (async () => {
+    try {
+      let seen = await adbDevices();
+      if (seen[ANDROID_UDID] !== "device" && /^[\w.-]+:\d+$/.test(ANDROID_UDID) && Date.now() - adbKnown.connectAt > connectEveryMs) {
+        adbKnown.connectAt = Date.now();
+        await runAsync("adb", ["connect", ANDROID_UDID], 8000);
+        seen = await adbDevices();
+      }
+      adbKnown.seen = seen;
+      adbKnown.at = Date.now();
+    } finally {
+      adbAsking = null;
     }
-    return seen;
-  } catch { return {}; }
+    return adbKnown.seen;
+  })();
+  return adbAsking;
+}
+
+function androidDevices() {
+  if (Date.now() - adbKnown.at > 5000) refreshAndroid();
+  return adbKnown.seen;
 }
 
 function androidDevice() {
-  const seen = androidDevices();
-  if (seen[ANDROID_UDID]) return seen[ANDROID_UDID] === "device" ? ANDROID_UDID : null;
-  // A device that lives on the network (Waydroid at host:port, not the
-  // emulator's local one) is forgotten by adb whenever anything restarts the
-  // adb server -- and the emulator's own stack starts one. Asking again is what
-  // `adb connect` is for; without it the room calls a running Android down for
-  // as long as nobody reconnects it.
-  if (/^[\w.-]+:\d+$/.test(ANDROID_UDID)) {
-    try { run("adb", ["connect", ANDROID_UDID], 8000); } catch { /* no adb server */ }
-    const again = androidDevices();
-    return again[ANDROID_UDID] === "device" ? ANDROID_UDID : null;
-  }
-  return null;
+  return androidDevices()[ANDROID_UDID] === "device" ? ANDROID_UDID : null;
+}
+
+async function androidDeviceNow(connectEveryMs) {
+  await refreshAndroid(connectEveryMs);
+  return adbKnown.seen[ANDROID_UDID] === "device" ? ANDROID_UDID : null;
 }
 
 // "Run the Android emulator" is a control, not an assumption: the game can ask
@@ -508,11 +629,11 @@ function startAndroid(timeoutMs = 150000) {
   if (androidStarting) return androidStarting;
   androidStarting = (async () => {
     try {
-      if (androidDevice() && await androidUp()) return { ok: true, already: true, device: androidDevice() };
-      run("systemctl", ["start", ...ANDROID_SERVICES], 60000);
+      if (await androidDeviceNow() && await androidUp()) return { ok: true, already: true, device: androidDevice() };
+      await runChecked("systemctl", ["start", ...ANDROID_SERVICES], 60000);
       const until = Date.now() + timeoutMs;
       while (Date.now() < until) {
-        if (androidDevice() && await androidUp()) return { ok: true, device: androidDevice(), waited: Math.round((timeoutMs - (until - Date.now())) / 1000) };
+        if (await androidDeviceNow(5000) && await androidUp()) return { ok: true, device: androidDevice(), waited: Math.round((timeoutMs - (until - Date.now())) / 1000) };
         await new Promise((r) => setTimeout(r, 3000));
       }
       return { ok: false, error: "the Android screen did not come up in " + Math.round(timeoutMs / 1000) + " s" };
@@ -582,11 +703,11 @@ async function pollGame(role) {
     seenAndroid[role] = { id, at };
     androidBusy[role] = true;
     try {
-      if (!androidDevice()) {
+      if (!(await androidDeviceNow())) {
         console.log(`[room] ${role}: Android asked for by ${parsed.by || "the game"}; starting the emulator`);
         await startAndroid();
       }
-      if (androidDevice()) {
+      if (await androidDeviceNow()) {
         await openInRoom(role, androidStreamUrl());
         console.log(`[room] ${role}: Android on the screen (asked by ${parsed.by || "the game"})`);
       } else {
@@ -641,7 +762,41 @@ const SIGNIN_URLS = {
   "HBO Max": "https://auth.max.com/login",
 };
 
+const stateKept = {};
+const stateTurn = {};
+const stateStats = { asked: 0, worked: 0, slowest: 0 };
+// An action changed something a screen shows (a profile, the tab, Android): the
+// next ask works the state out again, and an answer begun before the change is
+// not kept. A page that acts and then asks sees what it did.
+function stateChanged() {
+  for (const role of Object.keys(ROOMS)) {
+    stateTurn[role] = (stateTurn[role] || 0) + 1;
+    delete stateKept[role];
+  }
+}
 async function state(role) {
+  stateStats.asked++;
+  const known = stateKept[role];
+  if (known && known.value && Date.now() - known.at < 2000) return known.value;
+  if (known && known.running) return known.running;
+  const turn = stateTurn[role] || 0;
+  const began = Date.now();
+  const running = stateNow(role).then((value) => {
+    if ((stateTurn[role] || 0) === turn) stateKept[role] = { value, at: Date.now() };
+    const took = Date.now() - began;
+    stateStats.worked++;
+    stateStats.slowest = Math.max(stateStats.slowest, took);
+    if (took >= 2000) console.log(`[room] ${role}: the state took ${took} ms`);
+    return value;
+  }, (error) => {
+    if ((stateTurn[role] || 0) === turn) stateKept[role] = known && known.value ? { value: known.value, at: known.at } : {};
+    throw error;
+  });
+  stateKept[role] = { ...(known || {}), running };
+  return running;
+}
+
+async function stateNow(role) {
   const active = activeProfile(role);
   const profiles = listProfiles(role);
   const up = await androidUp();
@@ -653,8 +808,8 @@ async function state(role) {
     label: ROOMS[role].label,
     dir: ROOMS[role].dir,
     container: ROOMS[role].container,
-    running: containerUp(ROOMS[role].container),
-    chromium: chromiumState(role),
+    running: await ups.fresh(ROOMS[role].container, false),
+    chromium: await chromes.fresh(role, "unknown"),
     profile: active,
     profiles,
     channels: CHANNELS.map((c) => ({ ...c, url: c.id === "android" ? (android || "/android") : c.url })),
@@ -674,8 +829,16 @@ async function state(role) {
   };
 }
 
+const served = { count: 0, slowest: 0, slowestPath: "", since: Date.now() };
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, "http://room.invalid");
+  const began = Date.now();
+  res.on("finish", () => {
+    const took = Date.now() - began;
+    served.count++;
+    if (took > served.slowest) { served.slowest = took; served.slowestPath = req.method + " " + url.pathname; }
+    if (took >= 5000) console.log(`[room] slow answer: ${req.method} ${url.pathname} took ${took} ms`);
+  });
   const role = ROOMS[url.searchParams.get("room")] ? url.searchParams.get("room") : "production";
 
   try {
@@ -720,12 +883,15 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && url.pathname === "/api/state") return sendJson(res, await state(role));
 
     if (req.method === "GET" && url.pathname === "/api/status") {
+      // Asked by a person or a check, not by a screen on a timer: worked out fresh
+      // (the rooms side by side), never from a cache that is still empty.
+      const rooms = await Promise.all(Object.entries(ROOMS).map(async ([r, spec]) => [r, {
+        container: spec.container, running: await ups.fresh(spec.container, false),
+        profile: activeProfile(r), chromium: await chromes.fresh(r, "unknown"), polled: lastPoll[r] || null,
+      }]));
       return sendJson(res, {
         ok: true,
-        rooms: Object.fromEntries(Object.entries(ROOMS).map(([r, spec]) => [r, {
-          container: spec.container, running: containerUp(spec.container),
-          profile: activeProfile(r), chromium: chromiumState(r), polled: lastPoll[r] || null,
-        }])),
+        rooms: Object.fromEntries(rooms),
         androidUp: await androidUp(),
         androidDevice: androidDevice(),
         androidLabel: ANDROID_LABEL,
@@ -741,35 +907,35 @@ const server = http.createServer(async (req, res) => {
         if (action === "use") {
           const name = safeName(body.profile);
           if (!name) throw new Error("bad profile name");
-          switchProfile(target, name);
+          await switchProfile(target, name);
           return sendJson(res, { ok: true, active: activeProfile(target) });
         }
         if (action === "create") {
           const name = safeName(body.profile);
           if (!name) throw new Error("a profile name is lower-case letters, digits, - and _ (max 32)");
-          createProfile(target, name);
+          await createProfile(target, name);
           return sendJson(res, { ok: true, created: name });
         }
         if (action === "reset") {
           const name = safeName(body.profile);
           if (!name) throw new Error("bad profile name");
-          return sendJson(res, { ok: true, ...resetProfile(target, name) });
+          return sendJson(res, { ok: true, ...(await resetProfile(target, name)) });
         }
         if (action === "delete") {
           const name = safeName(body.profile);
           if (!name) throw new Error("bad profile name");
-          return sendJson(res, { ok: true, deleted: deleteProfile(target, name) });
+          return sendJson(res, { ok: true, deleted: await deleteProfile(target, name) });
         }
         if (action === "rename") {
           const from = safeName(body.profile);
           const to = safeName(body.to);
           if (!from || !to) throw new Error("names are lower-case letters, digits, - and _ (max 32)");
-          return sendJson(res, { ok: true, ...renameProfile(target, from, to) });
+          return sendJson(res, { ok: true, ...(await renameProfile(target, from, to)) });
         }
         if (action === "open") {
           const wanted = String(body.url || "");
           if (wanted === "android") {
-            if (!androidDevice()) {
+            if (!(await androidDeviceNow())) {
               const started = await startAndroid();
               if (!started.ok) throw new Error(started.error || "the Android screen did not start");
             }
@@ -784,12 +950,15 @@ const server = http.createServer(async (req, res) => {
         if (action === "restart") {
           // The splash's own "reload": a wedged room comes back on the same tab
           // and the same profile, which is what the television is pointed at.
-          run("docker", ["exec", ROOMS[target].container, "supervisorctl", "restart", "chromium"], 40000);
+          await runChecked("docker", ["exec", ROOMS[target].container, "supervisorctl", "restart", "chromium"], 40000);
+          chromes.forget(target);
           return sendJson(res, { ok: true, restarted: true });
         }
         throw new Error("unknown action");
       } catch (error) {
         return sendJson(res, { ok: false, error: error.message }, 400);
+      } finally {
+        stateChanged();
       }
     }
 
@@ -802,6 +971,12 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`[room] listening on ${PORT}: splash, /profiles, /android, /api/*`);
+  // What the screens will ask first, asked now, so the first answers are not empty.
+  refreshAndroid();
+  for (const [role, spec] of Object.entries(ROOMS)) {
+    ups.get(spec.container, false);
+    chromes.get(role, "unknown");
+  }
 });
 
 // The game's pending queue: a browser cinema was spawned and asked for Android.
@@ -811,3 +986,23 @@ setInterval(() => {
     if (containerUp(ROOMS[role].container)) pollGame(role);
   }
 }, 2000);
+
+// Once a minute, when anything was asked: how many answers, the slowest, and the
+// event loop's own lag (how late a 1 s timer fired) -- the line that says whether
+// the room is keeping up.
+let lagMax = 0;
+let lagLast = Date.now();
+setInterval(() => {
+  const now = Date.now();
+  lagMax = Math.max(lagMax, now - lagLast - 1000);
+  lagLast = now;
+}, 1000);
+setInterval(() => {
+  if (served.count === 0 && stateStats.asked === 0) { lagMax = 0; return; }
+  console.log(`[room] last minute: ${served.count} answer(s), the slowest ${served.slowest} ms (${served.slowestPath || "-"}); ` +
+    `state asked ${stateStats.asked}, worked out ${stateStats.worked}, slowest ${stateStats.slowest} ms; ` +
+    `event loop late by at most ${lagMax} ms; Android ${androidDevice() ? "up" : "down"} (adb asked ${adbKnown.at ? Math.round((Date.now() - adbKnown.at) / 1000) + " s ago" : "not yet"})`);
+  served.count = 0; served.slowest = 0; served.slowestPath = "";
+  stateStats.asked = 0; stateStats.worked = 0; stateStats.slowest = 0;
+  lagMax = 0;
+}, 60000);

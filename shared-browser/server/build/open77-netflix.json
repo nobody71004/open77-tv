@@ -1,0 +1,11 @@
+{
+ "3rdparty": {
+  "extensions": {
+   "ddkjiahejlhfcafbddmgiahcphecmpfh": {
+    "noFiltering": [
+     "netflix.com"
+    ]
+   }
+  }
+ }
+}
