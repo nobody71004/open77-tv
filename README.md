@@ -139,6 +139,10 @@ tools/
                          and put-back (tools/tvkit/README.md)
 ```
 
+The in-game phone -- F1 takes out a phone showing the TV rooms' Android, driven
+with the mouse and keyboard, one player at a time -- has its own repository:
+[nobody71004/open77-phone](https://github.com/nobody71004/open77-phone).
+
 ## The catalogue is measured, not estimated
 
 The first version of this catalogue reached for whatever props already had host

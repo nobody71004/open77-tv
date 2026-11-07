@@ -54,3 +54,8 @@ operator's kit, which also carries the server access this repository does not.
 Image 10 (`shared-browser/server/build/`) builds in what `tv_native.py` and
 `tv_clicks.py --input` changed in the running rooms, so a recreated room keeps
 it; `shared-browser/server/test/image-local.sh` checks that on any Docker host.
+
+The in-game phone's script for the web server (`phone_server.py`: the two nginx
+locations per game server, look / fix / verify / putback) and its end-to-end
+rehearsal live with the phone, in
+[nobody71004/open77-phone](https://github.com/nobody71004/open77-phone).

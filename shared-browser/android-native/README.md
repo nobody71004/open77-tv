@@ -233,6 +233,14 @@ text. The room service finds the stack through its drop-in
 `/opt/open77-android-native` are older than this folder's: they predate
 `waydroid-internet.sh` being wired into the installer and its firewall unit.
 
+## The phone
+
+The in-game phone ([nobody71004/open77-phone](https://github.com/nobody71004/open77-phone))
+shows this same Android to one player at a time, through the web server:
+`wss://<host>/open77-phone-<role>/ws`, behind an `auth_request` that asks that
+game server's open77_phone whether the ticket may open it, then on to websockify
+on 8001. That route is the only way to 8001 from outside the machine.
+
 ## Rolling back
 
 ```bash
