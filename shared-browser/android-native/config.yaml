@@ -1,0 +1,5 @@
+# The native (Waydroid) Android screen: the ws-scrcpy build the emulator stack
+# uses, on its own port, so the two screens can run side by side.
+server:
+  - secure: false
+    port: 8001

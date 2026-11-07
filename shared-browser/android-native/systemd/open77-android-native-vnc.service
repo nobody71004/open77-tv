@@ -1,0 +1,19 @@
+[Unit]
+Description=Open77 Android native: wayvnc (the framebuffer Waydroid draws)
+Documentation=file:/opt/open77-android-native/README.md
+After=open77-waydroid-session.service
+Wants=open77-waydroid-session.service
+
+[Service]
+Type=simple
+Environment=XDG_RUNTIME_DIR=/run/open77-waydroid
+Environment=WAYLAND_DISPLAY=display
+ExecStartPre=/bin/sh -c 'for i in $(seq 1 60); do [ -S /run/open77-waydroid/display ] && exit 0; sleep 1; done; exit 0'
+# Loopback only, and no password: like ws-scrcpy on the emulator's stack, what
+# can reach it can drive Android, so what can reach it is the firewall's job.
+ExecStart=/usr/bin/wayvnc -C /opt/open77-android-native/wayvnc.conf
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,13 @@
+[Unit]
+Description=Open77 Android native: connect this host's adb to the Waydroid device
+Documentation=file:/opt/open77-android-native/README.md
+After=open77-waydroid-session.service network-online.target
+Wants=open77-waydroid-session.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/open77-android-native/adb-connect.sh
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,19 @@
+[Unit]
+Description=Open77 Android native: the Waydroid session (Android 13, GAPPS)
+Documentation=file:/opt/open77-android-native/README.md
+After=open77-android-native-display.service waydroid-container.service network-online.target
+Requires=open77-android-native-display.service
+Wants=waydroid-container.service network-online.target
+
+[Service]
+Type=simple
+Environment=XDG_RUNTIME_DIR=/run/open77-waydroid
+Environment=WAYLAND_DISPLAY=display
+# The compositor's socket exists a moment before it accepts clients.
+ExecStartPre=/bin/sh -c 'for i in $(seq 1 30); do [ -S /run/open77-waydroid/display ] && exit 0; sleep 1; done; exit 0'
+ExecStart=/usr/bin/dbus-run-session -- /usr/bin/waydroid show-full-ui
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

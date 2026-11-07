@@ -53,6 +53,12 @@ server/          the container beside the game server -- one instance per role,
                  the image puts in the client page, and the scripts that build it
                  (up.sh), publish it (nginx.sh), point a game server at it
                  (install-tv-config.sh) and check it (test/)
+room/            the room service (open77-room): the page every room's Chromium
+                 starts on -- home screen, profiles, Android -- its unit and
+                 the drop-in that points it at Android (see "The room's page")
+android-native/  Android that is not emulated (Waydroid), served to the rooms as
+                 VNC + noVNC on port 8001: its installer, the switch, its units
+                 and the page a room opens to show it
 ```
 
 ## On a television
@@ -355,6 +361,15 @@ Each instance generates its OWN `neko.env` (viewer and admin passwords, API toke
 and its own television link `tv-url.secret`, both root-only, so the two links --
 and the two rooms behind them -- are separate. Recreating one role's container
 wipes that browser's own state (sessions, history) and does not touch the other's.
+
+Since the move of 2026-11-04 all four run on rl31, published as
+`xyberrp.duckdns.org` (192.34.102.143): `up.sh`, `nginx.sh`, the room service's
+watch-party links and `android-native/install.sh` say so. Their files were copied
+from the machine on 2026-11-07 (`tools/tvkit`, `tv_sources.py`); where the
+machine's copy was newer than this repository's it is here (that move; the
+Android input test's retry was already on `cinema-rooms-android` and came in
+with it), where it was older it is not (`install-tv-config.sh` still writes the
+`.browser` record names on fr-us, which the panels of 2026-10-23 replaced).
 
 1. Copy `server/` to that role's install dir (root, 700) and run
    `./up.sh [staging|production]` (default staging). The first run generates

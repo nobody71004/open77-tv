@@ -40,10 +40,10 @@ const ROOMS = {
 // The game's watch-party API for each role, polled for "someone pressed
 // Android". Empty means no game server for that room.
 const GAME = {
-  production: "https://xbuniverse.duckdns.org/opx-watch-xb",
-  staging:    "https://xbuniverse.duckdns.org/opx-watch-xb-staging",
+  production: "https://xyberrp.duckdns.org/opx-watch-xb",
+  staging:    "https://xyberrp.duckdns.org/opx-watch-xb-staging",
   f2077:      "",
-  "fr-us":    "https://xbuniverse.duckdns.org/opx-watch-fr-us",
+  "fr-us":    "https://xyberrp.duckdns.org/opx-watch-fr-us",
 };
 
 // Where the Android screen is served, and which device it is. Two stacks run

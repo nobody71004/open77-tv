@@ -1,0 +1,14 @@
+import http from "node:http";
+import WebSocket from "ws";
+const ip = process.argv[2] || "172.17.0.2";
+const list = await new Promise((res, rej) => http.get(`http://${ip}:9222/json/list`, r => { let b=""; r.on("data",d=>b+=d); r.on("end",()=>res(JSON.parse(b))); }).on("error", rej));
+const page = list.filter(t => t.type === "page" && /^http/.test(t.url)).pop();
+const ws = new WebSocket(page.webSocketDebuggerUrl);
+await new Promise(r => ws.on("open", r));
+let id = 0; const wait = new Map();
+ws.on("message", raw => { const m = JSON.parse(String(raw)); if (m.id && wait.has(m.id)) { wait.get(m.id)(m); wait.delete(m.id); } });
+const call = (method, params) => new Promise(res => { const i = ++id; wait.set(i, res); ws.send(JSON.stringify({ id: i, method, params })); });
+const expr = process.argv[3];
+const r = await call("Runtime.evaluate", { expression: expr, returnByValue: true, awaitPromise: true });
+console.log(JSON.stringify(r.result?.result?.value ?? r.result, null, 2));
+ws.close();

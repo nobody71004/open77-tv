@@ -1,0 +1,20 @@
+[Unit]
+Description=Open77 Android native: headless Wayland for Waydroid
+Documentation=file:/opt/open77-android-native/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=XDG_RUNTIME_DIR=/run/open77-waydroid
+RuntimeDirectory=open77-waydroid
+RuntimeDirectoryMode=0700
+ExecStartPre=/bin/mkdir -p /run/open77-waydroid/pulse
+ExecStartPre=/bin/sh -c 'test -e /run/open77-waydroid/pulse/native || : > /run/open77-waydroid/pulse/native'
+ExecStart=/usr/bin/weston --backend=headless-backend.so --socket=open77-waydroid \
+    --idle-time=0 --width=1280 --height=720
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

@@ -41,8 +41,8 @@ case "$ROLE" in
   *) echo "usage: $(basename "$0") [staging|production|f2077|fr-us]"; exit 2 ;;
 esac
 IMAGE=open77/tvbrowser-chromium:9
-PUBLIC_HOST=xbuniverse.duckdns.org
-PUBLIC_IP=88.214.59.166
+PUBLIC_HOST=xyberrp.duckdns.org
+PUBLIC_IP=192.34.102.143
 
 [ -d "$D" ] || { echo "no install dir at $D: copy this server/ directory there first"; exit 2; }
 cd "$D"

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Publishes one role's shared-browser path through the xbuniverse.duckdns.org
+# Publishes one role's shared-browser path through the xyberrp.duckdns.org
 # site, and keeps the enabled and available copies of that site in step (the
 # screen-mirror install edited only the enabled copy, so they part company; this
 # leaves them equal again). Backs both up first, refuses to reload a
@@ -52,7 +52,7 @@ systemctl reload nginx
 # worker holding the old configuration. Retry before believing a 404.
 code=000
 for i in $(seq 1 15); do
-  code=$(curl -s -o /dev/null -w '%{http_code}' --resolve xbuniverse.duckdns.org:443:127.0.0.1 "https://xbuniverse.duckdns.org$PREFIX/" || true)
+  code=$(curl -s -o /dev/null -w '%{http_code}' --resolve xyberrp.duckdns.org:443:127.0.0.1 "https://xyberrp.duckdns.org$PREFIX/" || true)
   [ "$code" = "200" ] && break
   sleep 1
 done
@@ -60,5 +60,5 @@ if [ "$code" != "200" ]; then echo "!! $PREFIX answered HTTP $code through nginx
 cp -p "$F" "$A"
 echo "== nginx reloaded with $PREFIX/ -> 127.0.0.1:$PORT (backup $BK/redsync-cdn.before-tvbrowser-$TS)"
 echo "== through nginx: HTTP $code"
-echo "== an unrelated route still answers: HTTP $(curl -s -o /dev/null -w '%{http_code}' --resolve xbuniverse.duckdns.org:443:127.0.0.1 https://xbuniverse.duckdns.org/healthz)"
-echo "== the other role's route still answers: HTTP $(curl -s -o /dev/null -w '%{http_code}' --resolve xbuniverse.duckdns.org:443:127.0.0.1 https://xbuniverse.duckdns.org/tv-browser-xb-staging/)"
+echo "== an unrelated route still answers: HTTP $(curl -s -o /dev/null -w '%{http_code}' --resolve xyberrp.duckdns.org:443:127.0.0.1 https://xyberrp.duckdns.org/healthz)"
+echo "== the other role's route still answers: HTTP $(curl -s -o /dev/null -w '%{http_code}' --resolve xyberrp.duckdns.org:443:127.0.0.1 https://xyberrp.duckdns.org/tv-browser-xb-staging/)"

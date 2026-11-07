@@ -1,0 +1,14 @@
+[Unit]
+Description=Open77 Android native on the web (noVNC on port 8001)
+Documentation=file:/opt/open77-android-native/README.md
+After=open77-android-native-vnc.service network-online.target
+Wants=open77-android-native-vnc.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/websockify --web=/usr/share/novnc 0.0.0.0:8001 127.0.0.1:5900
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -195,6 +195,31 @@ encoding), there because this box has no image tooling installed.
 - **A GPU.** Rendering is pixman on the host CPU. It is native Android, not a
   graphics-accelerated Android.
 
+## On rl31 (2026-11-07)
+
+rl31 runs this stack for all four rooms. Copied from the machine on 2026-11-07
+(`tools/tvkit`, `tv_sources.py`), beside the files above:
+
+```
+systemd/open77-android-native-display.service  headless sway (wlroots, pixman), the display Android draws into;
+                                                its socket is linked as /run/open77-waydroid/display
+systemd/open77-waydroid-session.service        `waydroid show-full-ui` on that display (the container itself is
+                                                the distribution's waydroid-container.service)
+systemd/open77-android-native-vnc.service      wayvnc: that display as VNC on 127.0.0.1:5900, no password
+systemd/open77-android-native-web.service      websockify on port 8001, and noVNC's own files (/usr/share/novnc)
+systemd/open77-android-native-adb.service      adb-connect.sh: this host's adb to the device, and a wait for boot
+systemd/open77-waydroid-display.service        an earlier display (weston, headless), still installed; unused
+sway.conf, wayvnc.conf, adb-connect.sh         what install.sh wrote into /opt/open77-android-native
+config.yaml                                     left from a ws-scrcpy try on 8001 that install.sh now removes
+```
+
+The firewall unit and the adb timer were not copied; `install.sh` holds their
+text. The room service finds the stack through its drop-in
+(`../room/systemd/open77-room.service.d/10-android-native.conf`, written by
+`switch-room.sh native`). The machine's own `README.md` and `install.sh` in
+`/opt/open77-android-native` are older than this folder's: they predate
+`waydroid-internet.sh` being wired into the installer and its firewall unit.
+
 ## Rolling back
 
 ```bash

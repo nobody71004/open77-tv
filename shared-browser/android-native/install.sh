@@ -54,7 +54,7 @@ RUN=/run/open77-waydroid        # XDG_RUNTIME_DIR for the session
 NATIVE=/opt/open77-android-native
 ADB_BIN=/opt/android-sdk/platform-tools/adb
 NOVNC=/usr/share/novnc
-PUBLIC_HOST=xbuniverse.duckdns.org
+PUBLIC_HOST=xyberrp.duckdns.org
 
 echo "== open77 Android, native: Waydroid on :$PORT next to the emulator on :8000"
 

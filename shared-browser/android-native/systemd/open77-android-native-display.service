@@ -1,0 +1,29 @@
+[Unit]
+Description=Open77 Android native: headless sway (the display Waydroid draws into)
+Documentation=file:/opt/open77-android-native/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=XDG_RUNTIME_DIR=/run/open77-waydroid
+Environment=WLR_BACKENDS=headless
+Environment=WLR_LIBINPUT_NO_DEVICES=1
+Environment=WLR_RENDERER=pixman
+# The PulseAudio socket below is a plain file: Waydroid's container config
+# always bind-mounts $XDG_RUNTIME_DIR/pulse/native, and a missing source aborts
+# the whole mount setup ("Failed to setup mount entries") before Android starts.
+RuntimeDirectory=open77-waydroid
+RuntimeDirectoryMode=0700
+ExecStartPre=/bin/mkdir -p /run/open77-waydroid/pulse
+ExecStartPre=/bin/sh -c 'test -e /run/open77-waydroid/pulse/native || : > /run/open77-waydroid/pulse/native'
+ExecStart=/usr/bin/sway -c /opt/open77-android-native/sway.conf
+# sway names its socket itself (wayland-1 here) and ignores WAYLAND_DISPLAY, so
+# the socket it made gets a stable name that every other unit can use: "display".
+# Hardcoding wayland-1 would break the day something else holds that name.
+ExecStartPost=/bin/sh -c 'for i in $(seq 1 30); do s=$(ls -t /run/open77-waydroid/wayland-[0-9]* 2>/dev/null | head -1); if [ -S "$s" ]; then ln -sfn "$(basename "$s")" /run/open77-waydroid/display; exit 0; fi; sleep 1; done; exit 1'
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
