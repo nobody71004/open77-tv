@@ -34,6 +34,10 @@ html, body {
    hidden that is the whole surface. `min-height: 0` lets it shrink below its
    content's height, which a flex item otherwise refuses to do. */
 .screen {
+  /* The frame's measurements live here rather than on `.frame` so the picture
+     can inset itself to the same glass opening when a cinema cabinet is on. */
+  --bezel: 3.6vmin;
+  --bezel-line: 0.12vmin;
   position: relative;
   flex: 1 1 auto;
   min-height: 0;
@@ -52,6 +56,17 @@ html, body {
 
 .media { display: none; background: #000; border: 0; }
 .media.on { display: block; }
+
+/* A cinema cabinet is drawn OVER the surface, so a full-bleed picture runs
+   underneath its chassis. The chassis is a ring whose inner edge is the bezel
+   width (the gasket sits inside that ring), so inset the picture just past that
+   edge and the cabinet frames it instead of covering its outskirts. */
+.screen.framed .media,
+.screen.framed .idle {
+  inset: calc(var(--bezel) * 1.02);
+  width: auto;
+  height: auto;
+}
 
 /* The embed is a container: whichever player tv.js puts in it (YouTube's own
    frame, or a plain iframe when the API script cannot be fetched) has to fill
@@ -279,8 +294,6 @@ video.media { object-fit: contain; }
    --------------------------------------------------------------------------- */
 
 .frame {
-  --bezel: 3.6vmin;
-  --bezel-line: 0.12vmin;
   position: absolute;
   inset: 0;
   z-index: 2;

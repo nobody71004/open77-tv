@@ -70,6 +70,7 @@
 
   const elements = {
     idle: document.getElementById("idle"),
+    screen: document.getElementById("screen"),
     idleLabel: document.getElementById("idle-label"),
     idleDetail: document.getElementById("idle-detail"),
     media: document.getElementById("media"),
@@ -171,6 +172,10 @@
   function applyBorder(border) {
     const wanted = typeof border === "string" ? border.trim() : "";
     elements.frame.classList.toggle("on", wanted !== "");
+    // The picture is inset to the cabinet's glass opening (`.screen.framed` in
+    // tv.css); a live shared browser also has to be re-fit to the new box.
+    elements.screen.classList.toggle("framed", wanted !== "");
+    noteLiveFrameBox();
   }
 
   // ---------------------------------------------------------------------------
@@ -1374,9 +1379,48 @@
   /// what it did about it in the same log, as `browser_ice`.
   const SHARED_BROWSER_ASPECT = 16 / 9;
   let liveFrameBox = "";
+
+  /// The shared browser is a 16:9 stream. A cinema cabinet's glass opening is
+  /// not 16:9, and the framed page answers a non-16:9 box by covering it and
+  /// cropping the sides. Give the frame a 16:9 box inside the opening instead:
+  /// the full CEF picture is kept, with the cabinet's own dark surround above
+  /// and below it. Other sets keep the whole box, as before.
+  function fitSharedBrowserFrame() {
+    if (showing.kind !== "browser" || !youTubeFrame) return;
+    if (!elements.screen.classList.contains("framed")) {
+      youTubeFrame.style.width = "";
+      youTubeFrame.style.height = "";
+      youTubeFrame.style.position = "";
+      youTubeFrame.style.left = "";
+      youTubeFrame.style.top = "";
+      youTubeFrame.style.transform = "";
+      return;
+    }
+    const width = elements.embed.clientWidth;
+    const height = elements.embed.clientHeight;
+    if (!(width > 1) || !(height > 1)) return;
+    let frameWidth = width;
+    let frameHeight = Math.round(width / SHARED_BROWSER_ASPECT);
+    if (frameHeight > height) {
+      frameHeight = height;
+      frameWidth = Math.round(height * SHARED_BROWSER_ASPECT);
+    }
+    frameWidth = Math.max(1, Math.min(width, frameWidth));
+    frameHeight = Math.max(1, Math.min(height, frameHeight));
+    youTubeFrame.style.width = frameWidth + "px";
+    youTubeFrame.style.height = frameHeight + "px";
+    youTubeFrame.style.position = "absolute";
+    youTubeFrame.style.left = "50%";
+    youTubeFrame.style.top = "50%";
+    youTubeFrame.style.transform = "translate(-50%, -50%)";
+  }
+
   function noteLiveFrameBox() {
     if (showing.kind !== "browser") return;
-    const box = elements.embed;
+    fitSharedBrowserFrame();
+    // Measure the box the framed page actually sees: after a cinema cabinet is
+    // on, that is the 16:9 inner frame, not the wider embed container.
+    const box = youTubeFrame || elements.embed;
     const width = box.clientWidth;
     const height = box.clientHeight;
     // Hidden (`display: none`): nothing to measure, and it is measured again when
@@ -1416,9 +1460,9 @@
     stopPicture();
     sharedBrowserVolume = "";
     const frame = document.createElement("iframe");
+    frame.className = "shared-browser";
     frame.setAttribute("allow", "autoplay; fullscreen; clipboard-read; clipboard-write");
     frame.setAttribute("referrerpolicy", "no-referrer");
-    frame.src = sharedBrowserPage(src);
     frame.addEventListener("load", () => {
       report("browser_framed", "shared browser client loaded");
       // Its open77-volume.js is listening now: the level again.
@@ -1430,10 +1474,13 @@
     elements.embed.appendChild(frame);
     youTubeFrame = frame;
     showOnly("embed");
-    // The frame is the screen box (see `noteLiveFrameBox`), and the box is
-    // measurable now that the embed is showing.
-    noteLiveFrameBox();
     showing = { kind: "browser", src: src };
+    // Size the frame before the remote page measures it: a cinema cabinet's
+    // opening is not 16:9, and the shared browser's own fit would crop the
+    // picture to cover it instead of keeping the whole picture.
+    fitSharedBrowserFrame();
+    noteLiveFrameBox();
+    frame.src = sharedBrowserPage(src);
     notice("Shared browser: a real Chromium on the server, the same for everyone at this TV. " +
       "Press F8 at the screen to use it.");
     if (sharedBrowserNoticeTimer !== null) clearTimeout(sharedBrowserNoticeTimer);

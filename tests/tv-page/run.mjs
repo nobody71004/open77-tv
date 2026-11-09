@@ -15,11 +15,13 @@
 // run here for real in a stand-in client page). And the control strip sits under
 // the picture, never over it: the shared browser's frame ends where the strip
 // begins, on wide screens and narrow ones. And the box a live picture is drawn in
-// is handed over whole and measured: the frame is the screen box edge to edge, no
-// inset and nothing past it, on sets that are 16:9, ultrawide and portrait alike,
-// with the box's shape said in the log once per shape -- a page that fits the
-// picture to the box either crops it or bars it, and on 2026-10-16 a 32:9 client
-// lost 44 % of the picture's height to exactly that.
+// is handed over whole and measured on an ordinary set: the frame is the screen
+// box edge to edge, no inset and nothing past it, on sets that are 16:9,
+// ultrawide and portrait alike, with the box's shape said in the log once per
+// shape -- a page that fits the picture to the box either crops it or bars it,
+// and on 2026-10-16 a 32:9 client lost 44 % of the picture's height to exactly
+// that. A cinema cabinet is the exception: it insets the opening to the glass and
+// fits the shared browser's 16:9 picture inside it (section 33).
 //
 //   npm i -D playwright && npx playwright install chromium
 //   node tests/tv-page/run.mjs [web dir]          (default: open77_media/web)
@@ -136,11 +138,11 @@ const reports = () => page.evaluate(() => window.__reports.map((r) => r[1].statu
 const text = (id) => page.evaluate((id) => document.getElementById(id).textContent, id);
 const noticeShown = () => page.evaluate(() => !document.getElementById("notice").hidden);
 const settle = () => page.waitForTimeout(400);
-const base_state = { volume: 75, muted: false, paused: false, label: "Cinema screen, 150 ft", border: "#c8102e", curtain: "open", key: "F5" };
+const base_state = { volume: 75, muted: false, paused: false, label: "Cinema screen, 150 ft", border: "", curtain: "open", key: "F5" };
 
 // 0. The cinema cabinet is a fabricated bezel, not a coloured outline.
-await setState({ ...base_state, url: "" });
-await settle();
+await setState({ ...base_state, border: "#c8102e", url: "" });
+await page.waitForTimeout(700);
 const bezel = await page.evaluate(() => {
   const frame = document.getElementById("frame");
   const style = getComputedStyle(frame);
@@ -153,7 +155,7 @@ const bezel = await page.evaluate(() => {
     led: !!frame.querySelector(".frame-led"),
   };
 });
-check(bezel.on && bezel.opacity === "1" && bezel.borderWidth === 0 && bezel.screws === 4 && bezel.badge === "OPEN77" && bezel.led,
+check(bezel.on && parseFloat(bezel.opacity) > 0.9 && bezel.borderWidth === 0 && bezel.screws === 4 && bezel.badge === "OPEN77" && bezel.led,
   "a cinema record switches on the fabricated cabinet, with no coloured border: " + JSON.stringify(bezel));
 
 // 1. Netflix, with watch parties on this server.
@@ -586,8 +588,42 @@ L = await layout();
 check(L.frame && near(L.frame.width, L.screen.width) && near(L.frame.height, L.screen.height) && near(L.screen.height, L.vh),
   "with the strip hidden the box is the whole surface and the frame is that box: " +
   JSON.stringify({ frame: L.frame, screen: L.screen, vh: L.vh }));
+// 33. A cinema cabinet is the one exception to the whole-box rule: the picture
+// is handed a 16:9 box inside the cabinet's glass opening, so the whole shared
+// browser picture is kept rather than cropped by the opening's wider shape.
 await page.setViewportSize({ width: 1280, height: 720 });
-await setState({ ...base_state, url: "" });
+await focusOn(true);
+await setState({ ...base_state, border: "#c8102e", url: base + "/neko?s=ok#open77-shared-browser" });
+await page.waitForTimeout(600);
+L = await layout();
+const ratio = L.frame ? L.frame.width / L.frame.height : 0;
+check(L.frame && Math.abs(ratio - 16 / 9) < 0.01 &&
+  L.frame.left > L.screen.left + 1 && L.frame.top > L.screen.top + 1 &&
+  L.frame.right < L.screen.right - 1 && L.frame.bottom < L.screen.bottom - 1 &&
+  L.frame.bottom <= L.strip.top + 0.5,
+  "a cinema cabinet insets the shared browser to its glass opening and keeps the 16:9 picture whole: " +
+  JSON.stringify({ frame: L.frame, screen: L.screen }));
+check(L.frame &&
+  near((L.frame.left + L.frame.right) / 2, (L.screen.left + L.screen.right) / 2) &&
+  near((L.frame.top + L.frame.bottom) / 2, (L.screen.top + L.screen.bottom) / 2),
+  "and centres it in that opening: " + JSON.stringify({ frame: L.frame, screen: L.screen }));
+const cabinet = await page.evaluate(() => {
+  const screen = document.getElementById("screen").getBoundingClientRect();
+  const frame = document.querySelector("#embed iframe").getBoundingClientRect();
+  const at = (x, y) => {
+    const element = document.elementFromPoint(x, y);
+    return element ? (element.id || element.tagName.toLowerCase()) : null;
+  };
+  return {
+    outer: at(screen.left + 2, screen.top + 2),
+    inner: at(frame.left + 2, frame.top + 2),
+    centre: at(frame.left + frame.width / 2, frame.top + frame.height / 2),
+  };
+});
+check(cabinet.outer !== "iframe" && cabinet.inner === "iframe" && cabinet.centre === "iframe",
+  "the cabinet is outside the picture, and the picture owns its own box: " + JSON.stringify(cabinet));
+await setState({ ...base_state, border: "", url: "" });
+await focusOn(false);
 
 check(errors.length === 0, "no page errors: " + JSON.stringify(errors));
 await browser.close();
