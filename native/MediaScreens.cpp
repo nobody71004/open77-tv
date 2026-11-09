@@ -39,7 +39,16 @@ constexpr size_t kGlobalLimit = 64;
 /// on the panel it is aimed at when that panel has collision, and a panel
 /// mounted flush against a wall stops a few centimetres before its own centre.
 /// Without the slack a screen would hide itself.
+///
+/// The fixed floor is for furniture. A cinema panel's collider is authored
+/// around the whole cabinet and is much deeper: the 100 ft box is 1.32 m thick
+/// and the 150 ft box 1.98 m, with half of that depth in front of the picture.
+/// A 0.35 m probe therefore ended inside the slab and reported the set as
+/// occluded by itself. The allowance grows with the picture's height (3.8 % of
+/// it is the measured cabinet half-depth); 6 % clears both cinema records with
+/// margin while leaving an ordinary television on the fixed floor.
 constexpr float kOcclusionSlack = 0.35F;
+constexpr float kOcclusionSlackFraction = 0.06F;
 
 /// Where the screen stops being drawn, and how much of that range fades out.
 /// Generous on purpose: a billboard on a rooftop is the whole point of a big
@@ -225,14 +234,15 @@ bool ScreenCorners(
 /// unavailable is a worse failure than one that draws through a wall while the
 /// query is unavailable.
 bool Occluded(const RED4ext::Vector4& aEye, const RED4ext::Vector4& aTarget,
-              const float aDistance)
+              const float aDistance, const float aScreenHeight)
 {
+    const float slack = std::max(kOcclusionSlack, aScreenHeight * kOcclusionSlackFraction);
     const auto delta = Sub(aTarget, aEye);
-    if (aDistance <= kOcclusionSlack)
+    if (aDistance <= slack)
     {
         return false;
     }
-    const auto direction = Scale(delta, (aDistance - kOcclusionSlack) / aDistance);
+    const auto direction = Scale(delta, (aDistance - slack) / aDistance);
     const auto end = Add(aEye, direction);
     WorldQuery::RaycastHit hit{};
     bool blocked = false;
@@ -400,7 +410,7 @@ bool BuildClippedItem(Entry& aEntry, const Camera::View& aView,
     const RED4ext::Vector4 middleWorld = pointAt(middle[0], middle[1]);
     const auto toMiddle = Sub(middleWorld, aView.position);
     const float middleDistance = std::sqrt(std::max(0.0F, Dot(toMiddle, toMiddle)));
-    if (Occluded(aView.position, middleWorld, middleDistance))
+    if (Occluded(aView.position, middleWorld, middleDistance, aEntry.definition.quad.height))
     {
         aReason = "occluded";
         return false;
@@ -540,7 +550,7 @@ bool BuildItem(
     {
         return BuildClippedItem(aEntry, aView, world, cornerDepth, distance, aOut, aReason);
     }
-    if (Occluded(aView.position, centre, distance))
+    if (Occluded(aView.position, centre, distance, aEntry.definition.quad.height))
     {
         aReason = "occluded";
         return false;
