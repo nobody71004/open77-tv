@@ -1,4 +1,15 @@
-# open77-tv
+<p align="center">
+  <img src="assets/open77-tv-hero.png" alt="Open77 television: a wall-scale browser surface in a fabricated metal cabinet, showing the Night City cinema page and the F8 control strip" width="100%" />
+</p>
+
+<p align="center"><sub>1920 &times; 1080 hero render &middot; source: <a href="assets/hero.html">assets/hero.html</a></sub></p>
+
+<h1 align="center">open77-tv</h1>
+
+<p align="center"><b>A browser the world is looking at.</b><br />
+Spawnable cinema and television screens for Open77, rendered by a real Chromium surface on a world-space quad.</p>
+
+<p align="center">Cyberpunk 2077 2.31 &middot; Open77 &middot; CEF 144 &middot; 40 measured display records &middot; 7 Lua suites</p>
 
 A web browser on a spawnable prop's screen, for Open77.
 
@@ -7,6 +18,8 @@ attached to that prop — visible to everyone who can see the prop, with transpo
 and audio controls. The page is a real Chromium surface (CEF) hosted by the client
 plugin, so it is not a texture the server pushes: it is a browser the world
 happens to be looking at.
+
+**Start here:** [Quick start](#quick-start) &middot; [Requirements](#requirements) &middot; [Installation](#installation) &middot; [Configuration](#configuration) &middot; [Remote and console](#remote-and-console) &middot; [Optional modules](#optional-modules) &middot; [Troubleshooting](#troubleshooting) &middot; [Tests](#running-the-suite)
 
 ```
 open77_media/          the resource -- this is the television
@@ -143,6 +156,340 @@ The in-game phone -- F1 takes out a phone showing the TV rooms' Android, driven
 with the mouse and keyboard, one player at a time -- has its own repository:
 [nobody71004/open77-phone](https://github.com/nobody71004/open77-phone).
 
+## Quick start
+
+There are two halves to a working television, and they fail differently:
+
+| Half | What it is | What happens without it |
+|---|---|---|
+| **`open77_media/`** | The server resource: the catalogue, the screen authority, the page, the remote, the ad-block policy and the tests. | Nothing spawns, or a prop spawns with no browser state. |
+| **`native/` + the host seams** | The Open77 client's CEF surface, world-quad projection, input handoff, audio and page policy. | The resource can load, but a set never draws: `native media API unavailable` or `prop_not_projected`. |
+
+This repository is the television feature, not the whole Open77 client or server. The host-side build tree, CEF runtime, prop-host asset scripts and `open77-base` checkout are separate. `docs/integration.md` is the map of every seam; `patches/open77-base/` is the clean patch series, while the other `patches/*.diff` files are TV-only hunks of files that carry other work and must be reviewed by hand.
+
+### Fast path: a server whose client already has the TV seams
+
+```bash
+git clone https://github.com/nobody71004/open77-tv.git
+cp -R open77-tv/open77_media <open77-base>/resources/open77_media
+```
+
+Add `"open77_media"` to `resources.load` in `server/server.jsonc` and `server/server.pvplab.jsonc`, and to the `"resources"` array in `templates/freeroam/template.json`. Those server files set `resources.root` to `../resources`, so the copy above belongs at `<open77-base>/resources/open77_media`. Then restart the server, or run `refresh` from the server console if the resource tree was already started. The resource is `auto_start true` and `reload_policy "local"`.
+
+Confirm it loaded before touching a television. The server log prints:
+
+```text
+[resource:open77_media] discovered
+[resource:open77_media] open77_media ready -- 40 television records
+[resource:open77_media] started generation=1
+```
+
+A resource whose files exist but whose `refresh` never ran is not loaded, and the server looks healthy while it is simply absent.
+
+### Full path: build the render half too
+
+1. Start from a clean Open77 host checkout at the picture-series base `36772b3b`, or a tree that already contains those nine commits. Do not apply the series into unrelated work; the patches are commits against that base.
+2. Apply the clean picture series from inside the host checkout:
+
+   ```bash
+   cd <open77-base>
+   git switch -c open77-tv-picture 36772b3b
+   git am /path/to/open77-tv/patches/open77-base/*.patch
+   ```
+
+3. Copy the feature-only modules from `native/` into the matching `client/src/...`, `webhost/src/...` and `webui/...` paths listed in the [render-seam table](#2-install-the-render-seam). Add the new sources to the host's CMake lists, and apply the remaining `patches/*.diff` hunks by hand; they share files with unreleased work.
+4. Build the host with its own script. This calls `scripts/setup-cef.ps1`, prepares the pinned dependencies, builds `vs2022-x64`, and can deploy the client, web host and CEF into the game:
+
+   ```powershell
+   cd <open77-base>
+   pwsh .\scripts\build.ps1 -Configuration Release
+   pwsh .\scripts\build.ps1 -Configuration Release -Deploy -GameDirectory "C:\Path\To\Cyberpunk 2077"
+   ```
+
+5. If pasted H.264/HLS links should work, copy `ffprobe.exe` and `ffmpeg.exe` into `<game>\red4ext\plugins\Open77\decoder`. The decoder is found by `-open77-decoder-dir`, never by a search of `PATH`.
+6. Build the prop-host entities and the archive with the host's asset script. This step is not optional: a record whose authored host is missing spawns a marker mesh or nothing, not a screen.
+
+   ```powershell
+   cd <open77-base>
+   pwsh .\scripts\build-assets.ps1 -Configuration Release `
+        -GameDirectory "C:\Path\To\Cyberpunk 2077" `
+        -WolvenKitCli "C:\Tools\WolvenKit.CLI.exe"
+   ```
+
+   `build-assets.ps1` invokes `build-prop-hosts.ps1` itself and writes `artifacts\Release\Open77.archive`. `-OnlyAlias` is for iterating on one host, not a replacement for the full asset run before packing.
+
+After the archive is deployed, verify both the build artifact and the installed bytes instead of guessing:
+
+```bash
+python /path/to/open77-tv/tools/check-prop-hosts.py --archive "<open77-base>\artifacts\Release\Open77.archive"
+python /path/to/open77-tv/tools/check-prop-hosts.py --archive "<game>\archive\pc\mod\Open77.archive"
+```
+
+An Open77 launcher run can re-project its own archive over the install and silently remove the TV hosts; run the check after a launcher update and restore the asset-build archive when it fails.
+
+### First boot check
+
+```text
+media.records
+media.spawn tv.16x9 0 https://www.youtube.com/watch?v=<id>
+media.list
+```
+
+Stand in front of the set and press **F8** to hand it the pointer and keyboard; press **F5** (or type `/tv`) to open the remote. If the screen shows the colour-bar test pattern, the whole chain is alive — page, CEF surface, projection and world quad. If it shows a dark rectangle, the failure is upstream of the page.
+
+### Cinema cabinets
+
+`cinema.100ft` and `cinema.150ft` — the two 16:9 room panels, including the panels used by the shared browser and watch party — now switch on a fabricated display cabinet. It is a neutral brushed-metal chassis with a recessed gasket, inner glass lip, four fasteners, a status LED and an etched **OPEN77** badge. The old record-coloured outline and glow are gone; `border` is now only the marker that tells the page this set is a cinema display. The cabinet is pure CSS in `web/tv.css`, so it scales from a 100 ft panel to an apartment set and needs no new texture, mesh or asset build.
+
+## Requirements
+
+| Layer | Required | Notes |
+|---|---|---|
+| Game host | Windows 10/11, Cyberpunk 2077 2.31, RED4ext, Open77 client plugin | The render seams are client-side. The server can run elsewhere. |
+| Host tree | A clean `open77-base` checkout at the picture-series base `36772b3b` | The nine `patches/open77-base/` commits are a series against that base. Use a clean branch or worktree. |
+| Client build | Visual Studio 2022 with Desktop C++ and Windows SDK, CMake; the host's `scripts/build.ps1` | The script prepares the pinned CEF 144 and GameNetworkingSockets dependencies; do not substitute a different CEF build. |
+| Server | Open77 server tree matching the client; `resources.load` access | The resource is Lua and data, with no native server dependency. |
+| Assets | WolvenKit CLI, PowerShell 7, the game installation | `scripts/build-assets.ps1` writes `artifacts/Release/Open77.archive`; the asset run also needs the game's vanilla archive data. |
+| Tests | .NET 10 SDK; Node 20+ with Playwright for the browser test | The Lua suites need no Lua interpreter: `tools/suite-runner` carries Lua 5.4 through KeraLua. |
+| Optional decoder | `ffprobe.exe`, `ffmpeg.exe` with VP9/Opus WebM output | Without it, the page reports `disabled` and H.264/HLS links do not play. |
+| Optional services | Docker, Node, nginx or Caddy, a TLS hostname | Only for the shared browser, watch party and screen mirror. |
+
+## Installation
+
+### 1. Install the resource
+
+```bash
+cp -R open77_media <open77-base>/resources/open77_media
+```
+
+Add `"open77_media"` to `resources.load` in `server/server.jsonc` and `server/server.pvplab.jsonc`; add it to the `"resources"` array in `templates/freeroam/template.json` when that template is used. Those files use `"root": "../resources"`, so the copy above is `<open77-base>/resources/open77_media`. The resource declares:
+
+- `auto_start true`
+- `reload_policy "local"`
+- `web_ui_page "web/tv.html"` with `web_ui_auto_create false`
+- permissions `network.events`, `world.props`, `world.effects`, `input.actions`, `webui.policy`, `filesystem.read`, `filesystem.write` and `acl.read`
+
+Restart, or run `refresh` in the console. The server does not rescan an arbitrary resource folder unless its watch interval is enabled.
+
+### 2. Install the render seam
+
+The resource alone is not a screen. The client host must expose the `Open77.media` API and the `WorldOverlay::Style::Screen` path. Follow `docs/integration.md` in order: new native modules, Lua surface, client backend, render seam, page policy, audio, decoder. The nine `patches/open77-base/` files are a clean series against `open77-base` main at `36772b3b`:
+
+```bash
+cd <open77-base>
+git switch -c open77-tv-picture 36772b3b
+git am /path/to/open77-tv/patches/open77-base/*.patch
+```
+
+If the host tree already contains the picture fixes, skip the series; applying it twice will conflict. Do not apply it onto a dirty unrelated branch. The other `patches/*.diff` files are not a clean series: apply their TV-only hunks by hand and keep the host tree's other work.
+
+Copy the feature modules whole into these host paths:
+
+| `native/` source | Host destination |
+|---|---|
+| `MediaScreens.hpp`, `MediaScreens.cpp`, `ScreenQuad.hpp` | `client/src/api/` |
+| `ScreenMotion.hpp`, `ScreenInput.hpp` | `client/src/webui/` |
+| `PagePolicy.hpp`, `FramePolicy.hpp`, `AdBlock.hpp`, `TranscodePlan.hpp`, `Decoder.hpp` | `webui/include/op77/WebUI/` |
+| `AudioSink.hpp`, `AudioSink.cpp`, `FrameResolver.hpp`, `FrameResolver.cpp` | `webhost/src/` |
+
+The picture-fix files (`PerspectiveImage.hpp`, `SceneDepth*`, `ScreenClip.hpp`, `ScreenDepth*`, `ScreenTessellation.hpp`, and the shaders) belong in the paths named by `docs/depth-and-occlusion.md`; not every file in `native/` goes in one directory. Add `MediaScreens.cpp`/`.hpp` to `client/CMakeLists.txt` and the new webhost sources to `webhost/CMakeLists.txt`; the patch hunks show the exact insertion points.
+
+### 3. Build the host and stage the decoder
+
+The client hosts a real Chromium surface. Build it with the host's own script; it calls `scripts/setup-cef.ps1`, prepares the pinned CEF 144 and GameNetworkingSockets dependencies, and builds `Open77.Client` plus `Open77.WebHost`:
+
+```powershell
+cd <open77-base>
+pwsh .\scripts\build.ps1 -Configuration Release
+# the supported deployment path:
+pwsh .\scripts\build.ps1 -Configuration Release -Deploy -GameDirectory "C:\Path\To\Cyberpunk 2077"
+```
+
+With `-Deploy`, `deploy-client` copies `Open77.dll` and the web host plus its CEF runtime from `artifacts\Release\web` into `<game>\red4ext\plugins\Open77\web`. Do not manually drop a second CEF build on top of that deployment.
+
+For links this Chromium cannot decode (H.264/AAC, HLS, `.mkv`, `.mp4`, `.mov`, and the rest), create `<game>\red4ext\plugins\Open77\decoder` and stage:
+
+```text
+<game>\red4ext\plugins\Open77\decoder\ffprobe.exe
+<game>\red4ext\plugins\Open77\decoder\ffmpeg.exe
+```
+
+The game passes `-open77-decoder-dir=<plugin>\decoder` when it starts `Open77.WebHost.exe`; the decoder is deliberately found by that path, never by a search of `PATH`. Without the directory the page reports `disabled` with a reason; it does not show a silent black rectangle. The decoder is not optional for a server that expects ordinary web MP4 links to work, but it is not needed for YouTube, WebM/VP9, Vimeo embeds, the shared browser, or framed websites.
+
+### 4. Add the authored prop hosts
+
+The catalogue names game meshes; a mesh is not a spawnable prop until the asset build emits `cyberm\entities\props\open77_prop_<slug>.ent`. Build the complete asset archive from the host tree:
+
+```powershell
+cd <open77-base>
+pwsh .\scripts\build-assets.ps1 -Configuration Release `
+     -GameDirectory "C:\Path\To\Cyberpunk 2077" `
+     -WolvenKitCli "C:\Tools\WolvenKit.CLI.exe"
+```
+
+`build-assets.ps1` invokes `scripts/build-prop-hosts.ps1` itself and writes `artifacts\Release\Open77.archive`. A full run regenerates all hosts (roughly twenty minutes at the host's 184 generated aliases). To iterate on one host, run the prop-host script directly:
+
+```powershell
+pwsh .\scripts\build-prop-hosts.ps1 `
+     -WolvenKitCli "C:\Tools\WolvenKit.CLI.exe" `
+     -GameRoot "C:\Path\To\Cyberpunk 2077" `
+     -OutputRoot "assets\archive\Open77" `
+     -WorkRoot "build\generated\prop-hosts" `
+     -OnlyAlias <alias>
+```
+
+Then run the full `build-assets.ps1` before packing; `-OnlyAlias` is not a replacement for the complete run.
+
+Deploy the archive with the CMake target when the cache has `OP77_WOLVENKIT_CLI` configured:
+
+```powershell
+cmake --build build\vs2022-x64 --config Release --target deploy-assets
+```
+
+Otherwise copy `artifacts\Release\Open77.archive` to `<game>\archive\pc\mod\Open77.archive`. Verify both the build artifact and the installed bytes; `tools/check-prop-hosts.py` checks the hashed depot paths and names every missing host:
+
+```bash
+python /path/to/open77-tv/tools/check-prop-hosts.py --archive "<open77-base>\artifacts\Release\Open77.archive"
+python /path/to/open77-tv/tools/check-prop-hosts.py --archive "<game>\archive\pc\mod\Open77.archive"
+```
+
+The two cinema panels are the easiest check: spawn `cinema.100ft`; a panel with a picture but a missing host is exactly the silent failure this check exists for. An Open77 launcher run can re-project its own archive over the install and silently remove the TV hosts; run the check after a launcher update and restore the asset-build archive when it fails.
+
+### 5. Verify the page and the remote
+
+Server-side checks:
+
+```text
+media.records
+media.spawn cinema.150ft 0
+media.list
+```
+
+Client-side check: the set should show the test pattern with no URL. Press **F8** to take the screen, then **F5** or `/tv` to open the remote. Paste a link with **Ctrl+V**, press **LOAD**, and watch the client log for `MediaScreens: bound screen ...` and `player_state (playing at Ns)`.
+
+### 6. Tune the installation
+
+- **No render, resource loaded:** the client plugin is missing the TV seams or an older plugin is running. Look for `native media API unavailable` and `prop_not_projected` in the client log.
+- **No prop, catalogue answers:** the archive does not carry the host entity. Run the archive check above and rebuild the asset archive.
+- **No page, prop visible:** the web host or CEF runtime is not starting; the screen stays at the prop's material or the idle pattern without a page.
+- **No H.264 picture:** this is the codec, not the link. Stage the decoder or use the shared browser.
+- **No F5 panel:** the client half of `open77_media` did not start, or the player is out of the set's reach. `/tv` works even when no key is bound; `/tvkey reset` restores F5.
+
+## Configuration
+
+`server/config.lua` is the operator-editable file. It is loaded with `server/adblock.lua` before `server/main.lua`.
+
+| Key | Default | What it changes |
+|---|---|---|
+| `adminOnlyControl` | `true` | Only holders of `command.media.lock` may drive an unlocked set. Set `false` to let any player drive any set no admin has locked. The console is always admin. |
+| `enabled` | `true` | Reads and pushes the server ad-block list. The compiled client list remains active regardless. |
+| `dataFile` | `"adblock.json"` | Live ad-block store, relative to the resource's `data/` directory. |
+| `venueDataFile` | `"venue-sets.json"` | Saved positions for the world's venue screens; deleting it returns to the survey in `MediaVenueSets`. |
+| `hosts`, `tokens` | empty | Seed rules for a new server. They are used only until a live store exists. |
+| `MediaVenueSets` | one 150 ft panel | Scenery screens spawned at start. Each record is a normal set afterwards and can be saved from the F5 panel with **SAVE THIS SPOT**. |
+
+The admin gate is the ACE `command.media.lock`; the same ACE controls both the whole-panel `adminOnlyControl` gate and an individual screen's **LOCK** button. The lock is enforced on the server, not in the page. Per-player ad-block changes are written to `data/adblock.json`; `media.adblock.reload` re-reads the store, never the seed.
+
+## Remote and console
+
+| Input | Action |
+|---|---|
+| **F5** | Open/close the remote at the nearest set in reach. Each player can change it from the panel's **CHANGE** button or `/tvkey <key>`; `/tvkey reset` restores F5. |
+| **F8** | Hand the pointer and keyboard to the screen under the crosshair. The page's control strip appears under the picture, never over it. |
+| **Ctrl+V** | Paste a link into the remote's URL field, then **LOAD**. The field is focused when the panel opens. |
+| `tv` / `/tv` | Open the panel with no key at all. |
+| `tvkey <key>` / `/tvkey reset` | Choose or reset the player's own panel key. |
+
+`media.*` commands are server-console/admin commands; the console is always admin. The important ones:
+
+| Command | Purpose |
+|---|---|
+| `media.records` | Print the catalogue and its measured quads. |
+| `media.spawn <record> [yaw] [url]` | Spawn a set and optionally load a link. |
+| `media.place <record> <x> <y> <z> [yaw] [url]` | Place a set at a world position. |
+| `media.url <id> <url>` | Change the source. |
+| `media.list` | Show id, prop, label, surface, facing and refuse reason. |
+| `media.volume`, `media.mute`, `media.pause` | Transport and audio. |
+| `media.move <id> <forward\|back\|left\|right\|up\|down> [m]` | Nudge along the set's own axes. |
+| `media.rotate <id> <left\|right> [degrees]` | Turn the cabinet. |
+| `media.quad`, `media.quad.reset` | Retune or reset the measured screen rectangle. |
+| `media.curtain <id> <open\|closed\|reveal>` | Draw, open or replay the cinema curtain. |
+| `media.lock <id> <on\|off>` | Admin screen lock. |
+| `media.remove <id>` | Remove a set. |
+| `media.adblock.*` | Add, remove, clear, reload and inspect the ad-block list. |
+
+The remote's buttons are requests, not local state. Every change goes to `open77:media:control`; the server answers, and a refused control is reported instead of being optimistically drawn.
+
+## Optional modules
+
+These are separate installs. They are not required for a television to show a page, and each has its own README with the full operator notes.
+
+### Shared browser (`shared-browser/`)
+
+A real Chromium on a server, streamed over WebRTC to the television's page. This is how sites using H.264, Twitch and other players this CEF build cannot decode become watchable, and how everyone at a set sees the same browser. It needs Docker and a TLS host.
+
+```bash
+cd shared-browser/server
+./up.sh production            # builds the image and recreates the role's container
+./nginx.sh production         # publishes the WebSocket path
+./install-tv-config.sh production
+cd ../..
+```
+
+Add `opx_tvbrowser` to the server's resource load list, then run `shared-browser/server/test/e2e.sh production`. `NEKO_WEBRTC_UDPMUX` must carry the role's own port; `up.sh` prints both `tcpmux` and `udpmux`, and both must match. The browser is shared: sign-ins, history and a pasted clipboard are visible to everyone at that television. The viewer password is in the television link, not a player secret. See `shared-browser/README.md`.
+
+### Watch party (`watch-party/`)
+
+Netflix and other DRM services do not play in the television's CEF surface. A watch party keeps each viewer's own browser in step instead: the film stays in each account, and only the title, playhead and party membership are shared. Install `watch-party/opx_watchparty` as a resource, add it to the load list, set `opx_watchparty_public_base` to the public HTTPS path, and install the Edge/Chrome extension from `watch-party/extension` (or the store package when listed). Tests: `cd watch-party/opx_watchparty && lua5.4 tests/run.lua`; `cd watch-party/extension && node tests/sync-core.test.js`; the full e2e needs Playwright and Lua. See `watch-party/README.md`.
+
+### Screen mirror (`screen-mirror/`)
+
+A view-only JPEG relay for showing a PC screen on a television. It does not capture DRM-protected video; use the watch party for that. Local loop:
+
+```bash
+node screen-mirror/test.mjs
+```
+
+For a TLS host:
+
+```bash
+sudo MIRROR_TOKEN=$(openssl rand -hex 16) ./screen-mirror/deploy/up.sh tv.example.com
+```
+
+The installer prints the sender and receiver URLs. On the game box, use `deploy/install-live-nginx.sh` or `deploy/install-relay.sh`, add `opx_screenmirror` to the resource list, and verify `/health`. Treat the token and sender URL as secrets. See `screen-mirror/README.md`.
+
+### Android in the room
+
+The phone-sized Android surface has its own repository: [nobody71004/open77-phone](https://github.com/nobody71004/open77-phone). The television-sized Android/waydroid room stack and its input path are documented in `shared-browser/android-native/README.md`.
+
+## Troubleshooting
+
+| Symptom | First check | Fix |
+|---|---|---|
+| `open77_media` absent from the log | Resource list / process start time | Add it to the list, restart, or run `refresh`. |
+| `native media API unavailable` | Client plugin build | Install the host seams from `native/`; restart the game after the plugin change. |
+| Set exists but is invisible | `Open77.archive` prop host | Run `python tools/check-prop-hosts.py`; rebuild prop hosts and assets. |
+| Set is visible, page is not | CEF/web host startup | Check the web host log, CEF runtime path and the page's `web_ui_page`; a missing host can leave the idle surface. |
+| `prop_not_projected` | Archive / prop streaming | The prop's host entity is not installed or not streamed; check the archive and the prop registry. |
+| `not drawing -- occluded` + `facing: behind` | Player position | You are behind the cabinet; that is the facing gate working. `facing: undeclared` means the record has no declared front. |
+| `.mp4` / HLS is black or refused | Decoder | Stage `ffprobe.exe`/`ffmpeg.exe` and pass `-open77-decoder-dir`; check `media.list` and the page notice. |
+| YouTube error 153 | Embedder referrer | The host page pins `unsafe-url`; test in the actual CEF host, not an automation browser. |
+| F5 does nothing | Client resource half / reach | Use `/tv`; check `media.list` for the set's reach; `/tvkey reset`. |
+| Screen budget exhausted | Six surfaces per client | Move closer; the client materialises six by distance, with a 5 m hysteresis. |
+| Two screens drift | Shared link / clock | The server owns the playhead; a set that joins late seeks to it. Check the link is the same and the page is playing, not paused. |
+
+For the render, the client log is the ground truth: `MediaScreens: bound screen ...`, `not drawing -- ...`, and the page's own `player_state` / `embed_framed` reports. For the server, `media.list` names the screen, prop, surface and reason.
+
+## Security and limits
+
+- The URL policy is an allow-list of `http` and `https` with no whitespace or control characters, enforced in `server/main.lua`. The page is not the boundary; a custom client can send any message shape.
+- `adminOnlyControl` and the per-set lock both use `command.media.lock`. A locked set refuses non-admin changes on the server, not just in the panel.
+- The server ad-block list can only add to the compiled client list. A server cannot unblock something the build refuses.
+- The shared browser is shared: its cookies, sign-ins, history and clipboard belong to everyone at that set. Do not put a personal account in it and call it private.
+- The television does not bypass DRM. Widevine/PlayReady services remain unavailable unless a build has a licensed CDM and the service accepts the host; the watch party is the honest path for those titles.
+- The game HUD is not in the depth buffer used by the picture pass, so a world screen still draws over the HUD where they overlap. This is stated in `docs/depth-and-occlusion.md` and is a known limitation, not a bug in a particular set.
+- A screen surface is capped at 1280 px on its long side. A 100 ft panel is therefore about DVD resolution across its width; the shared browser reaches the panel's edges but does not add source pixels.
+
 ## The catalogue is measured, not estimated
 
 The first version of this catalogue reached for whatever props already had host
@@ -236,7 +583,8 @@ So adding a record is two steps, in this order:
 
 ```
 pwsh scripts/build-prop-hosts.ps1 -WolvenKitCli <cp77tools> -GameRoot <game> \
-     -OutputRoot <pack tree> -WorkRoot <work> -OnlyAlias <alias,alias,...>
+     -OutputRoot assets\archive\Open77 -WorkRoot build\generated\prop-hosts \
+     -OnlyAlias <alias,alias,...>
 # then a full build-assets.ps1 run to pack Open77.archive
 ```
 
@@ -571,7 +919,9 @@ private repository: the snapshot is only ever as fresh as its last regeneration
 from a tree that carries the work. `--check-fixture --from <checkout>` is how you
 ask that question when you have one.
 
-## Installing it into a server
+## Install gotchas
+
+> The complete procedure is in [Installation](#installation). The two traps below are the ones that otherwise cost an evening.
 
 The resource is self-contained; the **render** is not, because a browser on a
 world quad is host-side work. `docs/integration.md` names every seam, and

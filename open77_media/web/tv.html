@@ -99,9 +99,20 @@
            play the game's own race-start sound and colours on the same clock.
            All of the presentation is in `tv.css`: this markup is only the pieces
            the timeline moves.
-           The border is set from the record (see `applyBorder` in tv.js): a red
-           edge is what makes a 30 m panel read as a screen in the dark. -->
-      <div id="frame" class="frame"></div>
+           The cabinet is switched on by a cinema record (see `applyBorder` in
+           tv.js). Its metal, gasket, fasteners and status light are CSS, not a
+           coloured border painted over the picture. -->
+      <div id="frame" class="frame" aria-hidden="true">
+        <span class="frame-lip"></span>
+        <span class="frame-vent left"></span>
+        <span class="frame-vent right"></span>
+        <span class="frame-screw tl"></span>
+        <span class="frame-screw tr"></span>
+        <span class="frame-screw bl"></span>
+        <span class="frame-screw br"></span>
+        <span class="frame-badge">OPEN77</span>
+        <span class="frame-led"></span>
+      </div>
       <div id="curtain" class="curtain" hidden>
         <div class="curtain-pelmet">
           <div class="curtain-house" id="curtain-house">OPEN77 CINEMA</div>

@@ -160,20 +160,16 @@
   }
 
   // ---------------------------------------------------------------------------
-  // The panel's frame
+  // The display bezel
   // ---------------------------------------------------------------------------
   // A record may declare a `border` (see `shared/records.lua`: the two cinema
-  // records carry `#c8102e`), and this draws it. The colour is set as the
-  // `--frame` custom property rather than as a bare `border-color`, because the
-  // glow belongs to the same edge: `tv.css` reads the property for both, so an
-  // edited record moves the whole frame instead of leaving a stale halo.
+  // records carry it). That field now means "this set has a fabricated cinema
+  // cabinet"; its hex value is not painted. tv.css owns the metal, gasket,
+  // fasteners and status light, so the page has one neutral, professional
+  // finish instead of a record-coloured outline.
 
-  function applyBorder(color) {
-    const wanted = typeof color === "string" ? color.trim() : "";
-    // Set even when there is no colour, so the property never outlives the
-    // record that chose it: a stale `--frame` is a colour waiting to be drawn by
-    // whichever rule reads it next.
-    elements.frame.style.setProperty("--frame", wanted);
+  function applyBorder(border) {
+    const wanted = typeof border === "string" ? border.trim() : "";
     elements.frame.classList.toggle("on", wanted !== "");
   }
 

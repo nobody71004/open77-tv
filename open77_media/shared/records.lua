@@ -159,10 +159,10 @@ Open77MediaRecords = {}
 --  120. Only worth setting upwards, and only for something watched from far
 --  enough away that the default would take the prop -- and the picture with it --
 --  out of the world for the people watching.
----@field border string optional `#RRGGBB` frame drawn around the panel, on the
---  page. Present on the cinema records and absent everywhere else: a red
---  borderline is what makes a 30 m panel read as a screen rather than as a hole
---  in the dark, and on an apartment television it would be a coloured sticker.
+---@field border string optional cinema-cabinet marker. Present on the room's
+--  cinema records and absent everywhere else. Its presence switches on the
+--  fabricated display bezel in `web/tv.css`; the string is retained as the
+--  record's stable marker, not painted as a coloured outline.
 ---@field collision boolean optional. True gives the spawned prop a static
 --  collider, so the panel is something to walk around instead of a picture you
 --  can stand inside. Absent means the props default for a screen, which is no
@@ -824,9 +824,10 @@ local records = {
         -- takes the picture with it for everyone past that line.
         streamingRadius = 300.0,
         -- The two things that make a panel this size a *set* rather than a
-        -- television: a blue borderline so its edges are readable in the dark,
-        -- and a collider so the audience stands in front of it instead of
-        -- inside it.
+        -- television: a fabricated display cabinet so its edges are readable in
+        -- the dark, and a collider so the audience stands in front of it
+        -- instead of inside it. The value marks the cinema finish; it is not a
+        -- painted borderline (see `web/tv.css`).
         border = "#3fb6ff",
         collision = true,
         linkFrom = "opx_tvbrowser",

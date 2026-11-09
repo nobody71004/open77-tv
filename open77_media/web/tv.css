@@ -264,30 +264,166 @@ video.media { object-fit: contain; }
 .go { background: rgba(240, 180, 41, 0.22); border-color: rgba(240, 180, 41, 0.5); }
 
 /* ---------------------------------------------------------------------------
-   The panel's frame: the borderline a record declares.
+   The display bezel: a fabricated cabinet, not a coloured outline.
 
-   A picture this size is watched in the dark, and a 30 m rectangle with no edge
-   reads as a hole in the world rather than as a screen. The colour comes from
-   the record (`border` in shared/records.lua) and is applied by `applyBorder`
-   in tv.js as the `--frame` custom property -- the property is what makes the
-   glow around the panel the same colour as its edge, which a `border-color`
-   alone cannot do.
+   The two room panels are watched from across a lot. A bare rectangle reads as
+   a hole in the world, but the answer is not a glowing stripe: it is the same
+   thing a real display has -- a dark brushed chassis, a recessed gasket, an
+   inner glass lip, fasteners, a status light and a small etched badge. The
+   record's `border` field is now only the switch that says "this cinema panel
+   carries a cabinet"; its colour is not painted anywhere.
+
+   Every measurement is in `vmin` against the surface because this page is
+   mapped 1:1 onto the world quad. The geometry therefore scales from a 100 ft
+   panel to an apartment set without a second stylesheet.
    --------------------------------------------------------------------------- */
 
 .frame {
+  --bezel: 3.6vmin;
+  --bezel-line: 0.12vmin;
   position: absolute;
   inset: 0;
   z-index: 2;
   pointer-events: none;
-  border: 0.9vmin solid transparent;
-  transition: border-color 0.35s ease, box-shadow 0.35s ease;
+  opacity: 0;
+  border-radius: calc(var(--bezel) * 0.34);
+  transition: opacity 0.35s ease;
 }
-.frame.on {
-  border-color: var(--frame, #c8102e);
+.frame.on { opacity: 1; }
+
+/* The chassis is painted as a ring with a mask; the centre stays untouched so
+   the picture is never dimmed or scaled down. The layered gradients are the
+   brushed grain, the top specular, and the shadow under the lower lip. */
+.frame::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  padding: var(--bezel);
+  border-radius: inherit;
+  background:
+    radial-gradient(ellipse at 22% 10%, rgba(255, 255, 255, 0.18), transparent 30%),
+    radial-gradient(ellipse at 74% 88%, rgba(255, 255, 255, 0.055), transparent 28%),
+    repeating-linear-gradient(112deg,
+      rgba(255, 255, 255, 0.026) 0 1px,
+      transparent 1px 4px),
+    linear-gradient(145deg,
+      #3d464d 0%, #11161a 17%, #1c2328 34%, #07090b 57%,
+      #252b30 76%, #0a0d0f 100%);
   box-shadow:
-    inset 0 0 5vmin rgba(0, 0, 0, 0.55),
-    0 0 2.2vmin var(--frame, #c8102e);
+    inset 0 0 0 var(--bezel-line) rgba(255, 255, 255, 0.12),
+    inset 0 0.7vmin 1.4vmin rgba(255, 255, 255, 0.045),
+    inset 0 -0.9vmin 1.8vmin rgba(0, 0, 0, 0.9),
+    0 0.8vmin 2.4vmin rgba(0, 0, 0, 0.75);
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
 }
+
+/* The recessed black gasket and the inner glass lip. This is what turns the
+   chassis into a display: a deep shadow where the panel meets the cabinet and
+   a thin catchlight on the glass edge. */
+.frame::after {
+  content: "";
+  position: absolute;
+  inset: calc(var(--bezel) * 0.72);
+  border: calc(var(--bezel) * 0.18) solid #050607;
+  border-radius: calc(var(--bezel) * 0.16);
+  background: linear-gradient(90deg,
+    rgba(255, 255, 255, 0.025), transparent 11%, transparent 89%, rgba(255, 255, 255, 0.018));
+  box-shadow:
+    inset 0 0 0 var(--bezel-line) rgba(255, 255, 255, 0.08),
+    inset 0 0 2.6vmin rgba(0, 0, 0, 0.94),
+    0 0 0 var(--bezel-line) rgba(255, 255, 255, 0.045),
+    0 0 1.4vmin rgba(0, 0, 0, 0.65);
+}
+
+.frame-lip {
+  position: absolute;
+  left: 12%;
+  right: 12%;
+  top: calc(var(--bezel) * 0.18);
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.34), transparent);
+  opacity: 0.65;
+  z-index: 1;
+}
+
+.frame-screw {
+  position: absolute;
+  width: calc(var(--bezel) * 0.19);
+  height: calc(var(--bezel) * 0.19);
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 28%, #778188, #1c2226 44%, #050607 78%);
+  box-shadow:
+    0 0 0 0.08vmin rgba(0, 0, 0, 0.82),
+    inset 0 0.1vmin 0.1vmin rgba(255, 255, 255, 0.22);
+  z-index: 2;
+}
+.frame-screw::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 65%;
+  height: 0.12vmin;
+  transform: translate(-50%, -50%) rotate(45deg);
+  background: rgba(0, 0, 0, 0.85);
+}
+.frame-screw.tl { left: calc(var(--bezel) * 0.42); top: calc(var(--bezel) * 0.42); }
+.frame-screw.tr { right: calc(var(--bezel) * 0.42); top: calc(var(--bezel) * 0.42); }
+.frame-screw.bl { left: calc(var(--bezel) * 0.42); bottom: calc(var(--bezel) * 0.42); }
+.frame-screw.br { right: calc(var(--bezel) * 0.42); bottom: calc(var(--bezel) * 0.42); }
+
+.frame-badge {
+  position: absolute;
+  left: 50%;
+  bottom: calc(var(--bezel) * 0.16);
+  transform: translateX(-50%);
+  color: rgba(216, 226, 234, 0.44);
+  font-family: "Segoe UI", "Noto Sans", system-ui, sans-serif;
+  font-size: clamp(5px, 0.66vmin, 9px);
+  font-weight: 600;
+  letter-spacing: 0.32em;
+  line-height: 1;
+  text-indent: 0.32em;
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.9);
+  z-index: 1;
+}
+
+.frame-led {
+  position: absolute;
+  right: calc(var(--bezel) * 0.56);
+  bottom: calc(var(--bezel) * 0.30);
+  width: 0.52vmin;
+  height: 0.52vmin;
+  min-width: 3px;
+  min-height: 3px;
+  border-radius: 50%;
+  background: #9be7c4;
+  box-shadow:
+    0 0 0.38vmin rgba(155, 231, 196, 0.78),
+    0 0 0 0.12vmin rgba(0, 0, 0, 0.82);
+  z-index: 2;
+}
+
+.frame-vent {
+  position: absolute;
+  top: calc(var(--bezel) * 0.27);
+  width: calc(var(--bezel) * 0.36);
+  height: calc(var(--bezel) * 0.10);
+  background: repeating-linear-gradient(90deg,
+    rgba(0, 0, 0, 0.62) 0 0.16vmin,
+    transparent 0.16vmin 0.36vmin);
+  opacity: 0.55;
+  z-index: 1;
+}
+.frame-vent.left { left: 18%; }
+.frame-vent.right { right: 18%; }
 
 /* ---------------------------------------------------------------------------
    The curtain, and the reveal behind it.

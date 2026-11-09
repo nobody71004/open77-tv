@@ -1,0 +1,834 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Open77 television — hero</title>
+<style>
+  :root {
+    --bg: #020509;
+    --ink: #050a0f;
+    --steel: #111b22;
+    --steel-2: #24343e;
+    --cyan: #69f5ff;
+    --cyan-2: #12c7d2;
+    --red: #ff3158;
+    --amber: #ffc857;
+    --paper: #d8e2ea;
+    --muted: #7d95a3;
+    --dim: #425660;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    width: 1920px;
+    height: 1080px;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    background: var(--bg);
+  }
+  body {
+    color: var(--paper);
+    font-family: "Bahnschrift", "Segoe UI", "Noto Sans", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .hero {
+    position: relative;
+    width: 1920px;
+    height: 1080px;
+    overflow: hidden;
+    background:
+      radial-gradient(1100px 680px at 50% 43%, rgba(14, 81, 92, 0.32), transparent 68%),
+      radial-gradient(900px 560px at 49% 51%, rgba(112, 16, 39, 0.22), transparent 70%),
+      linear-gradient(180deg, #071119 0%, #03070b 42%, #020509 100%);
+  }
+  .hero::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(105, 245, 255, 0.035) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(105, 245, 255, 0.035) 1px, transparent 1px);
+    background-size: 72px 72px;
+    mask-image: radial-gradient(ellipse at 50% 42%, black 18%, transparent 72%);
+    opacity: 0.72;
+  }
+  .hero::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background:
+      repeating-linear-gradient(0deg, rgba(255,255,255,0.018) 0 1px, transparent 1px 4px),
+      radial-gradient(ellipse at 50% 46%, transparent 45%, rgba(0,0,0,0.56) 100%);
+    pointer-events: none;
+    mix-blend-mode: screen;
+    opacity: 0.55;
+  }
+  .ambient {
+    position: absolute;
+    border-radius: 50%;
+    filter: blur(70px);
+    pointer-events: none;
+  }
+  .a1 { width: 600px; height: 260px; left: 230px; top: 230px; background: rgba(18, 199, 210, 0.10); }
+  .a2 { width: 560px; height: 290px; right: 190px; top: 300px; background: rgba(255, 49, 88, 0.10); }
+  .a3 { width: 900px; height: 340px; left: 510px; top: 650px; background: rgba(255, 49, 88, 0.08); }
+
+  .mast {
+    position: absolute;
+    top: 43px;
+    left: 76px;
+    right: 76px;
+    height: 54px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    z-index: 5;
+  }
+  .brand { display: flex; align-items: center; gap: 14px; }
+  .mark {
+    width: 36px;
+    height: 36px;
+    display: grid;
+    place-items: center;
+    background: linear-gradient(145deg, #ff4767, #bf0d30);
+    border: 1px solid rgba(255,255,255,0.32);
+    box-shadow: 0 0 22px rgba(255,49,88,0.3), inset 0 0 12px rgba(0,0,0,0.25);
+    transform: rotate(45deg);
+  }
+  .mark span {
+    width: 15px;
+    height: 15px;
+    border: 2px solid #fff0f3;
+    border-radius: 50% 50% 50% 0;
+    transform: rotate(6deg);
+  }
+  .brand-name {
+    font-size: 30px;
+    line-height: 1;
+    font-weight: 700;
+    letter-spacing: 0.24em;
+    color: #f1f7fa;
+    text-shadow: 0 0 20px rgba(105,245,255,0.18);
+  }
+  .brand-slash { color: var(--red); font-size: 25px; font-weight: 300; }
+  .brand-sub {
+    margin-top: 4px;
+    font-size: 11px;
+    letter-spacing: 0.46em;
+    color: var(--muted);
+  }
+  .build {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    font-family: "Cascadia Mono", "Consolas", monospace;
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    color: var(--muted);
+  }
+  .build strong { color: var(--cyan); font-weight: 400; }
+  .build .dot {
+    width: 6px;
+    height: 6px;
+    background: var(--red);
+    border-radius: 50%;
+    box-shadow: 0 0 12px var(--red);
+  }
+
+  .hud-frame {
+    position: absolute;
+    left: 272px;
+    top: 126px;
+    width: 1376px;
+    height: 868px;
+    border: 1px solid rgba(216, 226, 234, 0.10);
+    background:
+      linear-gradient(90deg, rgba(216,226,234,0.045), transparent 8%, transparent 92%, rgba(216,226,234,0.045)),
+      linear-gradient(180deg, rgba(216,226,234,0.03), transparent 16%, transparent 88%, rgba(0,0,0,0.10));
+    z-index: 1;
+  }
+  .hud-frame::before {
+    content: "";
+    position: absolute;
+    inset: 12px;
+    border: 1px solid rgba(216, 226, 234, 0.055);
+  }
+  .corner {
+    position: absolute;
+    width: 34px;
+    height: 34px;
+    border-color: rgba(216, 226, 234, 0.32);
+    border-style: solid;
+    opacity: 0.9;
+    filter: drop-shadow(0 0 4px rgba(216,226,234,0.12));
+  }
+  .corner.tl { left: -1px; top: -1px; border-width: 2px 0 0 2px; }
+  .corner.tr { right: -1px; top: -1px; border-width: 2px 2px 0 0; }
+  .corner.bl { left: -1px; bottom: -1px; border-width: 0 0 2px 2px; }
+  .corner.br { right: -1px; bottom: -1px; border-width: 0 2px 2px 0; }
+  .hud-frame .tick {
+    position: absolute;
+    top: -1px;
+    width: 1px;
+    height: 8px;
+    background: rgba(216,226,234,0.25);
+  }
+
+  .callout {
+    position: absolute;
+    width: 178px;
+    z-index: 4;
+    font-family: "Cascadia Mono", "Consolas", monospace;
+    font-size: 10.5px;
+    line-height: 1.65;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .callout::before {
+    content: "";
+    display: block;
+    width: 58px;
+    height: 1px;
+    margin-bottom: 12px;
+    background: linear-gradient(90deg, var(--red), transparent);
+  }
+  .callout h3 {
+    margin: 0 0 5px;
+    color: var(--paper);
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.18em;
+  }
+  .callout strong { color: var(--cyan); font-weight: 400; }
+  .callout.left { left: 64px; top: 360px; }
+  .callout.right { right: 64px; top: 388px; text-align: right; }
+  .callout.right::before {
+    margin-left: auto;
+    background: linear-gradient(90deg, transparent, var(--red));
+  }
+  .callout.right .rule {
+    margin-left: auto;
+  }
+  .callout .rule {
+    width: 1px;
+    height: 94px;
+    margin-top: 20px;
+    background: linear-gradient(180deg, rgba(105,245,255,0.4), transparent);
+  }
+  .callout .rule.r {
+    height: 56px;
+  }
+
+  .tv-wrap {
+    position: absolute;
+    left: 320px;
+    top: 156px;
+    width: 1280px;
+    height: 816px;
+    z-index: 2;
+    transform: perspective(1800px) rotateY(-2.2deg) rotateX(0.8deg);
+    transform-origin: center center;
+  }
+  .tv-shadow {
+    position: absolute;
+    left: 70px;
+    right: 70px;
+    bottom: -42px;
+    height: 70px;
+    background: radial-gradient(ellipse at center, rgba(0,0,0,0.92), transparent 70%);
+    filter: blur(16px);
+  }
+  .tv {
+    position: absolute;
+    inset: 0;
+    padding: 23px 23px 19px;
+    border: 1px solid rgba(255,255,255,0.10);
+    border-radius: 25px;
+    background:
+      linear-gradient(135deg, rgba(55,73,83,0.55), transparent 18%),
+      linear-gradient(315deg, rgba(37,51,59,0.7), transparent 22%),
+      linear-gradient(180deg, #1b2932 0%, #0b1116 21%, #060a0d 100%);
+    box-shadow:
+      0 42px 80px rgba(0,0,0,0.72),
+      0 0 0 1px rgba(0,0,0,0.9),
+      0 0 40px rgba(0,0,0,0.55),
+      inset 0 1px 0 rgba(255,255,255,0.13);
+  }
+  .tv::before {
+    content: "";
+    position: absolute;
+    inset: 7px;
+    border: 1px solid rgba(255,255,255,0.055);
+    border-radius: 18px;
+    pointer-events: none;
+  }
+  .tv::after {
+    content: "";
+    position: absolute;
+    left: 22px;
+    right: 22px;
+    bottom: 6px;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(216,226,234,0.16), transparent);
+    box-shadow: none;
+  }
+  .sensor {
+    position: absolute;
+    left: 50%;
+    bottom: 7px;
+    width: 92px;
+    height: 7px;
+    transform: translateX(-50%);
+    display: flex;
+    justify-content: space-between;
+  }
+  .sensor i {
+    display: block;
+    width: 4px;
+    height: 4px;
+    margin-top: 1px;
+    border-radius: 50%;
+    background: rgba(216,226,234,0.55);
+    box-shadow: 0 0 5px rgba(216,226,234,0.30);
+  }
+  .sensor i:nth-child(2) { background: #9be7c4; box-shadow: 0 0 6px rgba(155,231,196,0.50); }
+  .bezel-label {
+    position: absolute;
+    left: 32px;
+    top: 7px;
+    font-family: "Cascadia Mono", "Consolas", monospace;
+    font-size: 8px;
+    letter-spacing: 0.26em;
+    color: rgba(216,226,234,0.4);
+  }
+  .bezel-label b { color: rgba(105,245,255,0.8); font-weight: 400; }
+
+  .surface {
+    position: relative;
+    width: 1234px;
+    height: 774px;
+    overflow: hidden;
+    border: 1px solid rgba(216,226,234,0.12);
+    border-radius: 7px;
+    background: #030609;
+    box-shadow:
+      inset 0 0 0 1px rgba(0,0,0,0.88),
+      inset 0 0 38px rgba(0,0,0,0.55),
+      0 0 24px rgba(0,0,0,0.55);
+  }
+  .picture {
+    position: relative;
+    width: 1234px;
+    height: 694px;
+    overflow: hidden;
+    background: #05080b;
+  }
+  .picture > svg {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+  }
+  .picture::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background:
+      linear-gradient(112deg, rgba(255,255,255,0.11), transparent 17%, transparent 70%, rgba(105,245,255,0.045)),
+      repeating-linear-gradient(0deg, rgba(0,0,0,0.20) 0 1px, transparent 1px 4px);
+    pointer-events: none;
+    opacity: 0.55;
+  }
+  .screen-hud {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    padding: 24px 28px;
+    pointer-events: none;
+  }
+  .channel {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: max-content;
+    padding: 7px 10px 7px 8px;
+    background: rgba(3,7,10,0.64);
+    border: 1px solid rgba(216,226,234,0.16);
+    backdrop-filter: blur(8px);
+    font-family: "Cascadia Mono", "Consolas", monospace;
+    font-size: 10px;
+    letter-spacing: 0.16em;
+    color: var(--paper);
+  }
+  .channel .live {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: #ffdde3;
+  }
+  .channel .live::before {
+    content: "";
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--red);
+    box-shadow: 0 0 7px var(--red);
+  }
+  .channel b { color: var(--cyan); font-weight: 400; }
+  .signal {
+    position: absolute;
+    right: 28px;
+    top: 24px;
+    display: flex;
+    gap: 16px;
+    font-family: "Cascadia Mono", "Consolas", monospace;
+    font-size: 9px;
+    letter-spacing: 0.14em;
+    color: rgba(216,226,234,0.58);
+  }
+  .signal strong { color: var(--cyan); font-weight: 400; }
+  .title-block {
+    position: absolute;
+    left: 28px;
+    bottom: 54px;
+    max-width: 640px;
+    text-shadow: 0 3px 22px rgba(0,0,0,0.8);
+  }
+  .title-block .eyebrow {
+    margin-bottom: 10px;
+    font-family: "Cascadia Mono", "Consolas", monospace;
+    font-size: 10px;
+    letter-spacing: 0.27em;
+    color: var(--amber);
+  }
+  .title-block h2 {
+    margin: 0;
+    font-size: 54px;
+    line-height: 0.98;
+    font-weight: 600;
+    letter-spacing: -0.025em;
+    color: #f5fbfd;
+  }
+  .title-block h2 span {
+    display: block;
+    color: transparent;
+    -webkit-text-stroke: 1px rgba(216,226,234,0.62);
+    letter-spacing: 0.07em;
+  }
+  .title-block p {
+    margin: 14px 0 0;
+    font-size: 15px;
+    letter-spacing: 0.06em;
+    color: rgba(216,226,234,0.72);
+  }
+  .title-block .rule {
+    width: 90px;
+    height: 2px;
+    margin-top: 18px;
+    background: linear-gradient(90deg, var(--red), transparent);
+  }
+  .lower-third {
+    position: absolute;
+    left: 28px;
+    right: 28px;
+    bottom: 23px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-top: 10px;
+    border-top: 1px solid rgba(216,226,234,0.18);
+    font-family: "Cascadia Mono", "Consolas", monospace;
+    font-size: 9px;
+    letter-spacing: 0.16em;
+    color: rgba(216,226,234,0.58);
+  }
+  .lower-third b { color: var(--cyan); font-weight: 400; }
+  .lower-third .progress {
+    width: 250px;
+    height: 2px;
+    background: rgba(216,226,234,0.18);
+  }
+  .lower-third .progress i {
+    display: block;
+    width: 38%;
+    height: 100%;
+    background: var(--red);
+    box-shadow: 0 0 9px rgba(255,49,88,0.55);
+  }
+
+  .strip {
+    position: relative;
+    z-index: 3;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 1234px;
+    height: 78px;
+    padding: 0 16px;
+    background: #0b0f14;
+    border-top: 1px solid rgba(216,226,234,0.18);
+    font-family: "Cascadia Mono", "Consolas", monospace;
+    font-size: 10px;
+    color: var(--muted);
+  }
+  .play {
+    display: grid;
+    place-items: center;
+    flex: 0 0 34px;
+    width: 34px;
+    height: 34px;
+    border: 1px solid rgba(216,226,234,0.25);
+    border-radius: 3px;
+    background: rgba(216,226,234,0.08);
+    color: var(--paper);
+    font-size: 13px;
+  }
+  .seek {
+    position: relative;
+    flex: 1 1 auto;
+    min-width: 130px;
+    height: 17px;
+    border-bottom: 4px solid rgba(216,226,234,0.20);
+  }
+  .seek i {
+    position: absolute;
+    left: 0;
+    bottom: -4px;
+    width: 38%;
+    height: 4px;
+    background: var(--amber);
+    box-shadow: 0 0 8px rgba(255,200,87,0.28);
+  }
+  .time { flex: 0 0 99px; color: #9eb1be; font-size: 9px; }
+  .volume { display: flex; align-items: center; gap: 8px; flex: 0 0 95px; }
+  .volume .vbar {
+    width: 37px;
+    height: 3px;
+    background: rgba(216,226,234,0.19);
+  }
+  .volume .vbar i { display: block; width: 75%; height: 100%; background: var(--cyan-2); }
+  .url {
+    flex: 1 1 300px;
+    min-width: 100px;
+    height: 35px;
+    padding: 0 10px;
+    display: flex;
+    align-items: center;
+    color: #9eb1be;
+    background: rgba(5,7,10,0.8);
+    border: 1px solid rgba(216,226,234,0.22);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .url b { color: var(--cyan); font-weight: 400; }
+  .small-btn {
+    flex: 0 0 auto;
+    padding: 9px 9px;
+    color: #b9c9d3;
+    background: rgba(216,226,234,0.06);
+    border: 1px solid rgba(216,226,234,0.18);
+    font-family: "Bahnschrift", "Segoe UI", sans-serif;
+    font-size: 9px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+  .small-btn.go {
+    color: #ffdfa0;
+    background: rgba(240,180,41,0.14);
+    border-color: rgba(240,180,41,0.4);
+  }
+  .small-btn.curtain { color: #ffc7ce; border-color: rgba(255,49,88,0.38); }
+  .strip .separator {
+    width: 1px;
+    height: 28px;
+    background: rgba(216,226,234,0.13);
+  }
+
+  .floor {
+    position: absolute;
+    left: 160px;
+    right: 160px;
+    bottom: 0;
+    height: 130px;
+    background:
+      linear-gradient(180deg, transparent, rgba(13,30,37,0.50) 30%, rgba(2,6,9,0.9)),
+      radial-gradient(ellipse at 50% 0%, rgba(105,245,255,0.10), transparent 62%);
+    z-index: 0;
+    opacity: 0.75;
+  }
+  .footer {
+    position: absolute;
+    left: 76px;
+    right: 76px;
+    bottom: 29px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    z-index: 5;
+    font-family: "Cascadia Mono", "Consolas", monospace;
+    font-size: 10px;
+    letter-spacing: 0.19em;
+    color: rgba(216,226,234,0.42);
+  }
+  .footer .left { display: flex; align-items: center; gap: 12px; }
+  .footer .key { color: var(--cyan); }
+  .footer .sep { color: var(--dim); }
+  .footer .num {
+    font-size: 30px;
+    line-height: 0.8;
+    color: transparent;
+    -webkit-text-stroke: 1px rgba(105,245,255,0.22);
+    letter-spacing: 0;
+  }
+  .vert {
+    position: absolute;
+    top: 270px;
+    font-family: "Cascadia Mono", "Consolas", monospace;
+    font-size: 8px;
+    letter-spacing: 0.34em;
+    color: rgba(216,226,234,0.24);
+    writing-mode: vertical-rl;
+    z-index: 5;
+  }
+  .vert.l { left: 28px; transform: rotate(180deg); }
+  .vert.r { right: 28px; }
+</style>
+</head>
+<body>
+<div class="hero">
+  <div class="ambient a1"></div>
+  <div class="ambient a2"></div>
+  <div class="ambient a3"></div>
+  <div class="floor"></div>
+
+  <header class="mast">
+    <div class="brand">
+      <div class="mark"><span></span></div>
+      <div>
+        <div class="brand-name">OPEN77 <span class="brand-slash">/</span></div>
+        <div class="brand-sub">TELEVISION</div>
+      </div>
+    </div>
+    <div class="build">
+      <span class="dot"></span>
+      <span>WORLD-SPACE CEF</span>
+      <span>·</span>
+      <strong>CHROMIUM 144</strong>
+      <span>·</span>
+      <span>SCREEN 001</span>
+    </div>
+  </header>
+
+  <div class="hud-frame">
+    <div class="corner tl"></div><div class="corner tr"></div>
+    <div class="corner bl"></div><div class="corner br"></div>
+    <span class="tick" style="left: 170px;"></span>
+    <span class="tick" style="left: 344px;"></span>
+    <span class="tick" style="left: 688px;"></span>
+    <span class="tick" style="left: 1032px;"></span>
+    <span class="tick" style="left: 1206px;"></span>
+  </div>
+
+  <aside class="callout left">
+    <h3>THE CATALOGUE</h3>
+    <div><strong>40</strong> MEASURED RECORDS</div>
+    <div>16:9 · 21:9 · 4:3</div>
+    <div>9:16 · 3:4 · 9:21</div>
+    <div class="rule"></div>
+    <div>EVERY QUAD IS THE</div>
+    <div>MESH'S OWN BOUNDING BOX</div>
+  </aside>
+
+  <aside class="callout right">
+    <h3>THE SURFACE</h3>
+    <div>A REAL CHROMIUM PAGE</div>
+    <div>COMPOSITED ON A</div>
+    <div><strong>WORLD-SPACE QUAD</strong></div>
+    <div class="rule r"></div>
+    <div>F5 REMOTE</div>
+    <div>F8 POINTER + KEYBOARD</div>
+  </aside>
+
+  <div class="tv-wrap">
+    <div class="tv-shadow"></div>
+    <div class="tv">
+      <div class="bezel-label">OPEN77 // <b>TV-001</b> // CEF SURFACE</div>
+      <div class="surface">
+        <div class="picture">
+          <svg viewBox="0 0 1234 694" preserveAspectRatio="xMidYMid slice" aria-label="Night City skyline">
+            <defs>
+              <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0" stop-color="#071a27"/>
+                <stop offset="0.45" stop-color="#07121c"/>
+                <stop offset="1" stop-color="#03070b"/>
+              </linearGradient>
+              <radialGradient id="sun" cx="50%" cy="50%" r="50%">
+                <stop offset="0" stop-color="#ffcf9a" stop-opacity="0.95"/>
+                <stop offset="0.28" stop-color="#ff7c70" stop-opacity="0.8"/>
+                <stop offset="0.68" stop-color="#ff3158" stop-opacity="0.22"/>
+                <stop offset="1" stop-color="#ff3158" stop-opacity="0"/>
+              </radialGradient>
+              <linearGradient id="haze" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0" stop-color="#27d7e4" stop-opacity="0"/>
+                <stop offset="0.6" stop-color="#27d7e4" stop-opacity="0.09"/>
+                <stop offset="1" stop-color="#ff3158" stop-opacity="0.06"/>
+              </linearGradient>
+              <pattern id="winA" width="13" height="17" patternUnits="userSpaceOnUse">
+                <rect x="3" y="4" width="3" height="5" fill="#6df4ff" opacity="0.72"/>
+                <rect x="9" y="4" width="2" height="5" fill="#9feef6" opacity="0.35"/>
+              </pattern>
+              <pattern id="winB" width="17" height="21" patternUnits="userSpaceOnUse">
+                <rect x="4" y="6" width="3" height="4" fill="#ffb04a" opacity="0.55"/>
+                <rect x="11" y="6" width="2" height="4" fill="#6df4ff" opacity="0.42"/>
+                <rect x="4" y="14" width="3" height="2" fill="#ff4a6a" opacity="0.40"/>
+              </pattern>
+              <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
+                <feGaussianBlur stdDeviation="6" result="b"/>
+                <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+              </filter>
+              <filter id="soft"><feGaussianBlur stdDeviation="18"/></filter>
+            </defs>
+
+            <rect width="1234" height="694" fill="url(#sky)"/>
+            <ellipse cx="858" cy="230" rx="230" ry="180" fill="#ff3158" opacity="0.12" filter="url(#soft)"/>
+            <circle cx="858" cy="230" r="118" fill="url(#sun)"/>
+            <circle cx="858" cy="230" r="56" fill="#ffbe8c" opacity="0.16" filter="url(#soft)"/>
+
+            <g opacity="0.42" fill="#13232c">
+              <rect x="0" y="338" width="80" height="220"/>
+              <rect x="92" y="300" width="54" height="258"/>
+              <rect x="156" y="350" width="92" height="208"/>
+              <rect x="262" y="284" width="70" height="274"/>
+              <rect x="348" y="328" width="46" height="230"/>
+              <rect x="404" y="260" width="86" height="298"/>
+              <rect x="510" y="346" width="66" height="212"/>
+              <rect x="588" y="294" width="56" height="264"/>
+              <rect x="660" y="340" width="48" height="218"/>
+              <rect x="718" y="268" width="88" height="290"/>
+              <rect x="824" y="330" width="74" height="228"/>
+              <rect x="912" y="286" width="64" height="272"/>
+              <rect x="990" y="346" width="56" height="212"/>
+              <rect x="1062" y="300" width="74" height="258"/>
+              <rect x="1150" y="336" width="84" height="222"/>
+            </g>
+
+            <g fill="#0a171f">
+              <rect x="44" y="410" width="126" height="180"/>
+              <rect x="188" y="376" width="78" height="214"/>
+              <rect x="286" y="420" width="120" height="170"/>
+              <rect x="436" y="358" width="94" height="232"/>
+              <rect x="550" y="396" width="118" height="194"/>
+              <rect x="692" y="370" width="70" height="220"/>
+              <rect x="782" y="414" width="130" height="176"/>
+              <rect x="938" y="366" width="82" height="224"/>
+              <rect x="1044" y="408" width="140" height="182"/>
+            </g>
+
+            <g opacity="0.74">
+              <rect x="60" y="426" width="94" height="156" fill="url(#winA)"/>
+              <rect x="202" y="394" width="52" height="188" fill="url(#winB)"/>
+              <rect x="302" y="438" width="92" height="144" fill="url(#winA)"/>
+              <rect x="452" y="380" width="64" height="202" fill="url(#winB)"/>
+              <rect x="568" y="414" width="84" height="166" fill="url(#winA)"/>
+              <rect x="708" y="388" width="42" height="194" fill="url(#winB)"/>
+              <rect x="798" y="432" width="100" height="150" fill="url(#winA)"/>
+              <rect x="952" y="384" width="56" height="198" fill="url(#winB)"/>
+              <rect x="1062" y="426" width="104" height="156" fill="url(#winA)"/>
+            </g>
+
+            <g opacity="0.30" fill="#69f5ff">
+              <rect x="0" y="514" width="1234" height="1"/>
+              <rect x="0" y="550" width="1234" height="1"/>
+              <rect x="0" y="586" width="1234" height="1"/>
+              <rect x="0" y="622" width="1234" height="1"/>
+            </g>
+
+            <g opacity="0.9">
+              <rect x="1038" y="125" width="3" height="142" fill="#ff3158" filter="url(#glow)"/>
+              <rect x="1047" y="142" width="44" height="3" fill="#ff3158" filter="url(#glow)"/>
+              <rect x="1047" y="152" width="25" height="2" fill="#ff3158" opacity="0.65"/>
+              <rect x="1094" y="193" width="2" height="76" fill="#69f5ff" filter="url(#glow)"/>
+              <rect x="1100" y="198" width="22" height="2" fill="#69f5ff" opacity="0.85"/>
+              <text x="1048" y="244" fill="#ff3158" font-family="Cascadia Mono, Consolas, monospace" font-size="10" letter-spacing="4" filter="url(#glow)">OPEN 77</text>
+            </g>
+
+            <g opacity="0.82" font-family="Cascadia Mono, Consolas, monospace">
+              <text x="78" y="282" fill="#69f5ff" font-size="9" letter-spacing="7" opacity="0.45">NIGHT CITY // SECTOR 07</text>
+              <text x="78" y="307" fill="#ff3158" font-size="16" letter-spacing="8" filter="url(#glow)">AFTER HOURS</text>
+              <text x="80" y="326" fill="#d8e2ea" font-size="8" letter-spacing="4" opacity="0.35">OPEN77 CINEMA · 1280 × 720 · VP9 / OPUS</text>
+            </g>
+
+            <g opacity="0.55" fill="#ff3158">
+              <rect x="330" y="556" width="2" height="24"/>
+              <rect x="420" y="570" width="2" height="16"/>
+              <rect x="890" y="552" width="2" height="28"/>
+              <rect x="980" y="576" width="2" height="12"/>
+            </g>
+            <g opacity="0.5" fill="#69f5ff">
+              <circle cx="506" cy="150" r="2"/>
+              <circle cx="544" cy="126" r="1.5"/>
+              <circle cx="686" cy="184" r="1.5"/>
+              <circle cx="742" cy="108" r="2"/>
+              <circle cx="1146" cy="118" r="1.5"/>
+            </g>
+
+            <path d="M 0 694 L 0 604 L 185 582 L 342 610 L 493 584 L 654 612 L 812 590 L 1000 620 L 1234 596 L 1234 694 Z" fill="#020509"/>
+            <path d="M 0 660 L 300 624 L 618 654 L 930 622 L 1234 650" fill="none" stroke="#12c7d2" stroke-width="1" opacity="0.17"/>
+            <path d="M 0 681 L 340 644 L 700 672 L 1050 642 L 1234 665" fill="none" stroke="#ff3158" stroke-width="1" opacity="0.17"/>
+            <rect width="1234" height="694" fill="url(#haze)"/>
+          </svg>
+
+          <div class="screen-hud">
+            <div class="channel"><span class="live">LIVE</span><b>OPEN77 CINEMA</b><span>· WORLD FEED</span></div>
+            <div class="signal"><span><strong>CEF</strong> 144</span><span><strong>16:9</strong> QUAD</span><span>4K READY</span></div>
+            <div class="title-block">
+              <div class="eyebrow">NOW SHOWING · NIGHT CITY</div>
+              <h2>AFTER HOURS<span>THE CITY NEVER SLEEPS</span></h2>
+              <p>One surface. Forty screens. Everyone in the room.</p>
+              <div class="rule"></div>
+            </div>
+            <div class="lower-third">
+              <span><b>LIVE</b> FROM THE WORLD</span>
+              <span class="progress"><i></i></span>
+              <span>18:29 / 47:00</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="strip">
+          <div class="play">❚❚</div>
+          <div class="seek"><i></i></div>
+          <div class="time">18:29 / 47:00</div>
+          <div class="volume"><span>◖</span><div class="vbar"><i></i></div>75</div>
+          <div class="separator"></div>
+          <div class="url"><b>https://</b>open77.tv/night-city</div>
+          <div class="small-btn go">LOAD</div>
+          <div class="small-btn curtain">CURTAIN</div>
+          <div class="small-btn">REVEAL</div>
+        </div>
+      </div>
+
+      <div class="sensor"><i></i><i></i><i></i></div>
+    </div>
+  </div>
+
+  <div class="vert l">OPEN77 / TELEVISION / WORLD SURFACE / 001</div>
+  <div class="vert r">MEASURED NOT ESTIMATED / F5 / F8</div>
+
+  <footer class="footer">
+    <div class="left">
+      <span class="num">01</span>
+      <span>MEASURED. COMPOSITED. SHARED.</span>
+    </div>
+    <div>
+      <span class="key">F5</span> REMOTE <span class="sep">/</span>
+      <span class="key">F8</span> KEYBOARD <span class="sep">/</span>
+      <span class="key">/TV</span> COMMAND <span class="sep">/</span>
+      OPEN77.TV
+    </div>
+  </footer>
+</div>
+</body>
+</html>

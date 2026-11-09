@@ -138,6 +138,24 @@ const noticeShown = () => page.evaluate(() => !document.getElementById("notice")
 const settle = () => page.waitForTimeout(400);
 const base_state = { volume: 75, muted: false, paused: false, label: "Cinema screen, 150 ft", border: "#c8102e", curtain: "open", key: "F5" };
 
+// 0. The cinema cabinet is a fabricated bezel, not a coloured outline.
+await setState({ ...base_state, url: "" });
+await settle();
+const bezel = await page.evaluate(() => {
+  const frame = document.getElementById("frame");
+  const style = getComputedStyle(frame);
+  return {
+    on: frame.classList.contains("on"),
+    opacity: style.opacity,
+    borderWidth: parseFloat(style.borderTopWidth),
+    screws: frame.querySelectorAll(".frame-screw").length,
+    badge: frame.querySelector(".frame-badge")?.textContent || "",
+    led: !!frame.querySelector(".frame-led"),
+  };
+});
+check(bezel.on && bezel.opacity === "1" && bezel.borderWidth === 0 && bezel.screws === 4 && bezel.badge === "OPEN77" && bezel.led,
+  "a cinema record switches on the fabricated cabinet, with no coloured border: " + JSON.stringify(bezel));
+
 // 1. Netflix, with watch parties on this server.
 await setState({ ...base_state, url: "https://www.netflix.com/watch/81234567?trackId=1", parties: true });
 await settle();
